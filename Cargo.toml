@@ -1,0 +1,12 @@
+[package]
+name = "cizon2"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-config C++ build & run for beginners"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[profile.release]
+strip = true
