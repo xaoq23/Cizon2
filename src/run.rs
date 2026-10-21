@@ -91,8 +91,7 @@ mod tests {
 
     #[test]
     fn posix_signals_named() {
-        assert_eq!(describe_exit_code(139).unwrap_or("missing"), describe_exit_code(139 as i32).unwrap_or("missing"));
-        // 语义检查：139 = 128 + 11 (SIGSEGV)
+        // 语义检查:139 = 128 + 11 (SIGSEGV)
         assert!(describe_exit_code(139).unwrap().contains("SIGSEGV"));
     }
 
