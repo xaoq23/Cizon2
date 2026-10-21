@@ -310,12 +310,8 @@ pub fn prepare(
         std::fs::create_dir_all(obj_dir.join(name)).ok();
         for src in flat_sources(&src_dir) {
             // C++20 模块单元（如 fmt 的 src/fmt.cc）无法按常规方式编译，
-            // 且常规 .cpp 不可能以 `module;` 开头 —— 跳过并说明。
+            // 且常规 .cpp 不可能以 `module;` 开头 —— 静默跳过。
             if is_module_unit(&src) {
-                println!(
-                    "\x1b[2m     Skipped {}（C++20 模块单元，超出 add 的常规布局范围）\x1b[0m",
-                    src.display()
-                );
                 continue;
             }
             let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
