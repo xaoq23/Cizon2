@@ -13,7 +13,7 @@ use crate::pipeline;
 pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>, app_args: &[String]) -> Result<i32, String> {
     let cxx = compiler::pick(cc.or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
-    let exe = pipeline::build(dir, &plan)?;
+    let exe = pipeline::build(dir, &cfg, &plan)?;
 
     println!("\x1b[36m     Running\x1b[0m {}", exe.display());
     println!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));

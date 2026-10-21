@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use crate::compiler::{self, Cxx};
 use crate::config::Config;
+use crate::deps;
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
@@ -19,10 +20,12 @@ pub struct Plan {
     cxx: Cxx,
     /// 源文件相对项目根
     sources: Vec<PathBuf>,
-    /// 编译期 flags（edition + 优化级 + 用户 flags）
+    /// 编译期 flags（edition + 优化级 + 用户 flags + 依赖 include 路径）
     flags: Vec<String>,
     /// 链接期附加 flags（用户 link_flags + 用户 flags，与 Cizon1 行为一致）
     link_flags: Vec<String>,
+    /// 依赖源码的编译 flags（edition + 优化级；不套用户 flags，免得 -Werror 误伤三方代码）
+    dep_flags: Vec<String>,
     out_name: String,
     /// "debug" / "release" —— 与编译器一起决定产物作用域
     mode: &'static str,
@@ -41,6 +44,23 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     let mut flags = vec![compiler::edition_flag(cfg.edition())];
     flags.push(if release { "-O2".into() } else { "-g".into() });
     flags.extend(cfg.flags().iter().cloned());
+    // 依赖头文件路径无条件进 flags：目录不存在时编译器安全忽略，
+    // 因此 planning 无需网络操作
+    let mut dep_includes: Vec<String> = Vec::new();
+    if let Some(map) = cfg.dependencies() {
+        for name in map.keys() {
+            let inc = dir.join("deps").join(name);
+            let pair = [
+                format!("-I{}", inc.join("include").display()),
+                format!("-I{}", inc.display()),
+            ];
+            flags.extend(pair.clone());
+            // 依赖自己的源码也要找得到自己的头（如 fmt 的 src/*.cc 内部引用）
+            dep_includes.extend(pair);
+        }
+    }
+    let mut dep_flags = vec![compiler::edition_flag(cfg.edition()), if release { "-O2".into() } else { "-g".into() }];
+    dep_flags.extend(dep_includes);
 
     let mut link_flags: Vec<String> = cfg.link_flags().to_vec();
     link_flags.extend(cfg.flags().iter().cloned());
@@ -50,6 +70,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         sources,
         flags,
         link_flags,
+        dep_flags,
         out_name: exe_name(&cfg.name(dir)),
         mode: if release { "release" } else { "debug" },
     })
@@ -125,12 +146,20 @@ fn check_source_ext(path: &Path) -> Result<(), String> {
 
 // ── 构建执行 ──────────────────────────────────────────────
 
+/// 一个待编译单元：项目源用 plan.flags，依赖源用 dep_flags（不套用户 flags）。
+#[derive(Clone)]
+struct Job {
+    src: PathBuf,
+    obj: PathBuf,
+    flags: Vec<String>,
+}
+
 /// 执行完整构建，返回可执行文件路径。
 ///
 /// 产物作用域（迁移自 Cizon1 编译器沙盒教训）：`build/<mode>-<compiler>/`。
 /// 不同编译器或 debug/release 互相物理隔离，禁止混链；同名编译器版本变化时
 /// 依据 `.compiler-version` 指纹整目录作废。
-pub fn build(dir: &Path, plan: &Plan) -> Result<PathBuf, String> {
+pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let started = Instant::now();
     let build_dir = dir.join("build");
     let scope = format!("{}-{}", plan.mode, plan.cxx.name);
@@ -146,15 +175,23 @@ pub fn build(dir: &Path, plan: &Plan) -> Result<PathBuf, String> {
         .map_err(|e| format!("无法创建 {} : {e}", obj_dir.display()))?;
     let _ = std::fs::write(&marker, &plan.cxx.version);
 
+    // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
+    let dep_jobs = deps::prepare(dir, cfg, &obj_dir)?;
+
     // 1) 判定需要重编译的源
-    let mut jobs: Vec<(PathBuf, PathBuf)> = Vec::new(); // (src, obj)
+    let mut jobs: Vec<Job> = Vec::new(); // 项目源
     for src in &plan.sources {
         let obj = obj_for(src, &obj_dir);
         if needs_recompile(src, &obj) {
-            jobs.push((src.clone(), obj));
+            jobs.push(Job { src: src.clone(), obj, flags: plan.flags.clone() });
         }
     }
-    let total = plan.sources.len();
+    for (_dep, dsrc, dobj) in &dep_jobs {
+        if needs_recompile(dsrc, dobj) {
+            jobs.push(Job { src: dsrc.clone(), obj: dobj.clone(), flags: plan.dep_flags.clone() });
+        }
+    }
+    let total = plan.sources.len() + dep_jobs.len();
     let recompiled = jobs.len();
     if recompiled > 0 {
         let label = if recompiled == total { "Compiling" } else { "Rebuilding" };
@@ -174,11 +211,8 @@ pub fn build(dir: &Path, plan: &Plan) -> Result<PathBuf, String> {
             for _ in 0..threads {
                 scope.spawn(|| loop {
                     let job = queue.lock().expect("queue poisoned").pop();
-                    let (src, obj) = match job {
-                        Some(j) => j,
-                        None => break,
-                    };
-                    match compile_one(&plan.cxx.name, &src, &obj, &plan.flags) {
+                    let Some(Job { src, obj, flags }) = job else { break };
+                    match compile_one(&plan.cxx.name, &src, &obj, &flags) {
                         Ok(err) => {
                             if let Some(stderr) = err {
                                 warnings.lock().expect("warn poisoned").push(stderr);
@@ -209,11 +243,12 @@ pub fn build(dir: &Path, plan: &Plan) -> Result<PathBuf, String> {
     }
     // 3) 链接（无重编译且产物已新鲜时跳过）
     let exe = scope_dir.join(&plan.out_name);
-    let objs: Vec<PathBuf> = plan
+    let mut objs: Vec<PathBuf> = plan
         .sources
         .iter()
         .map(|src| obj_for(src, &obj_dir))
         .collect();
+    objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
     if recompiled == 0 {
         if let Ok(fresh) = exe_is_fresh(&exe, &objs) {
             if fresh {

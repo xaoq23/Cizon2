@@ -4,6 +4,7 @@
 //! 绝不静默忽略 —— 拼写错误和"等未来版本来支持"必须当场暴露，而不是构建出
 //! 一个看起来成功实际没加依赖的产物。
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -11,6 +12,7 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize, Default)]
 pub struct Config {
     pub project: Option<Project>,
+    pub dependencies: Option<BTreeMap<String, DepInfo>>,
     pub compiler: Option<CompilerSection>,
 }
 
@@ -32,9 +34,14 @@ pub struct CompilerSection {
     pub link_flags: Vec<String>,
 }
 
-/// v0.2+ 才会落地的配置段 —— 现在出现即报错。
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct DepInfo {
+    pub git: String,
+    pub tag: Option<String>,
+}
+
+/// v0.2 起实装 [dependencies]（git 仓库依赖）；其余段仍一律明确报错。
 const FUTURE_SECTIONS: &[&str] = &[
-    "dependencies",
     "dev-dependencies",
     "workspace",
     "override",
@@ -46,7 +53,7 @@ const FUTURE_SECTIONS: &[&str] = &[
 ];
 
 /// v0.1 从未有的配置段 —— 出现视为拼写错误。
-const UNKNOWN_HINT: &str = "cizon2 v0.1 只认 [project] 与 [compiler]";
+const UNKNOWN_HINT: &str = "cizon2 只认 [project]、[dependencies] 与 [compiler]";
 
 pub fn load(dir: &Path) -> Result<Config, String> {
     let path = dir.join("cizon.toml");
@@ -62,7 +69,7 @@ pub fn load(dir: &Path) -> Result<Config, String> {
         .map_err(|e| format!("cizon.toml 解析失败:\n{e}"))?;
 
     for key in table.keys() {
-        if key == "project" || key == "compiler" {
+        if key == "project" || key == "dependencies" || key == "compiler" {
             continue;
         }
         if FUTURE_SECTIONS.contains(&key.as_str()) {
@@ -113,6 +120,11 @@ impl Config {
     pub fn explicit_compiler(&self) -> Option<&str> {
         self.compiler.as_ref().and_then(|c| c.cpp.as_deref())
     }
+
+    /// 已声明的 git 依赖（[dependencies]），BTreeMap 保证遍历顺序稳定。
+    pub fn dependencies(&self) -> Option<&BTreeMap<String, DepInfo>> {
+        self.dependencies.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +171,19 @@ mod tests {
         assert_eq!(cfg.explicit_compiler(), Some("g++"));
         assert_eq!(cfg.flags(), &["-O2"]);
         assert_eq!(cfg.link_flags(), &["-lm"]);
+    }
+
+    #[test]
+    fn parse_dependencies_section() {
+        let (_, cfg) = write_config(
+            "[project]\nname = \"a\"\n\n\
+             [dependencies]\nfmt = { git = \"https://example.com/fmtlib/fmt\", tag = \"11.0.2\" }\n",
+        );
+        let deps = cfg.dependencies().unwrap();
+        assert_eq!(
+            deps.get("fmt").map(|d| (d.git.as_str(), d.tag.as_deref())),
+            Some(("https://example.com/fmtlib/fmt", Some("11.0.2")))
+        );
     }
 
     #[test]

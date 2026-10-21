@@ -5,6 +5,7 @@
 
 mod compiler;
 mod config;
+mod deps;
 mod pipeline;
 mod run;
 mod scaffold;
@@ -18,6 +19,7 @@ cizon2 — 零配置 C++ 构建与运行管理器
 用法:
   cizon2 new <目录名>             # 创建新项目
   cizon2 init                     # 在当前目录就地初始化
+  cizon2 add <git-url> [--tag <tag>]  # 添加 git 依赖（锁进 cizon.lock）
   cizon2 build [--release] [--compiler <spec>]
   cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
   cizon2 help | version
@@ -48,10 +50,7 @@ fn dispatch(args: &[String]) -> i32 {
         }
         "new" => top_err(scaffold::new_cmd(&args[1..])),
         "init" => top_err(scaffold::init_cmd()),
-        "add" => {
-            eprint_top("`add`（git 依赖管理）尚未实装，规划见 AGENTS.md 路线。");
-            2
-        }
+        "add" => top_err(deps::add_cmd(&args[1..])),
         other => {
             eprint_top(&format!("未知命令 \"{other}\"。\n\n{USAGE}"));
             2
@@ -111,7 +110,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
     let (dir, cfg) = load_config();
     let cxx = compiler::pick(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
-    pipeline::build(&dir, &plan).map(|_| 0)
+    pipeline::build(&dir, &cfg, &plan).map(|_| 0)
 }
 
 fn execute_run(args: &[String]) -> Result<i32, String> {

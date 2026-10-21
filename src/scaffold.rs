@@ -23,7 +23,7 @@ int main() {
 }
 "#;
 
-const GITIGNORE_TEMPLATE: &str = "build/\n";
+const GITIGNORE_TEMPLATE: &str = "build/\ndeps/\n";
 
 /// `cizon2 new <目录名>`：在当前目录下创建新项目。
 pub fn new_cmd(args: &[String]) -> Result<i32, String> {
