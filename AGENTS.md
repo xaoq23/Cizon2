@@ -14,7 +14,7 @@ scope creep 到一万一千行、看不懂自己的代码。本项目的第一�
 | 在边界内 | 边界外 |
 |---|---|
 | `build` / `run` 两个命令 | `new` / `init` / `add`（v0.2 按 cue 逐个进） |
-| 单二进制项目，src/ 平铺 .cpp | Workspace / monorepo |
+| 符合现代cpp代码结构的中小型项目 | Workspace / monorepo |
 | cizon.toml 只认 `[project]`、`[compiler]` | 依赖管理（git/vcpkg/conda） |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等有真实用户提出） |
 | mtime + `-MMD` .d 文件级增量 | PCH、features、\[target\]、compile_commands.json |
@@ -57,10 +57,15 @@ scope creep 到一万一千行、看不懂自己的代码。本项目的第一�
 
 ## 开发路线
 
-1. ✅ build + run（本里程碑，当前）
-2. v0.2: `new`（模板极简：cizon.toml + src/main.cpp）、`add`（git 仓库 + 锁文件）、
-   `update`（锁生命周期第三环：按 cizon.toml 意图对齐锁，升/降同构；build 永远只执行锁中已定的事）
-3. v0.3: compile_commands.json（编辑器支持，便宜且高感知）
+1. ✅ v0.1: `build` + `run`(已发布 v0.1.0)
+2. ✅ v0.2: `new`(模板极简：cizon.toml + src/main.cpp)、`add`(git 仓库 + 锁文件)、
+   `update`(锁生命周期:按 cizon.toml 意图对齐锁，升/降同构；build 永远只执行锁中已定的事)
+   —— 已发布 v0.2.0
+3. v0.2.1: 结构支持 —— `src/` 递归扫描、`include/` 公有头自动 `-I`(支撑"现代 C++
+   组织";不加命令面)。开工判据走一级闸:开发者真实项目被平铺模型卡住即合法
+4. v0.3: compile_commands.json(编辑器支持，便宜且高感知)
+5. v0.4: `[target]` 产物模型 —— 可执行 / 静态库先行，共享库(dll)待真实需求；
+   届时同步把 `[target]` 从边界表"边界外"移入"边界内"
 
 每个里程碑只在前两道闸都过了再说都亮绿灯时开始。
 
