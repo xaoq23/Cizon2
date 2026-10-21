@@ -20,6 +20,7 @@ cizon2 — 零配置 C++ 构建与运行管理器
   cizon2 new <目录名>             # 创建新项目
   cizon2 init                     # 在当前目录就地初始化
   cizon2 add <git-url> [--tag <tag>]  # 添加 git 依赖（锁进 cizon.lock）
+  cizon2 update <依赖名>          # 按 cizon.toml 意图对齐锁（升/降通用）
   cizon2 build [--release] [--compiler <spec>]
   cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
   cizon2 help | version
@@ -51,6 +52,7 @@ fn dispatch(args: &[String]) -> i32 {
         "new" => top_err(scaffold::new_cmd(&args[1..])),
         "init" => top_err(scaffold::init_cmd()),
         "add" => top_err(deps::add_cmd(&args[1..])),
+        "update" => top_err(deps::update_cmd(&args[1..])),
         other => {
             eprint_top(&format!("未知命令 \"{other}\"。\n\n{USAGE}"));
             2

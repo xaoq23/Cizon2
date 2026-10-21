@@ -204,6 +204,39 @@ fn ignore_deps_dir(dir: &Path) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 锁生命周期第三环:update —— 把锁与 deps 对齐 cizon.toml 的意图。
+// 升级/降级/横切同一命令:tag 只改在 cizon.toml,update 负责落地;
+// build 永远执行锁里已定的事,不追 toml 里的新愿望。
+// ─────────────────────────────────────────────────────────────
+
+/// `cizon2 update <依赖名>`(零参数;升/降同构)。
+pub fn update_cmd(args: &[String]) -> Result<i32, String> {
+    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    update_in(&dir, args)
+}
+
+pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
+    if args.len() != 1 || args[0].is_empty() {
+        return Err("用法: cizon2 update <依赖名>".into());
+    }
+    let name = &args[0];
+    let cfg = config::load(dir)?;
+    let info = cfg
+        .dependencies()
+        .and_then(|m| m.get(name))
+        .ok_or_else(|| format!("{name} 不在 [dependencies] 里。先 cizon2 add,或检查拼写。"))?;
+
+    let dep_dir = dir.join("deps").join(name);
+    if dep_dir.exists() {
+        std::fs::remove_dir_all(&dep_dir).map_err(|e| format!("删 deps/{name} 失败: {e}"))?;
+    }
+    let commit = shallow_clone(dir, &info.git, info.tag.as_deref(), name)?;
+    write_lock_entry(dir, name, &info.git, info.tag.as_deref(), &commit)?;
+    println!("\x1b[32m   Updated\x1b[0m {name} @ {commit}");
+    Ok(0)
+}
+
+// ─────────────────────────────────────────────────────────────
 // build 期的依赖契约：restore / 校验 / 产出编译三元组
 // ─────────────────────────────────────────────────────────────
 
@@ -234,16 +267,16 @@ pub fn prepare(
             .get(name)
             .and_then(|v| v.as_table())
             .ok_or_else(|| {
-                format!("{CIZON_LOCK} 里没有 {name} 的锁。重跑 cizon2 add <url> --tag <tag> 补全。")
+                format!("{CIZON_LOCK} 里没有 {name} 的锁。运行 cizon2 update {name} 建锁。")
             })?;
         if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
             return Err(format!(
-                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 git 地址不一致。两边选一头改齐。"
+                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 git 地址不一致。按 [dependencies] 为准:运行 cizon2 update {name} 对齐。"
             ));
         }
         if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
             return Err(format!(
-                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 tag 不一致。"
+                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 tag 不一致。运行 cizon2 update {name} 对齐。"
             ));
         }
         let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {
@@ -311,7 +344,7 @@ fn clone_pinned(
             let head = git_cmd(dir, &["-C".into(), rel, "rev-parse".into(), "HEAD".into()])?;
             if head != commit {
                 return Err(format!(
-                    "tag {t} 当前指向 {head}，与锁 {commit} 不一致（tag 被移动过）。重跑 cizon2 add 刷新锁。"
+                    "tag {t} 当前指向 {head}，与锁 {commit} 不一致（tag 被移动过）。运行 cizon2 update {name} 刷新锁。"
                 ));
             }
         }
@@ -462,6 +495,85 @@ mod tests {
         let args = add_args(&origin);
         add_in(&proj, &args).unwrap();
         assert!(add_in(&proj, &args).is_err());
+        fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn update_rejects_unknown_name() {
+        if !has_git() {
+            return;
+        }
+        let proj = temp("upd-unknown-proj");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        assert!(
+            update_in(&proj, &[String::from("nope")])
+                .unwrap_err()
+                .contains("不在 [dependencies] 里")
+        );
+        fs::remove_dir_all(proj).ok();
+    }
+
+    /// 升/降同构的验收:tag 只改在 cizon.toml,update 把锁+deps 拉过去。
+    #[test]
+    fn update_aligns_lock_with_toml_intent() {
+        if !has_git() {
+            return;
+        }
+        let origin = temp("upd-origin");
+        let proj = temp("upd-proj");
+        make_origin(&origin, true); // v1 → c0
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+
+        let args = add_args(&origin);
+        add_in(&proj, &args).unwrap();
+        let name = origin.file_name().unwrap().to_string_lossy().into_owned();
+
+        // origin 前进到 c1 并打 v2(远端"新版本")
+        fs::write(origin.join("second.txt"), "later").unwrap();
+        git_cmd(&origin, &["add".into(), "-A".into()]).unwrap();
+        git_cmd(
+            &origin,
+            &[
+                "-c".into(),
+                "user.name=t".into(),
+                "-c".into(),
+                "user.email=t@t".into(),
+                "commit".into(),
+                "-m".into(),
+                "second".into(),
+            ],
+        )
+        .unwrap();
+        git_cmd(&origin, &["tag".into(), "v2".into()]).unwrap();
+        let c1 = git_cmd(&origin, &["rev-parse".into(), "HEAD".into()]).unwrap();
+
+        // 用户唯一动作:在 cizon.toml 表达新意图
+        fs::write(
+            proj.join("cizon.toml"),
+            format!("[project]\nname = \"t\"\n\n[dependencies]\n{name} = {{ git = \"{}\", tag = \"v2\" }}\n", esc(&origin.to_string_lossy())),
+        )
+        .unwrap();
+
+        update_in(&proj, &[name.clone()]).unwrap();
+
+        let lock: toml::Table = fs::read_to_string(proj.join(CIZON_LOCK))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let entry = lock.get(&name).unwrap();
+        assert_eq!(entry.get("tag").unwrap().as_str(), Some("v2"));
+        assert_eq!(entry.get("commit").unwrap().as_str(), Some(c1.as_str()));
+        assert_eq!(
+            git_cmd(
+                &proj.join("deps").join(&name),
+                &["rev-parse".into(), "HEAD".into()]
+            )
+            .unwrap(),
+            c1
+        );
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
     }
