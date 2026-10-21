@@ -358,15 +358,14 @@ fn clone_pinned(
 
 /// 平铺扫描 dep 的 src/（与项目自身格式相同，不递归）。
 
-/// 是否为 C++20 模块单元：源文件开头即 `module;`。
-/// C++ 标准要求这是模块声明序列的第一个 token，常规 .cpp 不会这样开头。
+/// 是否为 C++20 模块单元：首个非注释行即 `module;`（版权头在前也合法）。
 fn is_module_unit(path: &Path) -> bool {
     use std::io::Read;
     let mut buf = [0u8; 512];
     match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut buf)) {
         Ok(()) => String::from_utf8_lossy(&buf)
-            .trim_start()
-            .starts_with("module;"),
+            .lines()
+            .any(|l| l.trim_start().starts_with("module;")),
         Err(_) => false,
     }
 }
