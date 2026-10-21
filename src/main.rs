@@ -7,19 +7,23 @@ mod compiler;
 mod config;
 mod pipeline;
 mod run;
+mod scaffold;
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");const NAME: &str = env!("CARGO_PKG_NAME");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const NAME: &str = env!("CARGO_PKG_NAME");
 
 const USAGE: &str = "\
-cizon2 — 零配置 C++ 构建与运行
+cizon2 — 零配置 C++ 构建与运行管理器
 
 用法:
+  cizon2 new <目录名>             # 创建新项目
+  cizon2 init                     # 在当前目录就地初始化
   cizon2 build [--release] [--compiler <spec>]
   cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
   cizon2 help | version
 
 仅读取 cizon.toml 的 [project] 与 [compiler] 两段; \
-依赖管理等超出 v0.1 边界的能力未实装。";
+依赖管理等超出边界的能力未实装。";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,8 +46,10 @@ fn dispatch(args: &[String]) -> i32 {
             println!("{NAME} v{VERSION}");
             0
         }
-        "new" | "init" | "add" => {
-            eprint_top("`new` / `init` / `add` 在 v0.2 里程碑实装（见 AGENTS.md 的边界与路线）。");
+        "new" => top_err(scaffold::new_cmd(&args[1..])),
+        "init" => top_err(scaffold::init_cmd()),
+        "add" => {
+            eprint_top("`add`（git 依赖管理）尚未实装，规划见 AGENTS.md 路线。");
             2
         }
         other => {
