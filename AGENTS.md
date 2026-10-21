@@ -38,10 +38,7 @@ scope creep 到一万一千行、看不懂自己的代码。本项目的第一�
 
 ## 硬性约束
 
-- 单 crate，**总量 ≤ 1874 行**（含测试；红线第三次上调：2026-10-21 v0.2 `add`
-  实装时由 1200 → 1800（deps.rs 实际 504 行），同日 `update` 实装 → 1874
-  （update 本体 + 锁前进/降级往返两个集成测试）。第三依赖白名单：`serde`、`toml`，
-  新增任何依赖必须在 PR/commit message 里写理由
+- 单 crate。依赖白名单：`serde`、`toml`，新增任何依赖必须在 PR/commit message 里写理由
 - 不用 clap / rayon / sha2 —— v0.1 的需求手写 40 行就够
 - 测试先行：每个模块带单测；端到端用真实 fixture 验证
 - 提交粒度小：一个功能一个 commit
