@@ -45,7 +45,10 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
 }
 
 /// `cizon2 init`：在当前目录就地初始化；已有 cizon.toml 则拒绝。
-pub fn init_cmd() -> Result<i32, String> {
+pub fn init_cmd(args: &[String]) -> Result<i32, String> {
+    if !args.is_empty() {
+        return Err("用法: cizon2 init（不接受参数）".into());
+    }
     let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
     init_in(&dir)
 }
@@ -80,10 +83,31 @@ fn scaffold(dir: &Path, name: &str) -> Result<(), String> {
     let write = |path: &Path, content: &str| -> Result<(), String> {
         std::fs::write(path, content).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
     };
+    ensure_gitignore(dir)?;
     write(&dir.join("cizon.toml"), &TOML_TEMPLATE.replace("{name}", name))?;
-    write(&dir.join("src").join("main.cpp"), MAIN_TEMPLATE)?;
-    write(&dir.join(".gitignore"), GITIGNORE_TEMPLATE)?;
+    write(&src.join("main.cpp"), MAIN_TEMPLATE)?;
     Ok(())
+}
+
+/// init 可能遇到用户已有的 .gitignore：只补缺失条目，绝不覆盖。
+fn ensure_gitignore(dir: &Path) -> Result<(), String> {
+    let path = dir.join(".gitignore");
+    let mut text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("读 {} 失败: {e}", path.display())),
+    };
+    for entry in GITIGNORE_TEMPLATE.lines() {
+        if text.lines().any(|l| l.trim() == entry) {
+            continue;
+        }
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(entry);
+        text.push('\n');
+    }
+    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
 }
 
 fn print_summary(project: &str) {
@@ -155,6 +179,21 @@ mod tests {
         fs::write(p.join("src/main.cpp"), "// mine").unwrap();
         assert!(init_in(&p).is_err(), "已有 main.cpp 应拒绝");
         assert_eq!(fs::read_to_string(p.join("src/main.cpp")).unwrap(), "// mine");
+        fs::remove_dir_all(p).ok();
+    }
+
+    #[test]
+    fn init_preserves_existing_gitignore() {
+        let dir = temp("gitignore");
+        let p = PathBuf::from(&dir);
+        fs::create_dir_all(&p).unwrap();
+        fs::write(p.join(".gitignore"), "/target\ncustom\n").unwrap();
+        init_in(&p).unwrap();
+        let text = fs::read_to_string(p.join(".gitignore")).unwrap();
+        assert!(text.contains("/target"));
+        assert!(text.contains("custom"));
+        assert!(text.lines().any(|l| l == "build/"));
+        assert!(text.lines().any(|l| l == "deps/"));
         fs::remove_dir_all(p).ok();
     }
 }

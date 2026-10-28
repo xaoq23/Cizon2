@@ -13,7 +13,7 @@ use crate::pipeline;
 pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>, app_args: &[String]) -> Result<i32, String> {
     let cxx = compiler::pick(cc.or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
-    let exe = pipeline::build(dir, &cfg, &plan)?;
+    let exe = pipeline::build(dir, cfg, &plan)?;
 
     println!("\x1b[36m     Running\x1b[0m {}", exe.display());
     println!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
@@ -28,13 +28,25 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
     if status.success() {
         return Ok(0);
     }
-    let code = status.code().unwrap_or(-1);
+    let code = exit_code(status);
     let mut err = std::io::stderr();
     let _ = writeln!(err, "\r\n\x1b[0m\x1b[31m    危险\x1b[0m 进程退出码: {code} ({code:#x})");
     if let Some(hint) = describe_exit_code(code) {
         let _ = writeln!(err, "\x1b[2m    {hint}\x1b[0m");
     }
     Ok(code)
+}
+
+/// 退出码：Windows 直接取 NTSTATUS；Unix 被信号杀死时换算成 128 + signal。
+fn exit_code(status: std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return 128 + sig;
+        }
+    }
+    status.code().unwrap_or(-1)
 }
 
 /// 退出码 → 人话。Windows NTSTATUS 异常码 + POSIX signal 约定（移植自 Cizon1）。

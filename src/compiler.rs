@@ -73,10 +73,14 @@ pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
         .into())
 }
 
-/// 生成 `-std=c++NN`；未配置时沿用 Cizon1 模板默认 c++23。
+/// 生成 `-std=...`；未配置时沿用 Cizon1 模板默认 c++23。
+/// 接受 `c++17` / `gnu++17` 原样传递，也接受裸版本号 `17`。
 pub fn edition_flag(edition: Option<&str>) -> String {
-    let ver = edition.and_then(|e| e.strip_prefix("c++")).unwrap_or("23");
-    format!("-std=c++{ver}")
+    match edition {
+        None => "-std=c++23".into(),
+        Some(e) if e.starts_with("c++") || e.starts_with("gnu++") => format!("-std={e}"),
+        Some(e) => format!("-std=c++{e}"),
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +101,8 @@ mod tests {
         assert_eq!(edition_flag(None), "-std=c++23");
         assert_eq!(edition_flag(Some("c++17")), "-std=c++17");
         assert_eq!(edition_flag(Some("c++20")), "-std=c++20");
+        assert_eq!(edition_flag(Some("17")), "-std=c++17");
+        assert_eq!(edition_flag(Some("gnu++20")), "-std=gnu++20");
     }
 
     #[test]

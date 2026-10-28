@@ -1,6 +1,6 @@
-//! cizon2 v0.1 —— 零配置 C++ build & run。
+//! cizon2 —— 零配置 C++ build & run。
 //!
-//! 边界见 AGENTS.md：只支持单 crate、src/ 平铺 .cpp、g++/clang++。
+//! 边界见 AGENTS.md：单 crate、src/ 平铺源文件、g++/clang++；v0.2 起支持 git 依赖。
 //! 手写参数分发，避免引入 clap（依赖白名单：serde、toml）。
 
 mod compiler;
@@ -25,8 +25,8 @@ cizon2 — 零配置 C++ 构建与运行管理器
   cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
   cizon2 help | version
 
-仅读取 cizon.toml 的 [project] 与 [compiler] 两段; \
-依赖管理等超出边界的能力未实装。";
+仅读取 cizon.toml 的 [project]、[dependencies] 与 [compiler]; \
+其他配置段一律明确报错。";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,7 +50,7 @@ fn dispatch(args: &[String]) -> i32 {
             0
         }
         "new" => top_err(scaffold::new_cmd(&args[1..])),
-        "init" => top_err(scaffold::init_cmd()),
+        "init" => top_err(scaffold::init_cmd(&args[1..])),
         "add" => top_err(deps::add_cmd(&args[1..])),
         "update" => top_err(deps::update_cmd(&args[1..])),
         other => {
@@ -108,7 +108,10 @@ fn load_config() -> (std::path::PathBuf, config::Config) {
 }
 
 fn build_cmd(args: &[String]) -> Result<i32, String> {
-    let (flags, _) = parse_flags(args);
+    let (flags, rest) = parse_flags(args);
+    if !rest.is_empty() {
+        return Err(format!("build 不接受程序参数: {}", rest.join(" ")));
+    }
     let (dir, cfg) = load_config();
     let cxx = compiler::pick(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;

@@ -1,8 +1,8 @@
 //! cizon.toml 解析。
 //!
-//! v0.1 边界：只认 `[project]` 与 `[compiler]` 两段。其他段一律明确报错，
-//! 绝不静默忽略 —— 拼写错误和"等未来版本来支持"必须当场暴露，而不是构建出
-//! 一个看起来成功实际没加依赖的产物。
+//! 当前边界：只认 `[project]`、`[dependencies]` 与 `[compiler]` 三段。其他段一律
+//! 明确报错，绝不静默忽略 —— 拼写错误和"等未来版本来支持"必须当场暴露，而不是
+//! 构建出一个看起来成功实际没加依赖的产物。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -40,7 +40,7 @@ pub struct DepInfo {
     pub tag: Option<String>,
 }
 
-/// v0.2 起实装 [dependencies]（git 仓库依赖）；其余段仍一律明确报错。
+/// [dependencies] 自 v0.2 起实装；此表之外的段一律明确报错。
 const FUTURE_SECTIONS: &[&str] = &[
     "dev-dependencies",
     "workspace",
@@ -52,7 +52,7 @@ const FUTURE_SECTIONS: &[&str] = &[
     "build",
 ];
 
-/// v0.1 从未有的配置段 —— 出现视为拼写错误。
+/// 从未支持的配置段 —— 出现视为拼写错误。
 const UNKNOWN_HINT: &str = "cizon2 只认 [project]、[dependencies] 与 [compiler]";
 
 pub fn load(dir: &Path) -> Result<Config, String> {
@@ -74,8 +74,8 @@ pub fn load(dir: &Path) -> Result<Config, String> {
         }
         if FUTURE_SECTIONS.contains(&key.as_str()) {
             return Err(format!(
-                "cizon.toml 含有 v0.1 边界之外的配置段 [{key}]。\n\
-                 对应能力（依赖管理/PCH/features 等）尚未迁移，先删除或注释该段。",
+                "cizon.toml 含有当前边界之外的配置段 [{key}]。\n\
+                 对应能力（PCH / features / workspace 等）尚未实装，先删除或注释该段。",
                 key = key
             ));
         }
@@ -93,8 +93,8 @@ pub fn load(dir: &Path) -> Result<Config, String> {
 impl Config {
     /// 项目名：[project].name 优先，缺省用目录名。
     pub fn name(&self, dir: &Path) -> String {
-        if let Some(name) = self.project.as_ref().and_then(|p| p.name.clone()) {
-            return name;
+        if let Some(name) = self.project.as_ref().and_then(|p| p.name.as_deref()) {
+            return name.to_string();
         }
         dir.file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -105,8 +105,8 @@ impl Config {
         self.project.as_ref().and_then(|p| p.edition.as_deref())
     }
 
-    pub fn explicit_sources(&self) -> Option<&Vec<String>> {
-        self.project.as_ref().and_then(|p| p.sources.as_ref())
+    pub fn explicit_sources(&self) -> Option<&[String]> {
+        self.project.as_ref().and_then(|p| p.sources.as_deref())
     }
 
     pub fn flags(&self) -> &[String] {
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn parse_compiler_section() {
-        let (_, cfg) = write_config(
+        let (dir, cfg) = write_config(
             "[project]\nname = \"a\"\nedition = \"c++17\"\n\n\
              [compiler]\ncpp = \"g++\"\nflags = [\"-O2\"]\nlink_flags = [\"-lm\"]\n",
         );
@@ -171,11 +171,12 @@ mod tests {
         assert_eq!(cfg.explicit_compiler(), Some("g++"));
         assert_eq!(cfg.flags(), &["-O2"]);
         assert_eq!(cfg.link_flags(), &["-lm"]);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn parse_dependencies_section() {
-        let (_, cfg) = write_config(
+        let (dir, cfg) = write_config(
             "[project]\nname = \"a\"\n\n\
              [dependencies]\nfmt = { git = \"https://example.com/fmtlib/fmt\", tag = \"11.0.2\" }\n",
         );
@@ -184,6 +185,7 @@ mod tests {
             deps.get("fmt").map(|d| (d.git.as_str(), d.tag.as_deref())),
             Some(("https://example.com/fmtlib/fmt", Some("11.0.2")))
         );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

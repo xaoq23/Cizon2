@@ -22,7 +22,7 @@ pub struct Plan {
     sources: Vec<PathBuf>,
     /// 编译期 flags（edition + 优化级 + 用户 flags + 依赖 include 路径）
     flags: Vec<String>,
-    /// 链接期附加 flags（用户 link_flags + 用户 flags，与 Cizon1 行为一致）
+    /// 链接期附加 flags（用户 link_flags；用户 flags 已在 flags 中，不重复传）
     link_flags: Vec<String>,
     /// 依赖源码的编译 flags（edition + 优化级；不套用户 flags，免得 -Werror 误伤三方代码）
     dep_flags: Vec<String>,
@@ -41,8 +41,9 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         ));
     }
 
-    let mut flags = vec![compiler::edition_flag(cfg.edition())];
-    flags.push(if release { "-O2".into() } else { "-g".into() });
+    let edition = compiler::edition_flag(cfg.edition());
+    let optimization = if release { "-O2" } else { "-g" };
+    let mut flags = vec![edition.clone(), optimization.into()];
     flags.extend(cfg.flags().iter().cloned());
     // 依赖头文件路径无条件进 flags：目录不存在时编译器安全忽略，
     // 因此 planning 无需网络操作
@@ -50,20 +51,19 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     if let Some(map) = cfg.dependencies() {
         for name in map.keys() {
             let inc = dir.join("deps").join(name);
-            let pair = [
-                format!("-I{}", inc.join("include").display()),
-                format!("-I{}", inc.display()),
-            ];
-            flags.extend(pair.clone());
+            let include = format!("-I{}", inc.join("include").display());
+            let root = format!("-I{}", inc.display());
+            flags.push(include.clone());
+            flags.push(root.clone());
             // 依赖自己的源码也要找得到自己的头（如 fmt 的 src/*.cc 内部引用）
-            dep_includes.extend(pair);
+            dep_includes.push(include);
+            dep_includes.push(root);
         }
     }
-    let mut dep_flags = vec![compiler::edition_flag(cfg.edition()), if release { "-O2".into() } else { "-g".into() }];
+    let mut dep_flags = vec![edition, optimization.into()];
     dep_flags.extend(dep_includes);
 
-    let mut link_flags: Vec<String> = cfg.link_flags().to_vec();
-    link_flags.extend(cfg.flags().iter().cloned());
+    let link_flags: Vec<String> = cfg.link_flags().to_vec();
 
     Ok(Plan {
         cxx,
@@ -84,8 +84,21 @@ fn exe_name(name: &str) -> String {
     }
 }
 
+/// 编译器名可能是完整路径（--compiler C:\...\g++.exe），目录名只保留安全字符。
+fn scope_label(cxx: &str) -> String {
+    cxx.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 /// 显式 sources 或顺序扫描 src/。同名 stem 冲突立刻报错（对象文件按 stem 命名）。
-fn collect_sources(dir: &Path, explicit: Option<&Vec<String>>) -> Result<Vec<PathBuf>, String> {
+fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
     match explicit {
         Some(list) => {
@@ -162,7 +175,7 @@ struct Job {
 pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let started = Instant::now();
     let build_dir = dir.join("build");
-    let scope = format!("{}-{}", plan.mode, plan.cxx.name);
+    let scope = format!("{}-{}", plan.mode, scope_label(&plan.cxx.name));
     let scope_dir = build_dir.join(&scope);
     let marker = scope_dir.join(".compiler-version");
     if std::fs::read_to_string(&marker)
@@ -186,7 +199,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
             jobs.push(Job { src: src.clone(), obj, flags: plan.flags.clone() });
         }
     }
-    for (_dep, dsrc, dobj) in &dep_jobs {
+    for (dsrc, dobj) in &dep_jobs {
         if needs_recompile(dsrc, dobj) {
             jobs.push(Job { src: dsrc.clone(), obj: dobj.clone(), flags: plan.dep_flags.clone() });
         }
@@ -202,7 +215,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let warnings = Mutex::new(Vec::<String>::new());
     let failures = Mutex::new(Vec::<(PathBuf, String)>::new());
     if !jobs.is_empty() {
-        let queue = Mutex::new(jobs.clone());
+        let queue = Mutex::new(jobs);
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(2)
@@ -248,17 +261,13 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         .iter()
         .map(|src| obj_for(src, &obj_dir))
         .collect();
-    objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
-    if recompiled == 0 {
-        if let Ok(fresh) = exe_is_fresh(&exe, &objs) {
-            if fresh {
-                step_line(
-                    "Finished",
-                    &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
-                );
-                return Ok(exe);
-            }
-        }
+    objs.extend(dep_jobs.iter().map(|(_, obj)| obj.clone()));
+    if recompiled == 0 && exe_is_fresh(&exe, &objs) {
+        step_line(
+            "Finished",
+            &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
+        );
+        return Ok(exe);
     }
     step_line("Linking", &format!("{} ({})", exe.display(), plan.cxx.short_version()));
     link(&plan.cxx.name, &objs, &exe, &plan.flags, &plan.link_flags)?;
@@ -267,12 +276,16 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     Ok(exe)
 }
 
-/// exe 比 `objs` 全新（或 objs 全部不存在但 exe 存在，谨慎处理为判断依据）
-fn exe_is_fresh(exe: &Path, objs: &[PathBuf]) -> Result<bool, ()> {
-    let exe_time = std::fs::metadata(exe).and_then(|m| m.modified()).map_err(|_| ())?;
-    Ok(objs
-        .iter()
-        .all(|obj| std::fs::metadata(obj).and_then(|m| m.modified()).map_or(false, |t| t <= exe_time)))
+/// exe 是否不旧于所有对象文件。
+fn exe_is_fresh(exe: &Path, objs: &[PathBuf]) -> bool {
+    let Ok(exe_time) = std::fs::metadata(exe).and_then(|m| m.modified()) else {
+        return false;
+    };
+    objs.iter().all(|obj| {
+        std::fs::metadata(obj)
+            .and_then(|m| m.modified())
+            .map_or(false, |t| t <= exe_time)
+    })
 }
 
 fn obj_for(src: &Path, obj_dir: &Path) -> PathBuf {
@@ -281,14 +294,14 @@ fn obj_for(src: &Path, obj_dir: &Path) -> PathBuf {
 }
 
 /// 增量判定：src、obj、.d 都存在，且 src 与 .d 列出的每个输入都不比 obj 新。
+/// .d 读不出来时宁可重编，绝不把损坏的依赖信息当成"全部新鲜"。
 fn needs_recompile(src: &Path, obj: &Path) -> bool {
-    let dep_file = PathBuf::from(format!("{}.d", obj.display()));
+    let dep_file = dep_file_for(obj);
     if !src.exists() || !obj.exists() || !dep_file.exists() {
         return true;
     }
-    let obj_time = match std::fs::metadata(obj).and_then(|m| m.modified()) {
-        Ok(t) => t,
-        Err(_) => return true,
+    let Ok(obj_time) = std::fs::metadata(obj).and_then(|m| m.modified()) else {
+        return true;
     };
     let stale = |p: &Path| {
         std::fs::metadata(p)
@@ -298,7 +311,14 @@ fn needs_recompile(src: &Path, obj: &Path) -> bool {
     if stale(src) {
         return true;
     }
-    !dep_inputs(&dep_file).map_or(true, |inputs| inputs.iter().all(|p| !stale(p)))
+    match dep_inputs(&dep_file) {
+        Ok(inputs) if !inputs.is_empty() => inputs.iter().any(|p| stale(p)),
+        _ => true,
+    }
+}
+
+fn dep_file_for(obj: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.d", obj.display()))
 }
 
 /// 解析 gcc/clang 的 depfile（`target: dep dep dep ...`），
@@ -338,7 +358,7 @@ fn compile_one(
     obj: &Path,
     flags: &[String],
 ) -> Result<Option<String>, String> {
-    let dep_file = PathBuf::from(format!("{}.d", obj.display()));
+    let dep_file = dep_file_for(obj);
     let mut cmd = Command::new(cxx);
     cmd.arg("-c").arg(src).arg("-o").arg(obj);
     cmd.arg("-MMD").arg("-MF").arg(&dep_file).arg("-MP");
@@ -430,6 +450,31 @@ mod tests {
     }
 
     #[test]
+    fn user_flags_are_linked_once() {
+        let dir = temp_dir("linkflags");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname=\"t\"\n\n[compiler]\nflags=[\"-Wall\"]\nlink_flags=[\"-lm\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        assert!(p.flags.iter().any(|f| f == "-Wall"));
+        assert_eq!(p.link_flags, vec!["-lm".to_string()]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compiler_path_is_sanitized_for_scope_dir() {
+        assert_eq!(scope_label("g++"), "g++");
+        assert_eq!(scope_label(r"C:\mingw64\bin\g++.exe"), "C__mingw64_bin_g++.exe");
+        assert_eq!(scope_label("/usr/bin/clang++"), "_usr_bin_clang++");
+    }
+
+    #[test]
     fn collect_sources_from_src_dir() {
         let dir = temp_dir("collect");
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -446,9 +491,11 @@ mod tests {
         let dir = temp_dir("explicit");
         fs::create_dir_all(dir.join("third_party")).unwrap();
         fs::write(dir.join("third_party/x.cpp"), "//").unwrap();
-        let s = collect_sources(&dir, Some(&vec!["third_party/x.cpp".into()])).unwrap();
+        let list = vec!["third_party/x.cpp".to_string()];
+        let s = collect_sources(&dir, Some(&list)).unwrap();
         assert_eq!(s.len(), 1);
-        let err = collect_sources(&dir, Some(&vec!["missing.cpp".into()])).unwrap_err();
+        let missing = vec!["missing.cpp".to_string()];
+        let err = collect_sources(&dir, Some(&missing)).unwrap_err();
         assert!(err.contains("不存在"));
         fs::remove_dir_all(dir).ok();
     }
@@ -460,8 +507,8 @@ mod tests {
         fs::create_dir_all(dir.join("b")).unwrap();
         fs::write(dir.join("a/core.cpp"), "//").unwrap();
         fs::write(dir.join("b/core.cpp"), "//").unwrap();
-        let err =
-            collect_sources(&dir, Some(&vec!["a/core.cpp".into(), "b/core.cpp".into()])).unwrap_err();
+        let list = vec!["a/core.cpp".to_string(), "b/core.cpp".to_string()];
+        let err = collect_sources(&dir, Some(&list)).unwrap_err();
         assert!(err.contains("冲突"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -491,6 +538,33 @@ mod tests {
         let src = dir.join("a.cpp");
         fs::write(&src, "//").unwrap();
         let obj = dir.join("nope.o");
+        assert!(needs_recompile(&src, &obj));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unreadable_depfile_triggers_recompile() {
+        let dir = temp_dir("baddep");
+        let src = dir.join("a.cpp");
+        let obj = dir.join("a.o");
+        fs::write(&src, "//").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&obj, "").unwrap();
+        // 目录冒充 .d：存在但读不出来 —— 必须按"需要重编"处理
+        fs::create_dir(dir.join("a.o.d")).unwrap();
+        assert!(needs_recompile(&src, &obj));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn malformed_depfile_triggers_recompile() {
+        let dir = temp_dir("garbagedep");
+        let src = dir.join("a.cpp");
+        let obj = dir.join("a.o");
+        fs::write(&src, "//").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&obj, "").unwrap();
+        fs::write(dir.join("a.o.d"), "garbage without target separator").unwrap();
         assert!(needs_recompile(&src, &obj));
         fs::remove_dir_all(dir).ok();
     }

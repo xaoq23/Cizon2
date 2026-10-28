@@ -24,7 +24,7 @@ pub fn add_cmd(args: &[String]) -> Result<i32, String> {
 
 pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let (url, tag) = parse_args(args)?;
-    let cfg = config::load(&dir)?;
+    let cfg = config::load(dir)?;
     let name = dep_name(&url)?;
 
     if cfg.dependencies().map_or(false, |m| m.contains_key(&name)) {
@@ -137,6 +137,14 @@ fn entry_line(name: &str, url: &str, tag: Option<&str>) -> String {
     }
 }
 
+/// `[dependencies]` 表头；允许行尾注释，但不会把 `[dependencies.foo]` 误认成表头。
+fn is_dependencies_header(line: &str) -> bool {
+    let t = line.trim();
+    t == "[dependencies]"
+        || t.strip_prefix("[dependencies]")
+            .is_some_and(|rest| rest.trim_start().starts_with('#'))
+}
+
 /// 在 cizon.toml 里登记：有 [dependencies] 头就在其下一行插入；
 /// 没有则整段追加到文件尾。
 fn append_entry(dir: &Path, name: &str, url: &str, tag: Option<&str>) -> Result<(), String> {
@@ -148,7 +156,7 @@ fn append_entry(dir: &Path, name: &str, url: &str, tag: Option<&str>) -> Result<
     for line in text.lines() {
         out.push_str(line);
         out.push('\n');
-        if !inserted && line.trim() == "[dependencies]" {
+        if !inserted && is_dependencies_header(line) {
             out.push_str(&entry);
             out.push('\n');
             inserted = true;
@@ -170,10 +178,14 @@ fn write_lock_entry(
     tag: Option<&str>,
     commit: &str,
 ) -> Result<(), String> {
-    let mut table: toml::Table = std::fs::read_to_string(dir.join(CIZON_LOCK))
-        .ok()
-        .and_then(|t| t.parse().ok())
-        .unwrap_or_default();
+    let lock_path = dir.join(CIZON_LOCK);
+    let mut table: toml::Table = match std::fs::read_to_string(&lock_path) {
+        Ok(text) => text
+            .parse()
+            .map_err(|e| format!("{CIZON_LOCK} 解析失败（未改动文件）: {e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(format!("读 {CIZON_LOCK} 失败: {e}")),
+    };
     let mut entry = toml::Table::new();
     entry.insert("git".into(), url.into());
     if let Some(t) = tag {
@@ -182,7 +194,7 @@ fn write_lock_entry(
     entry.insert("commit".into(), commit.into());
     table.insert(name.into(), entry.into());
     let text = toml::to_string(&table).map_err(|e| format!("锁序列化失败: {e}"))?;
-    std::fs::write(dir.join(CIZON_LOCK), text).map_err(|e| format!("写 {CIZON_LOCK} 失败: {e}"))
+    std::fs::write(&lock_path, text).map_err(|e| format!("写 {CIZON_LOCK} 失败: {e}"))
 }
 
 /// 尽力把 deps/ 加进 .gitignore（没有就创建；已有 deps/ 行则不动）。
@@ -209,7 +221,7 @@ fn ignore_deps_dir(dir: &Path) {
 // build 永远执行锁里已定的事,不追 toml 里的新愿望。
 // ─────────────────────────────────────────────────────────────
 
-/// `cizon2 update <依赖名>`(零参数;升/降同构)。
+/// `cizon2 update <依赖名>`：把锁与 deps 对齐 cizon.toml 的 tag 意图（升/降同构）。
 pub fn update_cmd(args: &[String]) -> Result<i32, String> {
     let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
     update_in(&dir, args)
@@ -241,13 +253,13 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
 // ─────────────────────────────────────────────────────────────
 
 /// build 调用：依赖目录满足锁则跳过，缺失则按锁恢复（含 tag 校验），
-/// 成功后返回 (dep名, src, obj) 编译三元组；obj 放 obj_dir/<dep>/<stem>.o，
+/// 成功后返回 (src, obj) 编译二元组；obj 放 obj_dir/<dep>/<stem>.o，
 /// 与项目 obj 物理隔离，stem 永不冲突。
 pub fn prepare(
     dir: &Path,
     cfg: &config::Config,
     obj_dir: &Path,
-) -> Result<Vec<(String, PathBuf, PathBuf)>, String> {
+) -> Result<Vec<(PathBuf, PathBuf)>, String> {
     let Some(map) = cfg.dependencies() else { return Ok(vec![]) };
     if map.is_empty() {
         return Ok(vec![]);
@@ -316,7 +328,7 @@ pub fn prepare(
             }
             let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
             let obj = obj_dir.join(name).join(format!("{stem}.o"));
-            jobs.push((name.clone(), src, obj));
+            jobs.push((src, obj));
         }
     }
     Ok(jobs)
@@ -352,20 +364,18 @@ fn clone_pinned(
     Ok(())
 }
 
-/// 平铺扫描 dep 的 src/（与项目自身格式相同，不递归）。
-
-/// 是否为 C++20 模块单元：首个非注释行即 `module;`（版权头在前也合法）。
+/// 是否为 C++20 模块单元：首个非空、非 `//` 注释行即 `module;`。
 fn is_module_unit(path: &Path) -> bool {
-    use std::io::Read;
-    let mut buf = [0u8; 512];
-    match std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut buf)) {
-        Ok(()) => String::from_utf8_lossy(&buf)
-            .lines()
-            .any(|l| l.trim_start().starts_with("module;")),
-        Err(_) => false,
-    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    text.lines()
+        .map(str::trim_start)
+        .find(|l| !l.is_empty() && !l.starts_with("//"))
+        .is_some_and(|l| l.starts_with("module;"))
 }
 
+/// 平铺扫描 dep 的 src/（与项目自身格式相同，不递归）。
 fn flat_sources(src: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(src) {
@@ -436,6 +446,49 @@ mod tests {
 
     fn add_args(dir: &Path) -> [String; 1] {
         [dir.to_string_lossy().into_owned()]
+    }
+
+    #[test]
+    fn corrupt_lock_is_not_silently_reset() {
+        let dir = temp("corrupt-lock");
+        fs::create_dir_all(&dir).unwrap();
+        let original = "not = [valid toml";
+        fs::write(dir.join(CIZON_LOCK), original).unwrap();
+        let err = write_lock_entry(&dir, "x", "https://example.com/x", None, "abc")
+            .unwrap_err();
+        assert!(err.contains("解析失败"), "got: {err}");
+        assert_eq!(fs::read_to_string(dir.join(CIZON_LOCK)).unwrap(), original);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn module_unit_detection_ignores_comment_header() {
+        let dir = temp("module-unit");
+        fs::create_dir_all(&dir).unwrap();
+        let module = dir.join("fmt.cc");
+        fs::write(&module, "// license\n// more\n\nmodule;\n").unwrap();
+        assert!(is_module_unit(&module));
+        let regular = dir.join("main.cpp");
+        fs::write(&regular, "#include <iostream>\nint main() {}\n").unwrap();
+        assert!(!is_module_unit(&regular));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn append_entry_handles_commented_header() {
+        let dir = temp("commented-header");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[dependencies] # pinned\n",
+        )
+        .unwrap();
+        append_entry(&dir, "fmt", "https://example.com/fmt", None).unwrap();
+        let text = fs::read_to_string(dir.join("cizon.toml")).unwrap();
+        assert_eq!(text.matches("[dependencies]").count(), 1);
+        let cfg = config::load(&dir).unwrap();
+        assert!(cfg.dependencies().is_some_and(|m| m.contains_key("fmt")));
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
