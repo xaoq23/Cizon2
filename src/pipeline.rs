@@ -184,8 +184,16 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         let _ = std::fs::remove_dir_all(&scope_dir);
     }
     let obj_dir = scope_dir.join("obj");
+    // 编译参数（edition/优化级/用户 flags/依赖 include 集）变化不触碰任何 mtime，
+    // 不主动作废对象就会静默复用旧行为的 .o。
+    let compile_state = scope_dir.join(".compile-state");
+    let wanted_compile = compile_state_text(plan);
+    if std::fs::read_to_string(&compile_state).map_or(true, |t| t != wanted_compile) {
+        let _ = std::fs::remove_dir_all(&obj_dir);
+    }
     std::fs::create_dir_all(&obj_dir)
         .map_err(|e| format!("无法创建 {} : {e}", obj_dir.display()))?;
+    let _ = std::fs::write(&compile_state, &wanted_compile);
     let _ = std::fs::write(&marker, &plan.cxx.version);
 
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
@@ -254,7 +262,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     for w in &warnings {
         let _ = all.write_all(w.as_bytes());
     }
-    // 3) 链接（无重编译且产物已新鲜时跳过）
+    // 3) 链接（无重编译、链接输入与参数未变且产物新鲜时跳过）
     let exe = scope_dir.join(&plan.out_name);
     let mut objs: Vec<PathBuf> = plan
         .sources
@@ -262,7 +270,12 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         .map(|src| obj_for(src, &obj_dir))
         .collect();
     objs.extend(dep_jobs.iter().map(|(_, obj)| obj.clone()));
-    if recompiled == 0 && exe_is_fresh(&exe, &objs) {
+    // 对象集收缩（删源）不产生任何 mtime 变化，靠这项状态强制重链。
+    let link_state = scope_dir.join(".link-state");
+    let wanted_link = link_state_text(plan, &objs);
+    let link_current = std::fs::read_to_string(&link_state)
+        .map_or(false, |t| t == wanted_link);
+    if recompiled == 0 && link_current && exe_is_fresh(&exe, &objs) {
         step_line(
             "Finished",
             &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
@@ -271,9 +284,40 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     }
     step_line("Linking", &format!("{} ({})", exe.display(), plan.cxx.short_version()));
     link(&plan.cxx.name, &objs, &exe, &plan.flags, &plan.link_flags)?;
+    let _ = std::fs::write(&link_state, &wanted_link);
 
     step_fin(started, recompiled, total);
     Ok(exe)
+}
+
+/// 编译状态：项目源与依赖源各自的全部编译参数。逐行文本便于人眼 diff。
+fn compile_state_text(plan: &Plan) -> String {
+    let mut s = String::from("project:\n");
+    for f in &plan.flags {
+        s.push_str(f);
+        s.push('\n');
+    }
+    s.push_str("deps:\n");
+    for f in &plan.dep_flags {
+        s.push_str(f);
+        s.push('\n');
+    }
+    s
+}
+
+/// 链接状态：参与链接的对象清单 + 链接参数。任一项变化即需重链。
+fn link_state_text(plan: &Plan, objs: &[PathBuf]) -> String {
+    let mut s = String::from("objects:\n");
+    for obj in objs {
+        s.push_str(&obj.display().to_string());
+        s.push('\n');
+    }
+    s.push_str("link-flags:\n");
+    for f in &plan.link_flags {
+        s.push_str(f);
+        s.push('\n');
+    }
+    s
 }
 
 /// exe 是否不旧于所有对象文件。
@@ -566,6 +610,184 @@ mod tests {
         fs::write(&obj, "").unwrap();
         fs::write(dir.join("a.o.d"), "garbage without target separator").unwrap();
         assert!(needs_recompile(&src, &obj));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── P0：增量构建正确性（真实编译器端到端） ───────────────
+    // 共同前提：配置或源码集变化后，产物必须跟着变；
+    // 没有变化时，对象与 exe 一个字节都别动。
+
+    fn have_compiler() -> bool {
+        crate::compiler::pick(None).is_ok()
+    }
+
+    fn build_project(dir: &Path) -> Result<PathBuf, String> {
+        let cfg = crate::config::load(dir)?;
+        let cxx = crate::compiler::pick(None)?;
+        let plan = plan(dir, &cfg, cxx, false)?;
+        build(dir, &cfg, &plan)
+    }
+
+    /// 在 build/<scope>/obj/ 下找 stem.o（scope 名含平台差异，测试不硬编码）。
+    fn obj_path(dir: &Path, stem: &str) -> PathBuf {
+        for scope in fs::read_dir(dir.join("build")).unwrap().flatten() {
+            let p = scope.path().join("obj").join(format!("{stem}.o"));
+            if p.exists() {
+                return p;
+            }
+        }
+        panic!("未找到 {stem}.o");
+    }
+
+    fn mtime(p: &Path) -> std::time::SystemTime {
+        fs::metadata(p).unwrap().modified().unwrap()
+    }
+
+    fn run_code(exe: &Path) -> i32 {
+        Command::new(exe)
+            .status()
+            .unwrap()
+            .code()
+            .unwrap_or(-1)
+    }
+
+    fn run_stdout(exe: &Path) -> String {
+        let out = Command::new(exe).output().unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn no_op_rebuild_keeps_objects_and_exe() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("noop");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        let obj = obj_path(&dir, "main");
+        let (obj_t, exe_t) = (mtime(&obj), mtime(&exe));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        build_project(&dir).unwrap();
+        assert_eq!(mtime(&obj), obj_t, "无变更构建不应重编对象");
+        assert_eq!(mtime(&exe), exe_t, "无变更构建不应重链 exe");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// 编译器 flags 变化没有触碰任何源文件，但必须让对象作废：
+    /// 用 -DVALUE=n 让旧对象与旧 exe 的返回值可观测。
+    #[test]
+    fn compile_flag_change_rebuilds_objects() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("cflags");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#ifndef VALUE\n#define VALUE 0\n#endif\nint main(){return VALUE;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DVALUE=1\"]\n",
+        )
+        .unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        // 运行副本：Windows 下刚执行过的 exe 可能被系统短暂占用，阻塞重链
+        let first = dir.join("first.exe");
+        fs::copy(&exe, &first).unwrap();
+        assert_eq!(run_code(&first), 1, "首个构建应按 VALUE=1 编译");
+        let obj = obj_path(&dir, "main");
+        let obj_t = mtime(&obj);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DVALUE=2\"]\n",
+        )
+        .unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(
+            run_code(&exe),
+            2,
+            "flags 变化必须重编对象、重链 exe（否则仍是旧的 VALUE=1）"
+        );
+        assert_ne!(mtime(&obj), obj_t, "flags 变化必须重编对象");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// link_flags 只影响链接：exe 必须更新，对象必须原封不动。
+    #[test]
+    fn link_flag_change_relinks_without_recompiling() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("lflags");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[compiler]\nlink_flags = []\n",
+        )
+        .unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        let obj = obj_path(&dir, "main");
+        let (obj_t, exe_t) = (mtime(&obj), mtime(&exe));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[compiler]\nlink_flags = [\"-lm\"]\n",
+        )
+        .unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        assert_ne!(mtime(&exe), exe_t, "link_flags 变化必须重链 exe");
+        assert_eq!(mtime(&obj), obj_t, "link_flags 变化不应重编对象");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// 删源文件后对象集收缩：即使剩下的对象都旧于 exe，也必须重链，
+    /// 否则旧 exe 里还藏着已删除翻译单元的代码。
+    #[test]
+    fn deleting_source_forces_relink() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("delsrc");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include <cstdio>\nint main(){ std::printf(\"main\\n\"); return 0; }\n",
+        )
+        .unwrap();
+        // 独立的静态初始化翻译单元：main 不引用它，删掉后旧对象不会被链接器拒绝
+        fs::write(
+            dir.join("src/helper.cpp"),
+            "#include <cstdio>\nstruct Helper { Helper(){ std::printf(\"helper\\n\"); } };\nstatic Helper h;\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        let first = dir.join("first.exe");
+        fs::copy(&exe, &first).unwrap();
+        assert!(run_stdout(&first).contains("helper"), "首次构建应包含 helper");
+        let main_obj_t = mtime(&obj_path(&dir, "main"));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::remove_file(dir.join("src/helper.cpp")).unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        let out = run_stdout(&exe);
+        assert!(
+            !out.contains("helper"),
+            "删源后必须重链，旧 exe 仍含已删除的翻译单元: {out:?}"
+        );
+        assert_eq!(mtime(&obj_path(&dir, "main")), main_obj_t, "未变的源不应重编");
         fs::remove_dir_all(dir).ok();
     }
 }
