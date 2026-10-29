@@ -24,6 +24,9 @@ pub struct Project {
     /// 显式源文件列表（相对项目根）。缺省时递归扫描 src/ 下的 .cpp/.cc/.cxx。
     #[serde(default)]
     pub sources: Option<Vec<String>>,
+    /// 是否在项目根生成 compile_commands.json（clangd / clang-tidy 用）。
+    #[serde(default)]
+    pub compile_commands: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -110,6 +113,14 @@ impl Config {
 
     pub fn explicit_sources(&self) -> Option<&[String]> {
         self.project.as_ref().and_then(|p| p.sources.as_deref())
+    }
+
+    /// 默认关闭：不是所有开发者都需要编译数据库。
+    pub fn compile_commands(&self) -> bool {
+        self.project
+            .as_ref()
+            .and_then(|p| p.compile_commands)
+            .unwrap_or(false)
     }
 
     pub fn flags(&self) -> &[String] {
@@ -254,6 +265,17 @@ mod tests {
         .unwrap();
         let err = load(&dir).unwrap_err();
         assert!(err.contains("branch"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compile_commands_defaults_off_and_can_be_enabled() {
+        let (dir, cfg) = write_config("[project]\nname = \"a\"\n");
+        assert!(!cfg.compile_commands());
+        std::fs::remove_dir_all(dir).ok();
+
+        let (dir, cfg) = write_config("[project]\nname = \"a\"\ncompile_commands = true\n");
+        assert!(cfg.compile_commands());
         std::fs::remove_dir_all(dir).ok();
     }
 

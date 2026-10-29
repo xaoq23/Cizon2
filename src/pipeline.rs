@@ -214,6 +214,11 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
     let dep_jobs = deps::prepare(dir, cfg, &obj_dir)?;
 
+    // 0.5) 编辑器支持：显式开启才写项目根的编译数据库
+    if cfg.compile_commands() {
+        write_compile_db(dir, plan, &dep_jobs)?;
+    }
+
     // 1) 判定需要重编译的源
     let mut jobs: Vec<Job> = Vec::new(); // 项目源
     for src in &plan.sources {
@@ -333,6 +338,68 @@ fn link_state_text(plan: &Plan, objs: &[PathBuf]) -> String {
         s.push('\n');
     }
     s
+}
+
+/// 写 compile_commands.json：项目源用 plan.flags，依赖源用 dep_flags。
+/// 手写 JSON，不引入 serde_json（依赖白名单）。
+fn write_compile_db(
+    dir: &Path,
+    plan: &Plan,
+    dep_jobs: &[(PathBuf, PathBuf)],
+) -> Result<(), String> {
+    let mut entries: Vec<(&Path, &[String])> = plan
+        .sources
+        .iter()
+        .map(|s| (s.as_path(), plan.flags.as_slice()))
+        .collect();
+    entries.extend(
+        dep_jobs
+            .iter()
+            .map(|(src, _)| (src.as_path(), plan.dep_flags.as_slice())),
+    );
+    let json = render_compile_db(dir, &plan.cxx.name, &entries);
+    let path = dir.join("compile_commands.json");
+    std::fs::write(&path, json).map_err(|e| format!("写 {} 失败: {e}", path.display()))
+}
+
+fn render_compile_db(dir: &Path, cxx: &str, entries: &[(&Path, &[String])]) -> String {
+    let directory = json_escape(&dir.display().to_string());
+    let mut out = String::from("[\n");
+    for (i, (src, flags)) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        let file = json_escape(&src.display().to_string());
+        out.push_str("  {\n");
+        out.push_str(&format!("    \"directory\": \"{directory}\",\n"));
+        out.push_str(&format!("    \"file\": \"{file}\",\n"));
+        out.push_str(&format!(
+            "    \"arguments\": [\"{}\", \"-c\", \"{file}\"",
+            json_escape(cxx)
+        ));
+        for f in *flags {
+            out.push_str(&format!(", \"{}\"", json_escape(f)));
+        }
+        out.push_str("]\n  }");
+    }
+    out.push_str("\n]\n");
+    out
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// exe 是否不旧于所有对象文件。
@@ -873,6 +940,68 @@ mod tests {
 
         let exe = build_project(&dir).unwrap();
         assert_eq!(run_code(&exe), 0, "子目录源 + include/ 应正常构建运行");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── v0.3：compile_commands.json（默认关闭，toml 显式开启） ──
+
+    #[test]
+    fn json_escape_handles_windows_paths_and_quotes() {
+        assert_eq!(json_escape(r"C:\a\b"), r"C:\\a\\b");
+        assert_eq!(json_escape("a\"b"), r#"a\"b"#);
+        assert_eq!(json_escape("a\nb"), r"a\nb");
+    }
+
+    #[test]
+    fn compile_db_absent_by_default() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("db-off");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+
+        build_project(&dir).unwrap();
+        assert!(
+            !dir.join("compile_commands.json").exists(),
+            "未开启时不应生成 compile_commands.json"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compile_db_written_when_enabled() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("db-on");
+        fs::create_dir_all(dir.join("src/cli")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::write(dir.join("include/greet.h"), "#pragma once\n").unwrap();
+        fs::write(
+            dir.join("src/cli/main.cpp"),
+            "#include \"greet.h\"\nint main(){return 0;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++17\"\ncompile_commands = true\n\n\
+             [compiler]\nflags = [\"-Wall\"]\n",
+        )
+        .unwrap();
+
+        build_project(&dir).unwrap();
+        let text = fs::read_to_string(dir.join("compile_commands.json")).unwrap();
+        assert!(text.trim_start().starts_with('['), "应为 JSON 数组: {text}");
+        assert!(text.contains("\"arguments\""), "got: {text}");
+        assert!(text.contains("main.cpp"), "got: {text}");
+        assert!(text.contains("-std=c++17"), "got: {text}");
+        assert!(text.contains("-Wall"), "got: {text}");
+        assert!(text.contains("include"), "got: {text}");
+        if cfg!(windows) {
+            assert!(text.contains(r"\\"), "Windows 路径反斜杠必须转义: {text}");
+        }
         fs::remove_dir_all(dir).ok();
     }
 }
