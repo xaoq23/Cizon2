@@ -375,7 +375,7 @@ fn is_module_unit(path: &Path) -> bool {
         .is_some_and(|l| l.starts_with("module;"))
 }
 
-/// 平铺扫描 dep 的 src/（与项目自身格式相同，不递归）。
+/// 平铺扫描 dep 的 src/（依赖契约仍是平铺布局，不递归）。
 fn flat_sources(src: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(src) {

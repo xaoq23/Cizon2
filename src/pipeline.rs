@@ -2,6 +2,7 @@
 //!
 //! 从 Cizon1 迁移的最小正确核心：mtime + `-MMD` 依赖文件级增量，std::thread 并行，
 //! stderr 直传 —— 不迁移 PCH / 指纹缓存 / 错误格式化器。
+//! v0.2.1 起按现代 C++ 结构收集：递归 src/，include/ 自动上 -I。
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -45,6 +46,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     let optimization = if release { "-O2" } else { "-g" };
     let mut flags = vec![edition.clone(), optimization.into()];
     flags.extend(cfg.flags().iter().cloned());
+    // 公有头目录：现代结构的 include/ 自动上 -I；目录不存在时编译器安全忽略
+    flags.push(format!("-I{}", dir.join("include").display()));
     // 依赖头文件路径无条件进 flags：目录不存在时编译器安全忽略，
     // 因此 planning 无需网络操作
     let mut dep_includes: Vec<String> = Vec::new();
@@ -97,7 +100,7 @@ fn scope_label(cxx: &str) -> String {
         .collect()
 }
 
-/// 显式 sources 或顺序扫描 src/。同名 stem 冲突立刻报错（对象文件按 stem 命名）。
+/// 显式 sources 或递归扫描 src/。同名 stem 冲突立刻报错（对象文件按 stem 命名）。
 fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
     match explicit {
@@ -113,14 +116,10 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
         }
         None => {
             let src = dir.join("src");
-            let entries = std::fs::read_dir(&src)
-                .map_err(|_| format!("未找到 src/ 目录（或无权读取）: {}", src.display()))?;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() && is_source(&path) {
-                    out.push(path);
-                }
+            if !src.is_dir() {
+                return Err(format!("未找到 src/ 目录（或无权读取）: {}", src.display()));
             }
+            collect_recursive(&src, &mut out)?;
             out.sort();
         }
     }
@@ -130,7 +129,7 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
         let stem = src.file_stem().unwrap().to_string_lossy().to_string();
         if let Some(prev) = stems.insert(stem.clone(), src.clone()) {
             return Err(format!(
-                "两个源文件的编译产物名冲突（同 stem）:\n  {}\n  {}\n请改名，或让 src/ 只平铺源文件，或在 [project].sources 显式排重。",
+                "两个源文件的编译产物名冲突（同 stem）:\n  {}\n  {}\n请改名，或用 [project].sources 显式排重。",
                 prev.display(),
                 src.display()
             ));
@@ -143,6 +142,22 @@ fn is_source(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map_or(false, |e| SOURCE_EXTS.contains(&e))
+}
+
+/// 递归收集目录下的源文件。不跟进符号链接目录（防环），链接的源文件照收。
+fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("无法读取 {}: {e}", dir.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if is_dir {
+            collect_recursive(&path, out)?;
+        } else if is_source(&path) && path.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn check_source_ext(path: &Path) -> Result<(), String> {
@@ -788,6 +803,76 @@ mod tests {
             "删源后必须重链，旧 exe 仍含已删除的翻译单元: {out:?}"
         );
         assert_eq!(mtime(&obj_path(&dir, "main")), main_obj_t, "未变的源不应重编");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── v0.2.1：现代 C++ 结构（递归 src/ + include/ 自动 -I） ──
+
+    #[test]
+    fn collect_sources_recurses_nested_dirs() {
+        let dir = temp_dir("nested");
+        fs::create_dir_all(dir.join("src/cli")).unwrap();
+        fs::create_dir_all(dir.join("src/core/deep")).unwrap();
+        fs::write(dir.join("src/cli/main.cpp"), "//").unwrap();
+        fs::write(dir.join("src/core/util.cc"), "//").unwrap();
+        fs::write(dir.join("src/core/deep/x.cxx"), "//").unwrap();
+        fs::write(dir.join("src/notes.txt"), "ignore").unwrap();
+        let s = collect_sources(&dir, None).unwrap();
+        assert_eq!(s.len(), 3, "应递归收集三层源文件: {s:?}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn nested_stem_conflict_detected() {
+        let dir = temp_dir("nestedconflict");
+        fs::create_dir_all(dir.join("src/a")).unwrap();
+        fs::create_dir_all(dir.join("src/b")).unwrap();
+        fs::write(dir.join("src/a/core.cpp"), "//").unwrap();
+        fs::write(dir.join("src/b/core.cpp"), "//").unwrap();
+        let err = collect_sources(&dir, None).unwrap_err();
+        assert!(err.contains("冲突"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn include_dir_is_on_include_path() {
+        let dir = temp_dir("incflags");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname=\"t\"\n").unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let expected = format!("-I{}", dir.join("include").display());
+        assert!(p.flags.contains(&expected), "flags 缺少 {expected}: {:?}", p.flags);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// 现代结构端到端：源在子目录、公有头在 include/，必须能编译通过并正确运行。
+    #[test]
+    fn nested_sources_use_include_dir() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("nested-e2e");
+        fs::create_dir_all(dir.join("src/app")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::write(dir.join("include/greet.h"), "#pragma once\nint greet();\n").unwrap();
+        fs::write(
+            dir.join("src/app/main.cpp"),
+            "#include \"greet.h\"\nint main(){ return greet() == 7 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/app/greet.cpp"),
+            "#include \"greet.h\"\nint greet(){ return 7; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0, "子目录源 + include/ 应正常构建运行");
         fs::remove_dir_all(dir).ok();
     }
 }

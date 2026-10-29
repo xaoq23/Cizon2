@@ -1,6 +1,6 @@
 //! cizon2 —— 零配置 C++ build & run。
 //!
-//! 边界见 AGENTS.md：单 crate、src/ 平铺源文件、g++/clang++；v0.2 起支持 git 依赖。
+//! 边界见 AGENTS.md：单 crate、src/ 递归源文件、g++/clang++；v0.2 起支持 git 依赖。
 //! 手写参数分发，避免引入 clap（依赖白名单：serde、toml）。
 
 mod compiler;

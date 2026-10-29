@@ -17,15 +17,17 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
     pub name: Option<String>,
     pub edition: Option<String>,
-    /// 显式源文件列表（相对项目根）。缺省时扫描 src/*.{cpp,cc,cxx}。
+    /// 显式源文件列表（相对项目根）。缺省时递归扫描 src/ 下的 .cpp/.cc/.cxx。
     #[serde(default)]
     pub sources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CompilerSection {
     pub cpp: Option<String>,
     #[serde(default)]
@@ -35,6 +37,7 @@ pub struct CompilerSection {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct DepInfo {
     pub git: String,
     pub tag: Option<String>,
@@ -206,6 +209,51 @@ mod tests {
         std::fs::write(dir.join("cizon.toml"), "[dependancies]\n").unwrap();
         let err = load(&dir).unwrap_err();
         assert!(err.contains("[dependancies]"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// MossKV 实例：真键名是 cpp，写成 compiler 曾被 serde 静默忽略。
+    #[test]
+    fn unknown_key_in_compiler_section_rejected() {
+        let dir = std::env::temp_dir().join("cizon2-cfg-unknown-compiler");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[compiler]\ncompiler = \"clang++\"\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("compiler"), "got: {err}");
+        assert!(err.contains("cpp"), "错误应提示正确键名 cpp: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unknown_key_in_project_section_rejected() {
+        let dir = std::env::temp_dir().join("cizon2-cfg-unknown-project");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\nlicence = \"MIT\"\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("licence"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unknown_key_in_dependency_entry_rejected() {
+        let dir = std::env::temp_dir().join("cizon2-cfg-unknown-dep-key");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[dependencies]\n\
+             fmt = { git = \"https://example.com/fmt\", branch = \"main\" }\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("branch"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 
