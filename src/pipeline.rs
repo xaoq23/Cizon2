@@ -821,9 +821,10 @@ mod tests {
         let obj = obj_path(&dir, "main");
         let (obj_t, exe_t) = (mtime(&obj), mtime(&exe));
         std::thread::sleep(std::time::Duration::from_millis(50));
+        // -g 在 GNU 与 MSVC 目标上都可接受；-lm 只在 MinGW/GNU 工具链存在
         fs::write(
             dir.join("cizon.toml"),
-            "[project]\nname = \"t\"\n\n[compiler]\nlink_flags = [\"-lm\"]\n",
+            "[project]\nname = \"t\"\n\n[compiler]\nlink_flags = [\"-g\"]\n",
         )
         .unwrap();
 
