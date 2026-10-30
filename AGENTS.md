@@ -8,17 +8,17 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.3.0）
+## 当前边界（v0.4.0）
 
 | 在边界内 | 边界外 |
 |---|---|
 | `build` / `run` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
-| 中小型单可执行项目：递归 `src/`、`include/` 自动 `-I` | MSVC（等真实用户提出） |
-| cizon.toml 只认 `[project]`、`[dependencies]`、`[compiler]` | PCH、features、`[target]`（v0.4 再议） |
-| g++ / clang++ 探测，`--compiler` 临时切换 | 自定义错误格式化器 |
-| mtime + `-MMD` 增量 + 编译/链接状态指纹 | vcpkg / conda 等外部包管理 |
-| compile_commands.json（默认关闭，`[project].compile_commands` 开启） | 与 CMake 全功能对齐 |
-| 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | |
+| 中小型单可执行项目（可带多个静态库 `[[target]]`） | 多可执行 target / 共享库（待真实需求） |
+| cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]` | PCH、features、install/export |
+| g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
+| mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | vcpkg / conda 等外部包管理 |
+| compile_commands.json（默认关闭，`[project].compile_commands` 开启） | 自定义错误格式化器 |
+| 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | 与 CMake 全功能对齐 |
 
 未知配置段与已知段内的未知键一律报错，不静默忽略。
 
@@ -49,5 +49,5 @@
 2. v0.2 `new` / `init` / `add` / `update`，git 依赖与锁生命周期 —— 已发布 v0.2.0
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
-5. v0.4 `[target]` 产物模型：可执行 / 静态库先行，共享库待真实需求
+5. v0.4 `[[target]]`：单 bin + 多静态库 —— dev 完成，待发布；共享库、多 bin 等真实需求
 6. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

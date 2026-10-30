@@ -2,7 +2,7 @@
 
 零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
 
-当前版本：**v0.3.0**。主要面向 Windows x86-64(未编译linux/macos版以及其他架构)，支持使用 g++ 或 clang++(暂不支持 MSVC)。
+当前版本：**v0.4.0**。主要面向 Windows x86-64(未编译linux/macos版以及其他架构)，支持使用 g++ 或 clang++(暂不支持 MSVC)。
 
 ## 特性
 
@@ -10,6 +10,7 @@
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 文件级增量：mtime + `-MMD`；编译参数或链接输入变化会正确触发重编/重链
 - 现代 C++ 目录结构：递归收集 `src/`，`include/` 自动加入 `-I`
+- v0.4：一个可执行 target + 多个静态库 target，库自动归档并链接
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
@@ -70,7 +71,8 @@ project/
 ├── cizon.toml          # 项目配置
 ├── cizon.lock          # 有依赖时生成，锁定 commit
 ├── include/            # 公有头，自动 -I（可以不存在）
-├── src/                # 递归收集 .cpp / .cc / .cxx
+├── src/                # bin 的源文件（传统项目递归收集）
+├── lib/                # 静态库源码（使用 [[target]] 时）
 ├── deps/               # git 依赖，自动忽略
 └── build/              # 构建产物
 ```
@@ -94,6 +96,31 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 ```
 
 未知的配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
+
+### 静态库 target（v0.4）
+
+一个项目可以带多个静态库 target，但必须恰好有一个可执行 target：
+
+```toml
+[[target]]
+name = "shape"
+kind = "static_lib"
+sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
+
+[[target]]
+name = "app"
+kind = "bin"
+sources = ["src"]             # 可选；缺省扫描 src/
+links = ["shape"]             # 按顺序链接静态库
+```
+
+规则：
+
+- 不写 `[[target]]` 时保持传统单可执行项目，行为完全不变
+- 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
+- 静态库暂不支持 `links`（v0.4 不做库依赖库）
+- 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
+- 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 
 ## 依赖
 
@@ -126,7 +153,8 @@ compile_commands = true
 
 - 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
 - 编译参数（edition、优化级、flags、依赖 include）变化：对象全部作废
-- 链接输入（对象清单、`link_flags`）变化：强制重链
+- 链接输入（对象清单、静态库归档、`link_flags`）变化：强制重链
+- 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
 - 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
 - 同一项目不支持并发构建：请勿同时在两个终端运行 `cizon2 build`
 
@@ -159,10 +187,10 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ## 什么时候该用 CMake
 
-Cizon2 面向中小型单可执行项目。出现以下需求时，请直接使用 CMake：
+Cizon2 面向中小型单可执行项目（可带静态库 target）。出现以下需求时，请直接使用 CMake：
 
-- 多 target 构建图、target 之间的 include / 链接传递
-- install / export / find_package / 打包发布
+- 多个可执行 target、嵌套 target 图、target 之间的 include / 链接传递
+- 共享库（dll/so）、install / export / find_package / 打包发布
 - 代码生成（protobuf、Qt moc）、自定义构建步骤
 - MSVC、交叉编译、复杂工具链条件
 - vcpkg / Conan 等外部包管理
