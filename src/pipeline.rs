@@ -87,6 +87,11 @@ fn exe_name(name: &str) -> String {
     }
 }
 
+/// 输出用路径：以项目根为基准；不在其下时退回原路径。
+pub(crate) fn rel_display(base: &Path, path: &Path) -> String {
+    path.strip_prefix(base).unwrap_or(path).display().to_string()
+}
+
 /// 编译器名可能是完整路径（--compiler C:\...\g++.exe），目录名只保留安全字符。
 fn scope_label(cxx: &str) -> String {
     cxx.chars()
@@ -236,7 +241,14 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let recompiled = jobs.len();
     if recompiled > 0 {
         let label = if recompiled == total { "Compiling" } else { "Rebuilding" };
-        step_line(label, &format!("{} [{recompiled}/{total} files]", plan.cxx.name));
+        step_line(
+            label,
+            &format!(
+                "{} {} [{recompiled}/{total} files]",
+                plan.cxx.name,
+                plan.cxx.short_version()
+            ),
+        );
     }
 
     // 2) 并行编译（工作队列 + n 线程），先收集输出再统一打印，避免交错乱序
@@ -302,7 +314,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         );
         return Ok(exe);
     }
-    step_line("Linking", &format!("{} ({})", exe.display(), plan.cxx.short_version()));
+    step_line("Linking", &rel_display(dir, &exe));
     link(&plan.cxx.name, &objs, &exe, &plan.flags, &plan.link_flags)?;
     let _ = std::fs::write(&link_state, &wanted_link);
 
@@ -598,6 +610,18 @@ mod tests {
         assert_eq!(scope_label("g++"), "g++");
         assert_eq!(scope_label(r"C:\mingw64\bin\g++.exe"), "C__mingw64_bin_g++.exe");
         assert_eq!(scope_label("/usr/bin/clang++"), "_usr_bin_clang++");
+    }
+
+    #[test]
+    fn rel_display_strips_project_root() {
+        let base = Path::new("proj");
+        let inside = base.join("build").join("app.exe");
+        assert_eq!(
+            rel_display(base, &inside),
+            Path::new("build").join("app.exe").display().to_string()
+        );
+        let outside = Path::new("elsewhere").join("app.exe");
+        assert_eq!(rel_display(base, &outside), outside.display().to_string());
     }
 
     #[test]
