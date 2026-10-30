@@ -449,6 +449,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         .map_err(|e| format!("写 {} 失败: {e}", libs_state.display()))?;
     std::fs::write(&marker, &plan.cxx.version)
         .map_err(|e| format!("写 {} 失败: {e}", marker.display()))?;
+    cleanup_stale_exe(&scope_dir, plan);
 
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
     let dep_jobs = deps::prepare(dir, cfg, &obj_dir)?;
@@ -656,9 +657,10 @@ fn libs_state_text(plan: &Plan) -> String {
     s
 }
 
-/// 链接状态：对象、参与链接的归档、链接参数。任一项变化即需重链。
+/// 链接状态：exe 名、对象、参与链接的归档、链接参数。任一项变化即需重链。
 fn link_state_text(plan: &Plan, objs: &[PathBuf], archives: &[PathBuf]) -> String {
-    let mut s = String::from("objects:\n");
+    let mut s = format!("exe: {}\n", plan.out_name);
+    s.push_str("objects:\n");
     for obj in objs {
         s.push_str(&obj.display().to_string());
         s.push('\n');
@@ -751,6 +753,69 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+/// bin 改名后清理旧 exe 与 Windows 链接侧产物。
+/// 失败只警告：旧 exe 可能正在运行，不应阻断新产物构建。
+fn cleanup_stale_exe(scope_dir: &Path, plan: &Plan) {
+    let old = std::fs::read_to_string(scope_dir.join(".link-state"))
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                line.strip_prefix("exe: ")
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+            })
+        });
+    if let Some(old) = old {
+        if old != plan.out_name {
+            let path = scope_dir.join(&old);
+            remove_artifact(&path);
+            remove_artifact(&path.with_extension("pdb"));
+            remove_artifact(&path.with_extension("ilk"));
+        }
+    }
+
+    // 旧版本的 .link-state 没有 exe 行：Windows 上按扩展名清理顶层其他产物。
+    #[cfg(windows)]
+    {
+        let current_stem = Path::new(&plan.out_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if let Ok(entries) = std::fs::read_dir(scope_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+                    continue;
+                };
+                if !["exe", "pdb", "ilk"]
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(ext))
+                {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if stem != current_stem {
+                    remove_artifact(&path);
+                }
+            }
+        }
+    }
+}
+
+fn remove_artifact(path: &Path) {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("警告: 清理旧产物 {} 失败: {e}", path.display()),
+    }
 }
 
 /// exe 是否不旧于所有对象与静态库归档。
@@ -1883,6 +1948,34 @@ mod tests {
         let exe = build_project(&dir).unwrap();
         assert_eq!(mtime(&archive), archive_t, "只改 bin 不应重建归档");
         assert_ne!(mtime(&exe), exe_t);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn renaming_bin_target_removes_old_exe() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = target_project("rename-bin");
+        let old_exe = build_project(&dir).unwrap();
+        assert!(old_exe.is_file());
+        let old_pdb = old_exe.with_extension("pdb");
+        let had_pdb = old_pdb.exists();
+
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app2\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n",
+        )
+        .unwrap();
+        let new_exe = build_project(&dir).unwrap();
+        assert!(!old_exe.exists(), "bin 改名后旧 exe 必须清理");
+        if had_pdb {
+            assert!(!old_pdb.exists(), "旧 exe 的 .pdb 也应清理");
+        }
+        assert!(new_exe.is_file());
+        assert_eq!(run_code(&new_exe), 0);
         fs::remove_dir_all(dir).ok();
     }
 
