@@ -83,6 +83,27 @@ pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
         .into())
 }
 
+/// 静态库归档工具：clang 优先 llvm-ar，其余优先 ar；找不到就明确报错。
+pub fn archiver(cxx: &Cxx) -> Result<String, String> {
+    let clang = cxx.name.to_ascii_lowercase().contains("clang");
+    let candidates: &[&str] = if clang {
+        &["llvm-ar", "ar"]
+    } else {
+        &["ar", "llvm-ar"]
+    };
+    for name in candidates {
+        let ok = Command::new(name)
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok((*name).to_string());
+        }
+    }
+    Err("未找到静态库归档工具（ar / llvm-ar）。安装 binutils 或 LLVM，或把静态库交给 CMake。".into())
+}
+
 /// 生成 `-std=...`；未配置时沿用 Cizon1 模板默认 c++23。
 /// 接受 `c++17` / `gnu++17` 原样传递，也接受裸版本号 `17`。
 pub fn edition_flag(edition: Option<&str>) -> String {

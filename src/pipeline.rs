@@ -12,14 +12,19 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::compiler::{self, Cxx};
-use crate::config::Config;
+use crate::config::{Config, TargetKind};
 use crate::deps;
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
+struct LibTarget {
+    name: String,
+    sources: Vec<PathBuf>,
+}
+
 pub struct Plan {
     cxx: Cxx,
-    /// 源文件相对项目根
+    /// bin 的源文件（相对项目根）
     sources: Vec<PathBuf>,
     /// 编译期 flags（edition + 优化级 + 用户 flags + 依赖 include 路径）
     flags: Vec<String>,
@@ -29,6 +34,10 @@ pub struct Plan {
     dep_base: Vec<String>,
     /// 每个依赖自己的 -I，保证依赖源优先找到自己的头
     dep_includes: BTreeMap<String, Vec<String>>,
+    /// 静态库 target；按配置顺序构建
+    libs: Vec<LibTarget>,
+    /// bin 要链接的静态库名，按声明顺序
+    links: Vec<String>,
     out_name: String,
     /// "debug" / "release" —— 与编译器一起决定产物作用域
     mode: &'static str,
@@ -52,13 +61,48 @@ impl Plan {
 
 /// 为一次构建装配计划：失败即中止，不进入编译阶段。
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
-    let sources = collect_sources(dir, cfg.explicit_sources())?;
-    if sources.is_empty() {
-        return Err(format!(
-            "{} 下没有 .cpp 文件。在 src/ 放入源代码，或在 [project] sources = [...] 显式列出。",
-            dir.join("src").display()
-        ));
-    }
+    let (sources, libs, links, out_name) = if let Some(targets) = cfg.targets() {
+        let bin = targets
+            .iter()
+            .find(|t| t.kind == TargetKind::Bin)
+            .expect("config validation guarantees exactly one bin");
+        let sources = collect_target_sources(
+            dir,
+            bin.sources.as_deref(),
+            &format!("bin target {}", bin.name),
+        )?;
+        if sources.is_empty() {
+            return Err(format!("bin target {} 没有可编译的源文件。", bin.name));
+        }
+        let mut libs = Vec::new();
+        for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
+            let lib_sources = collect_target_sources(
+                dir,
+                target.sources.as_deref(),
+                &format!("静态库 target {}", target.name),
+            )?;
+            if lib_sources.is_empty() {
+                return Err(format!(
+                    "静态库 target {} 没有可编译的源文件。",
+                    target.name
+                ));
+            }
+            libs.push(LibTarget {
+                name: target.name.clone(),
+                sources: lib_sources,
+            });
+        }
+        (sources, libs, bin.links.clone(), exe_name(&bin.name))
+    } else {
+        let sources = collect_sources(dir, cfg.explicit_sources())?;
+        if sources.is_empty() {
+            return Err(format!(
+                "{} 下没有 .cpp 文件。在 src/ 放入源代码，或在 [project] sources = [...] 显式列出。",
+                dir.join("src").display()
+            ));
+        }
+        (sources, Vec::new(), Vec::new(), exe_name(&cfg.name(dir)))
+    };
 
     let edition = compiler::edition_flag(cfg.edition());
     let optimization = if release { "-O2" } else { "-g" };
@@ -90,7 +134,9 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         link_flags,
         dep_base,
         dep_includes,
-        out_name: exe_name(&cfg.name(dir)),
+        libs,
+        links,
+        out_name,
         mode: if release { "release" } else { "debug" },
     })
 }
@@ -206,23 +252,69 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
             out.sort();
         }
     }
-    // stem 冲突检查：obj = build/<scope>/obj/<stem>.o，两个同名 stem 会互相覆盖。
-    // Windows 文件系统大小写不敏感，大小写不同的 stem 同样视为冲突。
+    let owner = if explicit.is_some() {
+        "[project].sources"
+    } else {
+        "src/"
+    };
+    check_stems(&out, owner)?;
+    Ok(out)
+}
+
+/// target 的 sources：文件或目录（目录递归扫描）；bin 缺省扫描 src/。
+fn collect_target_sources(
+    dir: &Path,
+    list: Option<&[String]>,
+    owner: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    match list {
+        None => {
+            let src = dir.join("src");
+            if !src.is_dir() {
+                return Err(format!("未找到 src/ 目录（或无权读取）: {}", src.display()));
+            }
+            collect_recursive(&src, &mut out)?;
+        }
+        Some(entries) => {
+            for raw in entries {
+                if raw.trim().is_empty() {
+                    return Err(format!("{owner} sources 不能包含空路径。"));
+                }
+                let path = dir.join(raw);
+                if path.is_dir() {
+                    collect_recursive(&path, &mut out)?;
+                } else if path.is_file() {
+                    check_source_ext(&path)?;
+                    out.push(path);
+                } else {
+                    return Err(format!("{owner} sources 列出的路径不存在: {}", path.display()));
+                }
+            }
+        }
+    }
+    out.sort();
+    check_stems(&out, owner)?;
+    Ok(out)
+}
+
+/// 同一 target 内 stem 必须唯一（obj 按 stem 命名）；Windows 大小写不敏感。
+fn check_stems(sources: &[PathBuf], owner: &str) -> Result<(), String> {
     let mut stems: HashMap<String, PathBuf> = HashMap::new();
-    for src in &out {
+    for src in sources {
         let stem = src.file_stem().unwrap().to_string_lossy().to_string();
         if let Some(prev) = stems.insert(stem.to_ascii_lowercase(), src.clone()) {
             if prev == *src {
-                return Err(format!("[project].sources 重复列出: {}", src.display()));
+                return Err(format!("{owner} 重复列出: {}", src.display()));
             }
             return Err(format!(
-                "两个源文件的编译产物名冲突（同 stem）:\n  {}\n  {}\n请改名，或用 [project].sources 显式排重。",
+                "{owner} 的源文件对象名冲突（同 stem）:\n  {}\n  {}\n请改名；同一 target 内源文件 stem 必须唯一。",
                 prev.display(),
                 src.display()
             ));
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn is_source(path: &Path) -> bool {
@@ -292,23 +384,37 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     }
     let obj_dir = scope_dir.join("obj");
     // 编译参数变化不触碰任何 mtime，不主动作废对象就会静默复用旧行为的 .o。
-    // 项目与依赖分开记录：改用户 flags 只重编项目源，不连累依赖。
+    // 项目、依赖、库分开记录：改用户 flags 重编项目与库；依赖 flags 只影响依赖。
     let project_state = scope_dir.join(".project-state");
     let deps_state = scope_dir.join(".deps-state");
+    let libs_state = scope_dir.join(".libs-state");
     let wanted_project = project_state_text(plan);
     let wanted_deps = deps_state_text(plan);
+    let wanted_libs = libs_state_text(plan);
     if !state_current(&project_state, &wanted_project)? {
         clear_project_objects(&obj_dir)?;
+        // 项目 flags 同样作用于库源
+        clear_lib_artifacts(&scope_dir)?;
     }
     if !state_current(&deps_state, &wanted_deps)? {
         clear_dep_objects(&obj_dir)?;
     }
+    if !state_current(&libs_state, &wanted_libs)? {
+        clear_lib_artifacts(&scope_dir)?;
+    }
     std::fs::create_dir_all(&obj_dir)
         .map_err(|e| format!("无法创建 {} : {e}", obj_dir.display()))?;
+    for lib in &plan.libs {
+        let lib_obj = lib_obj_dir(&scope_dir, &lib.name);
+        std::fs::create_dir_all(&lib_obj)
+            .map_err(|e| format!("无法创建 {}: {e}", lib_obj.display()))?;
+    }
     std::fs::write(&project_state, &wanted_project)
         .map_err(|e| format!("写 {} 失败: {e}", project_state.display()))?;
     std::fs::write(&deps_state, &wanted_deps)
         .map_err(|e| format!("写 {} 失败: {e}", deps_state.display()))?;
+    std::fs::write(&libs_state, &wanted_libs)
+        .map_err(|e| format!("写 {} 失败: {e}", libs_state.display()))?;
     std::fs::write(&marker, &plan.cxx.version)
         .map_err(|e| format!("写 {} 失败: {e}", marker.display()))?;
 
@@ -337,7 +443,21 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
             });
         }
     }
-    let total = plan.sources.len() + dep_jobs.len();
+    for lib in &plan.libs {
+        for src in &lib.sources {
+            let obj = lib_obj_for(&scope_dir, &lib.name, src);
+            if needs_recompile(src, &obj) {
+                jobs.push(Job {
+                    src: src.clone(),
+                    obj,
+                    flags: plan.flags.clone(),
+                });
+            }
+        }
+    }
+    let total = plan.sources.len()
+        + dep_jobs.len()
+        + plan.libs.iter().map(|l| l.sources.len()).sum::<usize>();
     let recompiled = jobs.len();
     if recompiled > 0 {
         let label = if recompiled == total { "Compiling" } else { "Rebuilding" };
@@ -395,7 +515,31 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         }
         return Err(msg);
     }
-    // 3) 链接（无重编译、链接输入与参数未变且产物新鲜时跳过）
+    // 3) 静态库归档（对象有更新或归档缺失时重建）
+    let mut libs_rebuilt = false;
+    if !plan.libs.is_empty() {
+        let ar = compiler::archiver(&plan.cxx)?;
+        for lib in &plan.libs {
+            let lib_objs: Vec<PathBuf> = lib
+                .sources
+                .iter()
+                .map(|src| lib_obj_for(&scope_dir, &lib.name, src))
+                .collect();
+            let archive = archive_path(&scope_dir, &lib.name);
+            if archive_stale(&archive, &lib_objs) {
+                step_line("Archiving", &rel_display(dir, &archive));
+                archive_lib(&ar, &archive, &lib_objs)?;
+                libs_rebuilt = true;
+            }
+        }
+    }
+    let archives: Vec<PathBuf> = plan
+        .links
+        .iter()
+        .map(|name| archive_path(&scope_dir, name))
+        .collect();
+
+    // 4) 链接（无重编译、链接输入与参数未变且产物新鲜时跳过）
     let exe = scope_dir.join(&plan.out_name);
     let mut objs: Vec<PathBuf> = plan
         .sources
@@ -405,10 +549,14 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
     // 对象集收缩（删源）不产生任何 mtime 变化，靠这项状态强制重链。
     let link_state = scope_dir.join(".link-state");
-    let wanted_link = link_state_text(plan, &objs);
+    let wanted_link = link_state_text(plan, &objs, &archives);
     let link_current = std::fs::read_to_string(&link_state)
         .map_or(false, |t| t == wanted_link);
-    if recompiled == 0 && link_current && exe_is_fresh(&exe, &objs) {
+    if recompiled == 0
+        && !libs_rebuilt
+        && link_current
+        && exe_is_fresh(&exe, &objs, &archives)
+    {
         step_line(
             "Finished",
             &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
@@ -416,8 +564,15 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         return Ok(exe);
     }
     step_line("Linking", &rel_display(dir, &exe));
-    link(&plan.cxx.name, &objs, &exe, &plan.flags, &plan.link_flags)
-        .map_err(|e| format!("链接失败: {}\n{e}", rel_display(dir, &exe)))?;
+    link(
+        &plan.cxx.name,
+        &objs,
+        &archives,
+        &exe,
+        &plan.flags,
+        &plan.link_flags,
+    )
+    .map_err(|e| format!("链接失败: {}\n{e}", rel_display(dir, &exe)))?;
     std::fs::write(&link_state, &wanted_link)
         .map_err(|e| format!("写 {} 失败: {e}", link_state.display()))?;
 
@@ -452,11 +607,29 @@ fn deps_state_text(plan: &Plan) -> String {
     s
 }
 
-/// 链接状态：参与链接的对象清单 + 链接参数。任一项变化即需重链。
-fn link_state_text(plan: &Plan, objs: &[PathBuf]) -> String {
+/// 静态库 target 的源清单；变化时清空库对象与归档。
+fn libs_state_text(plan: &Plan) -> String {
+    let mut s = String::from("libs:\n");
+    for lib in &plan.libs {
+        s.push_str(&format!("lib {}:\n", lib.name));
+        for src in &lib.sources {
+            s.push_str(&src.display().to_string());
+            s.push('\n');
+        }
+    }
+    s
+}
+
+/// 链接状态：对象、参与链接的归档、链接参数。任一项变化即需重链。
+fn link_state_text(plan: &Plan, objs: &[PathBuf], archives: &[PathBuf]) -> String {
     let mut s = String::from("objects:\n");
     for obj in objs {
         s.push_str(&obj.display().to_string());
+        s.push('\n');
+    }
+    s.push_str("archives:\n");
+    for archive in archives {
+        s.push_str(&archive.display().to_string());
         s.push('\n');
     }
     s.push_str("link-flags:\n");
@@ -467,7 +640,7 @@ fn link_state_text(plan: &Plan, objs: &[PathBuf]) -> String {
     s
 }
 
-/// 写 compile_commands.json：项目源用 plan.flags，依赖源用各自的 dep_flags_for。
+/// 写 compile_commands.json：bin/库源用 plan.flags，依赖源用各自的 dep_flags_for。
 /// 手写 JSON，不引入 serde_json（依赖白名单）。
 fn write_compile_db(
     dir: &Path,
@@ -479,6 +652,13 @@ fn write_compile_db(
         .iter()
         .map(|s| (s.clone(), plan.flags.clone()))
         .collect();
+    for lib in &plan.libs {
+        owned.extend(
+            lib.sources
+                .iter()
+                .map(|s| (s.clone(), plan.flags.clone())),
+        );
+    }
     owned.extend(
         dep_jobs
             .iter()
@@ -537,21 +717,84 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-/// exe 是否不旧于所有对象文件。
-fn exe_is_fresh(exe: &Path, objs: &[PathBuf]) -> bool {
+/// exe 是否不旧于所有对象与静态库归档。
+fn exe_is_fresh(exe: &Path, objs: &[PathBuf], archives: &[PathBuf]) -> bool {
     let Ok(exe_time) = std::fs::metadata(exe).and_then(|m| m.modified()) else {
         return false;
     };
-    objs.iter().all(|obj| {
-        std::fs::metadata(obj)
-            .and_then(|m| m.modified())
-            .map_or(false, |t| t <= exe_time)
-    })
+    objs.iter()
+        .chain(archives.iter())
+        .all(|input| {
+            std::fs::metadata(input)
+                .and_then(|m| m.modified())
+                .map_or(false, |t| t <= exe_time)
+        })
 }
 
 fn obj_for(src: &Path, obj_dir: &Path) -> PathBuf {
     let stem = src.file_stem().unwrap().to_string_lossy();
     obj_dir.join(format!("{stem}.o"))
+}
+
+fn lib_obj_dir(scope_dir: &Path, name: &str) -> PathBuf {
+    scope_dir.join("lib").join(name).join("obj")
+}
+
+fn lib_obj_for(scope_dir: &Path, name: &str, src: &Path) -> PathBuf {
+    let stem = src.file_stem().unwrap().to_string_lossy();
+    lib_obj_dir(scope_dir, name).join(format!("{stem}.o"))
+}
+
+fn archive_path(scope_dir: &Path, name: &str) -> PathBuf {
+    scope_dir
+        .join("lib")
+        .join(name)
+        .join(format!("lib{name}.a"))
+}
+
+/// 项目 flags 或库源清单变化时，库对象与归档一起作废。
+fn clear_lib_artifacts(scope_dir: &Path) -> Result<(), String> {
+    reset_dir(&scope_dir.join("lib"))
+}
+
+fn archive_stale(archive: &Path, objs: &[PathBuf]) -> bool {
+    let Ok(archive_time) = std::fs::metadata(archive).and_then(|m| m.modified()) else {
+        return true;
+    };
+    objs.iter().any(|obj| {
+        std::fs::metadata(obj)
+            .and_then(|m| m.modified())
+            .map_or(true, |t| t > archive_time)
+    })
+}
+
+fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<(), String> {
+    if objs.is_empty() {
+        return Err(format!("静态库 {} 没有对象文件。", archive.display()));
+    }
+    if let Some(parent) = archive.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建 {}: {e}", parent.display()))?;
+    }
+    if archive.exists() {
+        std::fs::remove_file(archive)
+            .map_err(|e| format!("删除旧归档 {} 失败: {e}", archive.display()))?;
+    }
+    let out = Command::new(ar)
+        .arg("rcs")
+        .arg(archive)
+        .args(objs)
+        .output()
+        .map_err(|e| format!("启动归档工具 {ar} 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "归档失败: {} {}\n{}",
+            ar,
+            archive.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 /// 增量判定：src、obj、.d 都存在，且 src 与 .d 列出的每个输入都不比 obj 新。
@@ -671,6 +914,7 @@ fn compile_one(
 fn link(
     cxx: &str,
     objs: &[PathBuf],
+    archives: &[PathBuf],
     exe: &Path,
     flags: &[String],
     link_flags: &[String],
@@ -678,6 +922,9 @@ fn link(
     let mut cmd = Command::new(cxx);
     for obj in objs {
         cmd.arg(obj);
+    }
+    for archive in archives {
+        cmd.arg(archive);
     }
     cmd.arg("-o").arg(exe);
     for f in flags {
@@ -815,6 +1062,8 @@ mod tests {
             link_flags: vec![],
             dep_base: vec!["-std=c++23".to_string()],
             dep_includes: includes,
+            libs: vec![],
+            links: vec![],
             out_name: "t".into(),
             mode: "debug",
         };
@@ -1445,6 +1694,152 @@ mod tests {
         let p2 = plan(&dir, &cfg, cxx, false).unwrap();
         build(&dir, &cfg, &p2).unwrap();
         assert_ne!(mtime(&obj), obj_t, "编译器版本变化必须作废整个作用域");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── v0.4：单 bin + 多静态库 ──────────────────────────
+
+    fn target_toml(flags: Option<&str>) -> String {
+        let compiler = flags
+            .map(|f| format!("[compiler]\nflags = {f}\n\n"))
+            .unwrap_or_default();
+        format!(
+            "[project]\nname = \"t\"\nedition = \"c++23\"\ncompile_commands = true\n\n\
+             {compiler}[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n"
+        )
+    }
+
+    fn target_project(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        for sub in ["src", "lib", "include"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("include/foo.h"), "#pragma once\nint foo();\n").unwrap();
+        fs::write(
+            dir.join("lib/foo.cpp"),
+            "#include \"foo.h\"\nint foo(){ return 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include \"foo.h\"\nint main(){ return foo() == 1 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), target_toml(None)).unwrap();
+        dir
+    }
+
+    fn lib_archive_path(dir: &Path, lib: &str) -> PathBuf {
+        for scope in fs::read_dir(dir.join("build")).unwrap().flatten() {
+            let path = scope
+                .path()
+                .join("lib")
+                .join(lib)
+                .join(format!("lib{lib}.a"));
+            if path.exists() {
+                return path;
+            }
+        }
+        panic!("未找到 lib{lib}.a");
+    }
+
+    fn libs_supported() -> bool {
+        have_compiler()
+            && crate::compiler::pick(None)
+                .ok()
+                .is_some_and(|cxx| crate::compiler::archiver(&cxx).is_ok())
+    }
+
+    #[test]
+    fn targets_build_static_lib_and_link() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = target_project("lib-e2e");
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert!(lib_archive_path(&dir, "foo").is_file());
+        let db = fs::read_to_string(dir.join("compile_commands.json")).unwrap();
+        assert_eq!(db.matches("\"file\"").count(), 2, "bin+lib 两个源: {db}");
+        assert!(db.contains("foo.cpp"), "got: {db}");
+        assert!(db.contains("main.cpp"), "got: {db}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn lib_source_change_rebuilds_archive_without_recompiling_bin() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = target_project("lib-inc");
+        let exe = build_project(&dir).unwrap();
+        let archive = lib_archive_path(&dir, "foo");
+        let main_obj = obj_path(&dir, "main");
+        let (archive_t, main_t, exe_t) = (mtime(&archive), mtime(&main_obj), mtime(&exe));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(
+            dir.join("lib/foo.cpp"),
+            "#include \"foo.h\"\n// changed\nint foo(){ return 1; }\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_ne!(mtime(&archive), archive_t, "库源变化必须重建归档");
+        assert_eq!(mtime(&main_obj), main_t, "库源变化不应重编 bin 源");
+        assert_ne!(mtime(&exe), exe_t, "归档变化必须重链");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bin_source_change_keeps_archive() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = target_project("bin-inc");
+        let exe = build_project(&dir).unwrap();
+        let archive = lib_archive_path(&dir, "foo");
+        let (archive_t, exe_t) = (mtime(&archive), mtime(&exe));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include \"foo.h\"\n// changed\nint main(){ return foo() == 1 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(mtime(&archive), archive_t, "只改 bin 不应重建归档");
+        assert_ne!(mtime(&exe), exe_t);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn project_flag_change_rebuilds_library() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = target_project("lib-flags");
+        build_project(&dir).unwrap();
+        let archive = lib_archive_path(&dir, "foo");
+        let lib_obj = archive.parent().unwrap().join("obj/foo.o");
+        let (archive_t, obj_t) = (mtime(&archive), mtime(&lib_obj));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(dir.join("cizon.toml"), target_toml(Some("[\"-Wall\"]"))).unwrap();
+        build_project(&dir).unwrap();
+        assert_ne!(mtime(&lib_obj), obj_t, "项目 flags 变化应重编库源");
+        assert_ne!(mtime(&archive), archive_t, "库对象变化应重建归档");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_sources_reject_empty_entry() {
+        let dir = target_project("lib-empty-src");
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"\"]\n",
+        )
+        .unwrap();
+        let err = build_project(&dir).unwrap_err();
+        assert!(err.contains("空路径"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 }

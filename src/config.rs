@@ -1,10 +1,10 @@
 //! cizon.toml 解析。
 //!
-//! 当前边界：只认 `[project]`、`[dependencies]` 与 `[compiler]` 三段。其他段一律
-//! 明确报错，绝不静默忽略 —— 拼写错误和"等未来版本来支持"必须当场暴露，而不是
-//! 构建出一个看起来成功实际没加依赖的产物。
+//! 当前边界：只认 `[project]`、`[dependencies]`、`[compiler]` 与 `[[target]]` 四段。
+//! 其他段一律明确报错，绝不静默忽略 —— 拼写错误和"等未来版本来支持"必须当场暴露，
+//! 而不是构建出一个看起来成功实际没加依赖的产物。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -14,6 +14,9 @@ pub struct Config {
     pub project: Option<Project>,
     pub dependencies: Option<BTreeMap<String, DepInfo>>,
     pub compiler: Option<CompilerSection>,
+    /// `[[target]]`：单 bin + 多静态库；缺省时保持隐式单可执行项目。
+    #[serde(default, rename = "target")]
+    pub targets: Option<Vec<Target>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -27,6 +30,26 @@ pub struct Project {
     /// 是否在项目根生成 compile_commands.json（clangd / clang-tidy 用）。
     #[serde(default)]
     pub compile_commands: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetKind {
+    Bin,
+    StaticLib,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Target {
+    pub name: String,
+    pub kind: TargetKind,
+    /// 文件或目录；目录递归扫描。bin 缺省为 src/，static_lib 必填。
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
+    /// 仅 bin：按顺序链接的静态库 target 名。
+    #[serde(default)]
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -53,13 +76,13 @@ const FUTURE_SECTIONS: &[&str] = &[
     "override",
     "patch",
     "features",
-    "target",
     "pch",
     "build",
 ];
 
 /// 从未支持的配置段 —— 出现视为拼写错误。
-const UNKNOWN_HINT: &str = "cizon2 只认 [project]、[dependencies] 与 [compiler]";
+const UNKNOWN_HINT: &str =
+    "cizon2 只认 [project]、[dependencies]、[compiler] 与 [[target]]";
 
 /// 依赖名同时是 `deps/` 下的目录名，只允许与 TOML bare key 交集的安全字符。
 pub(crate) fn is_valid_dep_name(name: &str) -> bool {
@@ -69,8 +92,8 @@ pub(crate) fn is_valid_dep_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// 项目名会被用作可执行文件名：必须是单个文件名，不能逃出构建作用域。
-pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
+/// 项目名/target 名都会进入产物文件名：必须是单个文件名，不能逃出构建作用域。
+fn validate_file_component(name: &str, what: &str) -> Result<(), String> {
     const RESERVED: &[&str] = &[
         "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
         "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -88,8 +111,88 @@ pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
         || RESERVED.contains(&stem.as_str())
     {
         return Err(format!(
-            "项目名 {name:?} 不能作为文件名：不允许空名、路径分隔符、Windows 保留字符/设备名，且不能以点或空格结尾。"
+            "{what} {name:?} 不能作为文件名：不允许空名、路径分隔符、Windows 保留字符/设备名，且不能以点或空格结尾。"
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
+    validate_file_component(name, "项目名")
+}
+
+fn validate_target_name(name: &str) -> Result<(), String> {
+    validate_file_component(name, "target 名")
+}
+
+/// 校验 `[[target]]` 的整体形状：恰好一个 bin；库不能链接库；links 必须存在且不重复。
+fn validate_targets(cfg: &Config) -> Result<(), String> {
+    let Some(targets) = &cfg.targets else {
+        return Ok(());
+    };
+    if targets.is_empty() {
+        return Err("[[target]] 不能为空。".into());
+    }
+    if cfg
+        .project
+        .as_ref()
+        .is_some_and(|p| p.sources.is_some())
+    {
+        return Err("[project].sources 与 [[target]] 不能同时使用：请把源文件写到对应 target。".into());
+    }
+
+    let mut names = HashSet::new();
+    let mut libs = HashSet::new();
+    let mut bins = 0usize;
+    for target in targets {
+        validate_target_name(&target.name)?;
+        if !names.insert(target.name.clone()) {
+            return Err(format!("target 名 {} 重复。", target.name));
+        }
+        match target.kind {
+            TargetKind::Bin => bins += 1,
+            TargetKind::StaticLib => {
+                libs.insert(target.name.clone());
+                if !target.links.is_empty() {
+                    return Err(format!(
+                        "静态库 target {} 不支持 links（v0.4 不支持库依赖库）。",
+                        target.name
+                    ));
+                }
+                if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
+                    return Err(format!(
+                        "静态库 target {} 必须提供 sources。",
+                        target.name
+                    ));
+                }
+            }
+        }
+        if let Some(sources) = &target.sources {
+            if target.kind == TargetKind::Bin && sources.is_empty() {
+                return Err(format!("bin target {} 的 sources 不能为空。", target.name));
+            }
+        }
+    }
+    if bins != 1 {
+        return Err(format!(
+            "[[target]] 必须恰好有一个 kind = \"bin\"（当前 {bins} 个）。"
+        ));
+    }
+    let bin = targets
+        .iter()
+        .find(|t| t.kind == TargetKind::Bin)
+        .expect("bins == 1");
+    let mut seen = HashSet::new();
+    for link in &bin.links {
+        if !libs.contains(link) {
+            return Err(format!(
+                "bin target {} 链接了不存在的静态库 {link}。",
+                bin.name
+            ));
+        }
+        if !seen.insert(link) {
+            return Err(format!("bin target {} 的 links 重复列出 {link}。", bin.name));
+        }
     }
     Ok(())
 }
@@ -112,7 +215,7 @@ pub fn load(dir: &Path) -> Result<Config, String> {
         .map_err(|e| format!("cizon.toml 解析失败:\n{e}"))?;
 
     for key in table.keys() {
-        if key == "project" || key == "dependencies" || key == "compiler" {
+        if key == "project" || key == "dependencies" || key == "compiler" || key == "target" {
             continue;
         }
         if FUTURE_SECTIONS.contains(&key.as_str()) {
@@ -149,6 +252,7 @@ pub fn load(dir: &Path) -> Result<Config, String> {
             }
         }
     }
+    validate_targets(&cfg)?;
     Ok(cfg)
 }
 
@@ -169,6 +273,11 @@ impl Config {
 
     pub fn explicit_sources(&self) -> Option<&[String]> {
         self.project.as_ref().and_then(|p| p.sources.as_deref())
+    }
+
+    /// [[target]] 列表；None 表示传统隐式单可执行项目。
+    pub fn targets(&self) -> Option<&[Target]> {
+        self.targets.as_deref()
     }
 
     /// 默认关闭：不是所有开发者都需要编译数据库。
@@ -332,6 +441,129 @@ mod tests {
 
         let (dir, cfg) = write_config("[project]\nname = \"a\"\ncompile_commands = true\n");
         assert!(cfg.compile_commands());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parse_targets_single_bin_and_libs() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n",
+        );
+        let targets = cfg.targets().expect("targets");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].name, "foo");
+        assert_eq!(targets[0].kind, TargetKind::StaticLib);
+        assert_eq!(targets[0].sources.as_deref(), Some(&["lib/foo.cpp".to_string()][..]));
+        assert_eq!(targets[1].kind, TargetKind::Bin);
+        assert_eq!(targets[1].links, ["foo"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn target_config(targets: &str) -> String {
+        format!("[project]\nname = \"t\"\n\n{targets}")
+    }
+
+    #[test]
+    fn targets_require_exactly_one_bin() {
+        let dir = temp_dir("no-bin");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n"),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("恰好有一个"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("two-bin");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"a\"\nkind = \"bin\"\n\n\
+                 [[target]]\nname = \"b\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("恰好有一个"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_links_and_sources_are_validated() {
+        let dir = temp_dir("bad-links");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nlinks = [\"missing\"]\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("不存在"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("lib-links");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\nlinks = [\"x\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("不支持 links"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("lib-no-sources");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("必须提供 sources"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn targets_reject_duplicate_names_and_project_sources() {
+        let dir = temp_dir("dup-targets");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"x\"\nkind = \"static_lib\"\nsources = [\"lib/x.cpp\"]\n\n\
+                 [[target]]\nname = \"x\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("重复"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("targets-sources");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nsources = [\"src/main.cpp\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("不能同时使用"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unknown_key_in_target_rejected() {
+        let dir = temp_dir("unknown-target-key");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nname = \"app\"\nkind = \"bin\"\nextra = true\n"),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("extra"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 
