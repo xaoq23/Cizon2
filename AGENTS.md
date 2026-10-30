@@ -18,7 +18,7 @@
 | g++ / clang++ 探测，`--compiler` 临时切换 | 自定义错误格式化器 |
 | mtime + `-MMD` 增量 + 编译/链接状态指纹 | vcpkg / conda 等外部包管理 |
 | compile_commands.json（默认关闭，`[project].compile_commands` 开启） | 与 CMake 全功能对齐 |
-| 直传编译器 stderr、退出码翻译 | |
+| 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | |
 
 未知配置段与已知段内的未知键一律报错，不静默忽略。
 

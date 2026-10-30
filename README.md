@@ -12,7 +12,7 @@
 - 现代 C++ 目录结构：递归收集 `src/`，`include/` 自动加入 `-I`
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
-- 编译器 stderr 原样透传；运行崩溃时把退出码翻译成人话
+- 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
 
 ## 安装
 
@@ -61,7 +61,7 @@ hello/
 
 默认是 debug 构建（`-g`）；`--release` 使用 `-O2`。产物位于 `build/<mode>-<compiler>/`，不同模式与编译器之间禁止混链。
 
-`--compiler` 可以写 `g++`、`clang++` 或完整路径；`gcc` / `clang` 别名会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）。
+`--compiler` 可以写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）。
 
 ## 项目结构
 
@@ -105,8 +105,9 @@ cizon2 update fmt
 - `cizon.lock` 是机器文件，锁定的 commit 是唯一真相；`build` 只执行锁里已经确定的事。
 - `add` / `update` 做浅克隆；`build` 在 `deps/` 缺失时按锁恢复。
 - 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon2 update <名字>`。
+- `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
 - 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
-- `cizon.toml`、`cizon.lock`、`deps/` 任一不一致都会大声报错，不静默自愈。
+- `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
 
 ## 编辑器（clangd）
 
@@ -117,7 +118,7 @@ cizon2 update fmt
 compile_commands = true
 ```
 
-运行 `cizon2 build` 后，项目根会生成 `compile_commands.json`，包含项目源与依赖源的完整编译参数。
+运行 `cizon2 build` 后，项目根会生成 `compile_commands.json`，包含项目源与依赖源的完整编译参数。关闭 `compile_commands` 后 cizon2 不再更新该文件；若不再需要请手动删除。
 
 如果 clangd 在数据库生成之前就已经在运行，需要重启一次语言服务（VS Code：`clangd: Restart language server`）；之后数据库更新会被自动感知。MinGW/g++ 环境下 clangd 若仍找不到标准库，可在 clangd 参数中加 `--query-driver=<g++.exe 路径>`。
 
@@ -127,6 +128,7 @@ compile_commands = true
 - 编译参数（edition、优化级、flags、依赖 include）变化：对象全部作废
 - 链接输入（对象清单、`link_flags`）变化：强制重链
 - 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
+- 同一项目不支持并发构建：请勿同时在两个终端运行 `cizon2 build`
 
 ## 故障排查
 
@@ -152,7 +154,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 替代方案：
 
-- 改用 clang++：MSVC STL 的实现不需要额外库
+- 改用 clang++（MSVC 目标，使用 MSVC STL）：不需要额外库；若 clang++ 仍使用 libstdc++，同样需要 `-lstdc++exp`
 - 不使用 `<print>`，改用 `std::format` + `std::cout`
 
 ## 什么时候该用 CMake
