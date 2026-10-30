@@ -25,7 +25,7 @@ cizon2 — 零配置 C++ 构建与运行管理器
   cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
   cizon2 help | version
 
-仅读取 cizon.toml 的 [project]、[dependencies] 与 [compiler]; \
+仅读取 cizon.toml 的 [project]、[dependencies]、[compiler] 与 [[target]]; \
 其他配置段一律明确报错。";
 
 fn main() {

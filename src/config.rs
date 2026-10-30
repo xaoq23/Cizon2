@@ -122,7 +122,16 @@ pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
 }
 
 fn validate_target_name(name: &str) -> Result<(), String> {
-    validate_file_component(name, "target 名")
+    validate_file_component(name, "target 名")?;
+    if name.starts_with('.')
+        || name.eq_ignore_ascii_case("obj")
+        || name.eq_ignore_ascii_case("lib")
+    {
+        return Err(format!(
+            "target 名 {name:?} 与构建内部目录/状态文件冲突（不能以 . 开头，也不能是 obj/lib）。"
+        ));
+    }
+    Ok(())
 }
 
 /// 校验 `[[target]]` 的整体形状：恰好一个 bin；库不能链接库；links 必须存在且不重复。
@@ -146,13 +155,13 @@ fn validate_targets(cfg: &Config) -> Result<(), String> {
     let mut bins = 0usize;
     for target in targets {
         validate_target_name(&target.name)?;
-        if !names.insert(target.name.clone()) {
-            return Err(format!("target 名 {} 重复。", target.name));
+        if !names.insert(target.name.to_ascii_lowercase()) {
+            return Err(format!("target 名 {} 重复（大小写不敏感）。", target.name));
         }
         match target.kind {
             TargetKind::Bin => bins += 1,
             TargetKind::StaticLib => {
-                libs.insert(target.name.clone());
+                libs.insert(target.name.to_ascii_lowercase());
                 if !target.links.is_empty() {
                     return Err(format!(
                         "静态库 target {} 不支持 links（v0.4 不支持库依赖库）。",
@@ -184,13 +193,14 @@ fn validate_targets(cfg: &Config) -> Result<(), String> {
         .expect("bins == 1");
     let mut seen = HashSet::new();
     for link in &bin.links {
-        if !libs.contains(link) {
+        let lower = link.to_ascii_lowercase();
+        if !libs.contains(&lower) {
             return Err(format!(
                 "bin target {} 链接了不存在的静态库 {link}。",
                 bin.name
             ));
         }
-        if !seen.insert(link) {
+        if !seen.insert(lower) {
             return Err(format!("bin target {} 的 links 重复列出 {link}。", bin.name));
         }
     }
@@ -213,6 +223,13 @@ pub fn load(dir: &Path) -> Result<Config, String> {
     let table: toml::Table = text
         .parse()
         .map_err(|e| format!("cizon.toml 解析失败:\n{e}"))?;
+
+    if table.get("target").is_some_and(|v| v.is_table()) {
+        return Err(
+            "cizon.toml 的 target 必须是数组：请使用 [[target]]（双中括号），不能写 [target]。"
+                .into(),
+        );
+    }
 
     for key in table.keys() {
         if key == "project" || key == "dependencies" || key == "compiler" || key == "target" {
@@ -564,6 +581,56 @@ mod tests {
         .unwrap();
         let err = load(&dir).unwrap_err();
         assert!(err.contains("extra"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn single_table_target_rejected_with_hint() {
+        let dir = temp_dir("single-target-table");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[target]\nname = \"app\"\nkind = \"bin\"\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("[[target]]"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_names_are_case_insensitive_and_reserved_checked() {
+        let dir = temp_dir("case-targets");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"Foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+                 [[target]]\nname = \"foo\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("重复"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("reserved-target");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nname = \"obj\"\nkind = \"bin\"\n"),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("内部"));
+        std::fs::remove_dir_all(dir).ok();
+
+        // links 大小写不敏感
+        let dir = temp_dir("case-links");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"Foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nlinks = [\"FOO\"]\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).is_ok());
         std::fs::remove_dir_all(dir).ok();
     }
 

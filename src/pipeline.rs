@@ -17,11 +17,13 @@ use crate::deps;
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
+#[derive(Debug)]
 struct LibTarget {
     name: String,
     sources: Vec<PathBuf>,
 }
 
+#[derive(Debug)]
 pub struct Plan {
     cxx: Cxx,
     /// bin 的源文件（相对项目根）
@@ -92,7 +94,17 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 sources: lib_sources,
             });
         }
-        (sources, libs, bin.links.clone(), exe_name(&bin.name))
+        let links = bin
+            .links
+            .iter()
+            .map(|link| {
+                libs.iter()
+                    .find(|lib| lib.name.eq_ignore_ascii_case(link))
+                    .map(|lib| lib.name.clone())
+                    .unwrap_or_else(|| link.clone())
+            })
+            .collect();
+        (sources, libs, links, exe_name(&bin.name))
     } else {
         let sources = collect_sources(dir, cfg.explicit_sources())?;
         if sources.is_empty() {
@@ -226,13 +238,33 @@ fn scope_label(cxx: &str) -> String {
         .collect()
 }
 
+/// 源清单只接受项目内相对路径，避免编译项目外文件或把 build/deps 扫进来。
+fn resolve_source_path(dir: &Path, raw: &str, owner: &str) -> Result<PathBuf, String> {
+    if raw.trim().is_empty() {
+        return Err(format!("{owner} sources 不能包含空路径。"));
+    }
+    let rel = Path::new(raw);
+    let bad_component = rel.components().any(|c| {
+        !matches!(
+            c,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    if rel.is_absolute() || bad_component {
+        return Err(format!(
+            "{owner} sources 必须是项目内相对路径（不能是绝对路径或包含 ..）: {raw}"
+        ));
+    }
+    Ok(dir.join(rel))
+}
+
 /// 显式 sources 或递归扫描 src/。同名 stem 冲突立刻报错（对象文件按 stem 命名）。
 fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
     match explicit {
         Some(list) => {
             for raw in list {
-                let path = dir.join(raw);
+                let path = resolve_source_path(dir, raw, "[project].sources")?;
                 if !path.is_file() {
                     return Err(format!(
                         "[project].sources 列出的文件不存在（或不是文件）: {}",
@@ -278,11 +310,11 @@ fn collect_target_sources(
         }
         Some(entries) => {
             for raw in entries {
-                if raw.trim().is_empty() {
-                    return Err(format!("{owner} sources 不能包含空路径。"));
-                }
-                let path = dir.join(raw);
+                let path = resolve_source_path(dir, raw, owner)?;
                 if path.is_dir() {
+                    if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(dir).ok() {
+                        return Err(format!("{owner} sources 不能指向项目根目录。"));
+                    }
                     collect_recursive(&path, &mut out)?;
                 } else if path.is_file() {
                     check_source_ext(&path)?;
@@ -515,22 +547,26 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         }
         return Err(msg);
     }
-    // 3) 静态库归档（对象有更新或归档缺失时重建）
-    let mut libs_rebuilt = false;
-    if !plan.libs.is_empty() {
-        let ar = compiler::archiver(&plan.cxx)?;
-        for lib in &plan.libs {
+    // 3) 静态库归档（对象有更新或归档缺失时重建；全部新鲜时不要求归档工具存在）
+    let pending_archives: Vec<(PathBuf, Vec<PathBuf>)> = plan
+        .libs
+        .iter()
+        .filter_map(|lib| {
             let lib_objs: Vec<PathBuf> = lib
                 .sources
                 .iter()
                 .map(|src| lib_obj_for(&scope_dir, &lib.name, src))
                 .collect();
             let archive = archive_path(&scope_dir, &lib.name);
-            if archive_stale(&archive, &lib_objs) {
-                step_line("Archiving", &rel_display(dir, &archive));
-                archive_lib(&ar, &archive, &lib_objs)?;
-                libs_rebuilt = true;
-            }
+            archive_stale(&archive, &lib_objs).then_some((archive, lib_objs))
+        })
+        .collect();
+    let libs_rebuilt = !pending_archives.is_empty();
+    if libs_rebuilt {
+        let ar = compiler::archiver(&plan.cxx)?;
+        for (archive, lib_objs) in &pending_archives {
+            step_line("Archiving", &rel_display(dir, archive));
+            archive_lib(&ar, archive, lib_objs)?;
         }
     }
     let archives: Vec<PathBuf> = plan
@@ -772,21 +808,16 @@ fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<(), String>
     if objs.is_empty() {
         return Err(format!("静态库 {} 没有对象文件。", archive.display()));
     }
-    if let Some(parent) = archive.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("无法创建 {}: {e}", parent.display()))?;
-    }
-    if archive.exists() {
-        std::fs::remove_file(archive)
-            .map_err(|e| format!("删除旧归档 {} 失败: {e}", archive.display()))?;
-    }
+    let tmp = temp_sibling(archive);
+    let _ = std::fs::remove_file(&tmp);
     let out = Command::new(ar)
         .arg("rcs")
-        .arg(archive)
+        .arg(&tmp)
         .args(objs)
         .output()
         .map_err(|e| format!("启动归档工具 {ar} 失败: {e}"))?;
     if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
             "归档失败: {} {}\n{}",
             ar,
@@ -794,7 +825,7 @@ fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<(), String>
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    Ok(())
+    replace_file(&tmp, archive)
 }
 
 /// 增量判定：src、obj、.d 都存在，且 src 与 .d 列出的每个输入都不比 obj 新。
@@ -816,13 +847,41 @@ fn needs_recompile(src: &Path, obj: &Path) -> bool {
         return true;
     }
     match dep_inputs(&dep_file) {
-        Ok(inputs) if !inputs.is_empty() => inputs.iter().any(|p| stale(p)),
+        Ok(inputs) if !inputs.is_empty() => {
+            // 源清单切换后 stem 可能不变：旧 .d 不包含当前 src 时必须重编。
+            if !inputs.iter().any(|p| same_path(p, src)) {
+                return true;
+            }
+            inputs.iter().any(|p| stale(p))
+        }
         _ => true,
+    }
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 
 fn dep_file_for(obj: &Path) -> PathBuf {
     PathBuf::from(format!("{}.d", obj.display()))
+}
+
+fn temp_sibling(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.tmp", path.display()))
+}
+
+fn replace_file(tmp: &Path, dest: &Path) -> Result<(), String> {
+    if dest.exists() {
+        std::fs::remove_file(dest)
+            .map_err(|e| format!("替换 {} 前删除旧文件失败: {e}", dest.display()))?;
+    }
+    std::fs::rename(tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        format!("替换 {} 失败: {e}", dest.display())
+    })
 }
 
 /// 解析 gcc/clang 的 depfile（`target: dep dep dep ...`），
@@ -883,6 +942,7 @@ fn split_dep_tokens(s: &str) -> Vec<String> {
 }
 
 /// 单文件编译。Ok 表示成功（Some = 警告输出），Err = 失败（完整 stderr）。
+/// 对象与 .d 先写到临时文件，成功后再替换，避免半成品被下一次构建当成新鲜产物。
 fn compile_one(
     cxx: &str,
     src: &Path,
@@ -890,20 +950,33 @@ fn compile_one(
     flags: &[String],
 ) -> Result<Option<String>, String> {
     let dep_file = dep_file_for(obj);
+    let tmp_obj = temp_sibling(obj);
+    let tmp_dep = temp_sibling(&dep_file);
+    let _ = std::fs::remove_file(&tmp_obj);
+    let _ = std::fs::remove_file(&tmp_dep);
     let mut cmd = Command::new(cxx);
-    cmd.arg("-c").arg(src).arg("-o").arg(obj);
-    cmd.arg("-MMD").arg("-MF").arg(&dep_file).arg("-MP");
+    cmd.arg("-c").arg(src).arg("-o").arg(&tmp_obj);
+    cmd.arg("-MMD").arg("-MF").arg(&tmp_dep).arg("-MP");
     for f in flags {
         cmd.arg(f);
     }
-    let out = cmd
-        .output()
-        .map_err(|e| format!("启动编译器 {cxx} 失败: {e}"))?;
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_obj);
+            let _ = std::fs::remove_file(&tmp_dep);
+            return Err(format!("启动编译器 {cxx} 失败: {e}"));
+        }
+    };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
 
     if !out.status.success() {
+        let _ = std::fs::remove_file(&tmp_obj);
+        let _ = std::fs::remove_file(&tmp_dep);
         return Err(stderr);
     }
+    replace_file(&tmp_obj, obj)?;
+    replace_file(&tmp_dep, &dep_file)?;
     if stderr.trim().is_empty() {
         Ok(None)
     } else {
@@ -1780,13 +1853,15 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(
             dir.join("lib/foo.cpp"),
-            "#include \"foo.h\"\n// changed\nint foo(){ return 1; }\n",
+            "#include \"foo.h\"\nint foo(){ return 2; }\n",
         )
         .unwrap();
         let exe = build_project(&dir).unwrap();
         assert_ne!(mtime(&archive), archive_t, "库源变化必须重建归档");
         assert_eq!(mtime(&main_obj), main_t, "库源变化不应重编 bin 源");
         assert_ne!(mtime(&exe), exe_t, "归档变化必须重链");
+        // main 仍然检查 foo()==1，新库返回 2 → 退出码 1，证明链接的是新代码
+        assert_eq!(run_code(&exe), 1, "exe 必须包含新库代码");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1820,11 +1895,13 @@ mod tests {
         build_project(&dir).unwrap();
         let archive = lib_archive_path(&dir, "foo");
         let lib_obj = archive.parent().unwrap().join("obj/foo.o");
-        let (archive_t, obj_t) = (mtime(&archive), mtime(&lib_obj));
+        let main_obj = obj_path(&dir, "main");
+        let (archive_t, obj_t, main_t) = (mtime(&archive), mtime(&lib_obj), mtime(&main_obj));
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(dir.join("cizon.toml"), target_toml(Some("[\"-Wall\"]"))).unwrap();
         build_project(&dir).unwrap();
         assert_ne!(mtime(&lib_obj), obj_t, "项目 flags 变化应重编库源");
+        assert_ne!(mtime(&main_obj), main_t, "项目 flags 变化应重编 bin 源");
         assert_ne!(mtime(&archive), archive_t, "库对象变化应重建归档");
         fs::remove_dir_all(dir).ok();
     }
@@ -1838,8 +1915,59 @@ mod tests {
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"\"]\n",
         )
         .unwrap();
-        let err = build_project(&dir).unwrap_err();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("空路径"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_sources_must_stay_inside_project() {
+        let dir = target_project("lib-escape");
+        let absolute = dir.join("src").to_string_lossy().into_owned();
+        for bad in ["../outside", ".", absolute.as_str()] {
+            fs::write(
+                dir.join("cizon.toml"),
+                format!(
+                    "[project]\nname = \"t\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [{bad:?}]\n"
+                ),
+            )
+            .unwrap();
+            let cfg = crate::config::load(&dir).unwrap();
+            let cxx = Cxx { name: "g++".into(), version: "test".into() };
+            let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+            assert!(
+                err.contains("相对路径") || err.contains("项目根"),
+                "source={bad:?} got: {err}"
+            );
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bin_source_switch_with_same_stem_recompiles() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("bin-switch");
+        fs::create_dir_all(dir.join("src/a")).unwrap();
+        fs::create_dir_all(dir.join("src/b")).unwrap();
+        fs::write(dir.join("src/a/main.cpp"), "int main(){ return 0; }\n").unwrap();
+        fs::write(dir.join("src/b/main.cpp"), "int main(){ return 1; }\n").unwrap();
+        let config = |sources: &str| {
+            format!(
+                "[project]\nname = \"t\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [{sources:?}]\n"
+            )
+        };
+        fs::write(dir.join("cizon.toml"), config("src/a")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+
+        // b 的 mtime 早于旧 main.o；旧 .d 不包含它，必须重编
+        fs::write(dir.join("cizon.toml"), config("src/b")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 1, "切换同 stem 的 bin 源后必须使用新源");
         fs::remove_dir_all(dir).ok();
     }
 }

@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// 编译器探测优先级（沿用 Cizon1 的结论：g++ 最常见，clang++ 次之）。
@@ -83,22 +84,35 @@ pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
         .into())
 }
 
-/// 静态库归档工具：clang 优先 llvm-ar，其余优先 ar；找不到就明确报错。
+/// 静态库归档工具：clang 优先 llvm-ar，其余优先 ar。
+/// 先找编译器同目录（--compiler 指向完整路径时 LLVM/MinGW 可能不在 PATH），再找 PATH。
 pub fn archiver(cxx: &Cxx) -> Result<String, String> {
     let clang = cxx.name.to_ascii_lowercase().contains("clang");
-    let candidates: &[&str] = if clang {
+    let names: &[&str] = if clang {
         &["llvm-ar", "ar"]
     } else {
         &["ar", "llvm-ar"]
     };
-    for name in candidates {
-        let ok = Command::new(name)
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = Path::new(&cxx.name).parent() {
+        if !parent.as_os_str().is_empty() {
+            for name in names {
+                candidates.push(parent.join(format!("{name}.exe")));
+                candidates.push(parent.join(name));
+            }
+        }
+    }
+    for name in names {
+        candidates.push(PathBuf::from(name));
+    }
+    for candidate in candidates {
+        let ok = Command::new(&candidate)
             .arg("--version")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
         if ok {
-            return Ok((*name).to_string());
+            return Ok(candidate.to_string_lossy().into_owned());
         }
     }
     Err("未找到静态库归档工具（ar / llvm-ar）。安装 binutils 或 LLVM，或把静态库交给 CMake。".into())
