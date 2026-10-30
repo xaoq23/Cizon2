@@ -2,7 +2,7 @@
 
 零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
 
-当前版本：**v0.4.0**。主要面向 Windows x86-64(未编译linux/macos版以及其他架构)，支持使用 g++ 或 clang++(暂不支持 MSVC)。
+当前版本：**v0.4.0**（dev 分支，待发布）。主要面向 Windows x86-64(未编译linux/macos版以及其他架构)，支持使用 g++ 或 clang++(暂不支持 MSVC)。
 
 ## 特性
 
@@ -10,7 +10,7 @@
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 文件级增量：mtime + `-MMD`；编译参数或链接输入变化会正确触发重编/重链
 - 现代 C++ 目录结构：递归收集 `src/`，`include/` 自动加入 `-I`
-- v0.4：一个可执行 target + 多个静态库 target，库自动归档并链接
+- v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 按顺序链接
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
@@ -121,6 +121,10 @@ links = ["shape"]             # 按顺序链接静态库
 - 静态库暂不支持 `links`（v0.4 不做库依赖库）
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- `cizon2 run` 始终运行唯一的 bin；产物名是 `<bin.name>`（Windows 加 `.exe`），与 `[project].name` 无关
+- target 名大小写不敏感、不能重复，也不能是 `obj` / `lib` 或以 `.` 开头
+- sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）
+- `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建 `lib/` 并添加 `[[target]]`
 
 ## 依赖
 
@@ -189,7 +193,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 Cizon2 面向中小型单可执行项目（可带静态库 target）。出现以下需求时，请直接使用 CMake：
 
-- 多个可执行 target、嵌套 target 图、target 之间的 include / 链接传递
+- 多个可执行 target、嵌套 target 图、库之间的传递依赖
 - 共享库（dll/so）、install / export / find_package / 打包发布
 - 代码生成（protobuf、Qt moc）、自定义构建步骤
 - MSVC、交叉编译、复杂工具链条件
