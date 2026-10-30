@@ -61,66 +61,57 @@ fn dispatch(args: &[String]) -> i32 {
 }
 
 /// build 与 run 的公共 flag 前缀解析: --release / --compiler <spec>
+#[derive(Debug)]
 struct Flags {
     release: bool,
     cc: Option<String>,
 }
 
 /// 解析至 `--` 为止的 flags，之后剩余的透传。
-fn parse_flags(mut args: &[String]) -> (Flags, &[String]) {
+fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
     let mut flags = Flags { release: false, cc: None };
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
-            "--compiler" => {
-                if let Some(spec) = args.get(1) {
+            "--compiler" => match args.get(1) {
+                Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
                     args = &args[2..];
                     continue;
                 }
-                eprint_top("--compiler 需要一个参数，如 --compiler g++");
-                std::process::exit(2);
-            }
+                _ => return Err("--compiler 需要一个参数，如 --compiler g++".into()),
+            },
             "--" => {
                 args = &args[1..];
                 break;
             }
-            other => {
-                eprint_top(&format!("未知标志 {other}。\n\n{USAGE}"));
-                std::process::exit(2);
-            }
+            other => return Err(format!("未知标志 {other}。\n\n{USAGE}")),
         }
         args = &args[1..];
     }
-    (flags, args)
+    Ok((flags, args))
 }
 
-fn load_config() -> (std::path::PathBuf, config::Config) {
-    let dir = std::env::current_dir().expect("无法读取当前目录");
-    let cfg = match config::load(&dir) {
-        Ok(c) => c,
-        Err(e) => {
-            eprint_top(&e);
-            std::process::exit(1);
-        }
-    };
-    (dir, cfg)
+fn load_config() -> Result<(std::path::PathBuf, config::Config), String> {
+    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    let cfg = config::load(&dir)?;
+    Ok((dir, cfg))
 }
 
 fn build_cmd(args: &[String]) -> Result<i32, String> {
-    let (flags, rest) = parse_flags(args);
+    let (flags, rest) = parse_flags(args)?;
     if !rest.is_empty() {
         return Err(format!("build 不接受程序参数: {}", rest.join(" ")));
     }
-    let (dir, cfg) = load_config();
+    let (dir, cfg) = load_config()?;
     let cxx = compiler::pick(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
     pipeline::build(&dir, &cfg, &plan).map(|_| 0)
 }
 
 fn execute_run(args: &[String]) -> Result<i32, String> {
-    let (flags, app_args) = parse_flags(args);
-    let (dir, cfg) = load_config();
+    let (flags, app_args) = parse_flags(args)?;
+    let (dir, cfg) = load_config()?;
     run::run(&dir, &cfg, flags.release, flags.cc.as_deref(), app_args)
 }
 
@@ -138,4 +129,49 @@ fn eprint_top(msg: &str) {
     let mut err = std::io::stderr();
     use std::io::Write;
     let _ = writeln!(err, "\x1b[31m   cizon2:\x1b[0m {msg}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parse_flags_defaults_and_passthrough() {
+        let input = args(&["--", "a", "b"]);
+        let (flags, rest) = parse_flags(&input).unwrap();
+        assert!(!flags.release);
+        assert!(flags.cc.is_none());
+        assert_eq!(rest, &args(&["a", "b"]));
+    }
+
+    #[test]
+    fn parse_flags_accepts_release_and_compiler() {
+        let input = args(&["--release", "--compiler", "clang++"]);
+        let (flags, rest) = parse_flags(&input).unwrap();
+        assert!(flags.release);
+        assert_eq!(flags.cc.as_deref(), Some("clang++"));
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn parse_flags_rejects_missing_or_ambiguous_compiler_value() {
+        for input in [
+            args(&["--compiler"]),
+            args(&["--compiler", ""]),
+            args(&["--compiler", "--release"]),
+        ] {
+            let err = parse_flags(&input).unwrap_err();
+            assert!(err.contains("--compiler"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_flags_rejects_unknown_flag() {
+        let err = parse_flags(&args(&["--nope"])).unwrap_err();
+        assert!(err.contains("未知标志"), "got: {err}");
+    }
 }

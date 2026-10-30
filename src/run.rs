@@ -23,7 +23,7 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
     let mut child = std::process::Command::new(&exe)
         .args(app_args)
         .spawn()
-        .map_err(|e| format!("无法启动 {}: {e}", exe.display()))?;
+        .map_err(|e| format!("无法启动 {}: {e}", pipeline::rel_display(dir, &exe)))?;
     let status = child
         .wait()
         .map_err(|e| format!("等待子进程失败: {e}"))?;
@@ -32,10 +32,16 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
         return Ok(0);
     }
     let code = exit_code(status);
+    let hint = describe_exit_code(code);
     let mut err = std::io::stderr();
-    let _ = writeln!(err, "\r\n\x1b[0m\x1b[31m    危险\x1b[0m 进程退出码: {code} ({code:#x})");
-    if let Some(hint) = describe_exit_code(code) {
+    if let Some(hint) = hint {
+        let _ = writeln!(
+            err,
+            "\n\x1b[0m\x1b[31m    危险\x1b[0m 进程退出码: {code} ({code:#x})"
+        );
         let _ = writeln!(err, "\x1b[2m    {hint}\x1b[0m");
+    } else {
+        let _ = writeln!(err, "\n\x1b[0m    退出码: {code} ({code:#x})");
     }
     Ok(code)
 }
@@ -74,7 +80,8 @@ fn describe_exit_code(code: i32) -> Option<&'static str> {
         }
     }
 
-    // POSIX：退出码 = 128 + signal
+    // POSIX：退出码 = 128 + signal（仅 Unix；Windows 上 139 是普通退出码）
+    #[cfg(unix)]
     if code > 128 && code < 160 {
         let sig = code - 128;
         return match sig {
@@ -88,22 +95,54 @@ fn describe_exit_code(code: i32) -> Option<&'static str> {
         };
     }
 
-    match code {
-        1 => Some("GENERAL_ERROR"),
-        2 => Some("MISUSE: 用法错误"),
-        _ => None,
-    }
+    // 普通非零退出（如测试失败返回 1）不当作崩溃，不翻译
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
+    #[test]
+    fn run_forwards_args_and_exit_code() {
+        if crate::compiler::pick(None).is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "cizon2-run-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include <cstring>\nint main(int argc, char** argv){ return (argc == 3 && std::strcmp(argv[1], \"a\") == 0 && std::strcmp(argv[2], \"b\") == 0) ? 7 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let args = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(run(&dir, &cfg, false, None, &args).unwrap(), 7);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_normal_exit_139_is_not_sigsegv() {
+        // Windows 上 139 是普通退出码，不能被当成 POSIX 信号
+        assert_eq!(describe_exit_code(139), None);
+    }
+
+    #[cfg(windows)]
     #[test]
     fn windows_crash_codes_named() {
         assert!(describe_exit_code(-1073741819).unwrap().contains("ACCESS_VIOLATION"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn posix_signals_named() {
         // 语义检查:139 = 128 + 11 (SIGSEGV)
@@ -111,9 +150,24 @@ mod tests {
     }
 
     #[test]
-    fn zero_ok_misc_unknown() {
-        assert_eq!(describe_exit_code(0), None); // 正常路径不该进这个函数
+    fn normal_exit_is_not_a_crash() {
+        assert_eq!(describe_exit_code(0), None);
+        assert_eq!(describe_exit_code(1), None);
         assert_eq!(describe_exit_code(77), None);
-        assert!(describe_exit_code(1).expect("code 1 has a hint").contains("GENERAL"));
+    }
+
+    #[test]
+    fn exit_code_passes_through_normal_codes() {
+        #[cfg(windows)]
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "exit 7"])
+            .status()
+            .unwrap();
+        #[cfg(unix)]
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .status()
+            .unwrap();
+        assert_eq!(exit_code(status), 7);
     }
 }

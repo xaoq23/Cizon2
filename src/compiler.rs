@@ -23,8 +23,12 @@ impl Cxx {
 }
 
 /// 规格别名归一化："gcc@14" → "g++"，"clang" → "clang++"。
-/// @version 后缀直接忽略（与 Cizon1 行为一致）。
+/// @version 后缀直接忽略（与 Cizon1 行为一致）；完整路径原样保留，
+/// 因为路径本身可能含 @（如 /opt/gcc@14/bin/g++）。
 pub fn resolve_spec(spec: &str) -> &str {
+    if spec.contains('/') || spec.contains('\\') {
+        return spec;
+    }
     let name = match spec.find('@') {
         Some(at) => &spec[..at],
         None => spec,
@@ -36,19 +40,25 @@ pub fn resolve_spec(spec: &str) -> &str {
     }
 }
 
-/// 探测一个编译器是否可用：`--version` 退出码 0 即认为可用。
+/// 探测一个编译器是否可用：`--version` 退出码 0 且有版本输出。
 fn probe(name: &str) -> Option<Cxx> {
     let out = Command::new(name)
         .arg("--version")
         .output()
         .ok()
         .filter(|o| o.status.success())?;
-    let version = String::from_utf8_lossy(&out.stdout)
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let version = stdout
         .lines()
-        .next()
+        .chain(stderr.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
         .unwrap_or("")
-        .trim()
         .to_string();
+    if version.is_empty() {
+        return None;
+    }
     Some(Cxx {
         name: name.to_string(),
         version,
@@ -94,6 +104,9 @@ mod tests {
         assert_eq!(resolve_spec("gcc@14"), "g++");
         assert_eq!(resolve_spec("clang@18"), "clang++");
         assert_eq!(resolve_spec("clang++"), "clang++");
+        // 完整路径中的 @ 是路径的一部分，不能被当作版本后缀截断
+        assert_eq!(resolve_spec(r"C:\gcc@14\bin\g++.exe"), r"C:\gcc@14\bin\g++.exe");
+        assert_eq!(resolve_spec("/opt/gcc@14/bin/g++"), "/opt/gcc@14/bin/g++");
     }
 
     #[test]
@@ -124,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn probe_rejects_garbage() {
+    fn probe_rejects_missing_binary() {
         assert!(probe("cizon2-not-a-compiler-xyz").is_none());
     }
 
@@ -134,14 +147,17 @@ mod tests {
     }
 
     #[test]
-    fn pick_finds_something_when_compiler_installed() {
-        // 只要有任一真实编译器就应探测成功；CI 无编译器环境跳过。
-        let has_any = PREFERENCE
-            .iter()
-            .any(|c| Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false));
-        if !has_any {
-            return;
-        }
-        assert!(pick(None).is_ok());
+    fn preference_order_is_documented() {
+        // 改动优先级必须是有意决定，不能被测试自动跟随
+        assert_eq!(PREFERENCE, &["g++", "clang++"]);
+    }
+
+    #[test]
+    fn pick_follows_preference_order() {
+        let expected = PREFERENCE.iter().find(|c| probe(c).is_some());
+        let Some(expected) = expected else {
+            return; // 无编译器环境跳过
+        };
+        assert_eq!(pick(None).unwrap().name, *expected);
     }
 }
