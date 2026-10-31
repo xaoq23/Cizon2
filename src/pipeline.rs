@@ -4,7 +4,7 @@
 //! stderr 直传 —— 不迁移 PCH / 指纹缓存 / 错误格式化器。
 //! v0.2.1 起按现代 C++ 结构收集：递归 src/，include/ 自动上 -I。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -98,7 +98,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             .iter()
             .map(|link| {
                 libs.iter()
-                    .find(|lib| lib.name.eq_ignore_ascii_case(link))
+                    .find(|lib| lib.name.to_lowercase() == link.to_lowercase())
                     .map(|lib| lib.name.clone())
                     .unwrap_or_else(|| link.clone())
             })
@@ -225,6 +225,24 @@ fn resolve_source_path(dir: &Path, raw: &str, owner: &str) -> Result<PathBuf, St
     Ok(dir.join(rel))
 }
 
+/// 源目录必须在项目内；拒绝指向项目外/项目根的符号链接目录。
+fn ensure_dir_inside(dir: &Path, path: &Path, owner: &str) -> Result<(), String> {
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("无法解析项目根目录 {}: {e}", dir.display()))?;
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("无法解析 {owner} 目录 {}: {e}", path.display()))?;
+    if canonical == root {
+        return Err(format!("{owner} 不能指向项目根目录。"));
+    }
+    if !canonical.starts_with(&root) {
+        return Err(format!(
+            "{owner} 的目录在项目外（符号链接？）: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// 显式 sources 或递归扫描 src/。同名 stem 冲突立刻报错（对象文件按 stem 命名）。
 fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
@@ -233,9 +251,7 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
             for raw in list {
                 let path = resolve_source_path(dir, raw, "[project].sources")?;
                 if path.is_dir() {
-                    if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(dir).ok() {
-                        return Err("[project].sources 不能指向项目根目录。".into());
-                    }
+                    ensure_dir_inside(dir, &path, "[project].sources")?;
                     collect_recursive(&path, &mut out)?;
                 } else if path.is_file() {
                     check_source_ext(&path)?;
@@ -254,6 +270,7 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
             if !src.is_dir() {
                 return Err(format!("未找到 src/ 目录（或无权读取）: {}", src.display()));
             }
+            ensure_dir_inside(dir, &src, "src/")?;
             collect_recursive(&src, &mut out)?;
             out.sort();
         }
@@ -280,15 +297,14 @@ fn collect_target_sources(
             if !src.is_dir() {
                 return Err(format!("未找到 src/ 目录（或无权读取）: {}", src.display()));
             }
+            ensure_dir_inside(dir, &src, owner)?;
             collect_recursive(&src, &mut out)?;
         }
         Some(entries) => {
             for raw in entries {
                 let path = resolve_source_path(dir, raw, owner)?;
                 if path.is_dir() {
-                    if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(dir).ok() {
-                        return Err(format!("{owner} sources 不能指向项目根目录。"));
-                    }
+                    ensure_dir_inside(dir, &path, owner)?;
                     collect_recursive(&path, &mut out)?;
                 } else if path.is_file() {
                     check_source_ext(&path)?;
@@ -311,7 +327,7 @@ fn check_object_paths(dir: &Path, sources: &[PathBuf], owner: &str) -> Result<()
         let rel = project_relative(dir, src)?;
         let mut obj_rel = rel;
         obj_rel.set_extension("o");
-        let key = obj_rel.to_string_lossy().to_ascii_lowercase();
+        let key = obj_rel.to_string_lossy().to_lowercase();
         if let Some(prev) = seen.insert(key, src.clone()) {
             if prev == *src {
                 return Err(format!("{owner} 重复列出: {}", src.display()));
@@ -321,6 +337,23 @@ fn check_object_paths(dir: &Path, sources: &[PathBuf], owner: &str) -> Result<()
                 prev.display(),
                 src.display()
             ));
+        }
+    }
+    // 对象文件可能同时被另一源目录当作父目录（如 src/foo.o/bar.cpp）。
+    let mut artifacts: HashSet<String> = HashSet::new();
+    for key in seen.keys() {
+        artifacts.insert(key.clone());
+        artifacts.insert(format!("{key}.d"));
+        artifacts.insert(format!("{key}.tmp"));
+        artifacts.insert(format!("{key}.d.tmp"));
+    }
+    for key in seen.keys() {
+        for ancestor in Path::new(key).ancestors().skip(1) {
+            if artifacts.contains(&ancestor.to_string_lossy().to_lowercase()) {
+                return Err(format!(
+                    "{owner} 的对象/依赖文件路径与目录冲突: {key}"
+                ));
+            }
         }
     }
     Ok(())
@@ -333,8 +366,15 @@ fn project_relative(dir: &Path, src: &Path) -> Result<PathBuf, String> {
         .map_err(|_| format!("源文件不在项目内: {}", src.display()))?;
     let mut out = PathBuf::new();
     for component in rel.components() {
-        if let std::path::Component::Normal(part) = component {
-            out.push(part);
+        match component {
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::CurDir => {}
+            _ => {
+                return Err(format!(
+                    "源文件路径包含非法组件（.. / 根 / 前缀）: {}",
+                    src.display()
+                ));
+            }
         }
     }
     if out.as_os_str().is_empty() {
@@ -458,7 +498,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         .map_err(|e| format!("写 {} 失败: {e}", layout_marker.display()))?;
     std::fs::write(&marker, &plan.cxx.version)
         .map_err(|e| format!("写 {} 失败: {e}", marker.display()))?;
-    cleanup_stale_exe(&scope_dir, plan);
+    let stale_exes = stale_exe_paths(&scope_dir, plan);
 
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
     let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir)?;
@@ -602,6 +642,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         && link_current
         && exe_is_fresh(&exe, &objs, &archives)
     {
+        remove_artifacts(&stale_exes);
         step_line(
             "Finished",
             &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
@@ -620,6 +661,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     .map_err(|e| format!("链接失败: {}\n{e}", rel_display(dir, &exe)))?;
     std::fs::write(&link_state, &wanted_link)
         .map_err(|e| format!("写 {} 失败: {e}", link_state.display()))?;
+    remove_artifacts(&stale_exes);
 
     step_fin(started, recompiled, total);
     Ok(exe)
@@ -765,7 +807,9 @@ fn json_escape(s: &str) -> String {
 
 /// bin 改名后清理旧 exe 与 Windows 链接侧产物。
 /// 失败只警告：旧 exe 可能正在运行，不应阻断新产物构建。
-fn cleanup_stale_exe(scope_dir: &Path, plan: &Plan) {
+/// 收集 bin 改名后应清理的旧 exe 与 Windows 链接侧产物；实际删除放在链接成功之后。
+fn stale_exe_paths(scope_dir: &Path, plan: &Plan) -> Vec<PathBuf> {
+    let mut stale = Vec::new();
     let old = std::fs::read_to_string(scope_dir.join(".link-state"))
         .ok()
         .and_then(|text| {
@@ -777,22 +821,28 @@ fn cleanup_stale_exe(scope_dir: &Path, plan: &Plan) {
             })
         });
     if let Some(old) = old {
-        if old != plan.out_name {
+        // Windows 文件名大小写不敏感：app.exe 与 APP.exe 是同一个文件，不能当旧产物删。
+        let same_name = if cfg!(windows) {
+            old.to_lowercase() == plan.out_name.to_lowercase()
+        } else {
+            old == plan.out_name
+        };
+        if !same_name {
             let path = scope_dir.join(&old);
-            remove_artifact(&path);
-            remove_artifact(&path.with_extension("pdb"));
-            remove_artifact(&path.with_extension("ilk"));
+            stale.push(path.clone());
+            stale.push(path.with_extension("pdb"));
+            stale.push(path.with_extension("ilk"));
         }
     }
 
-    // 旧版本的 .link-state 没有 exe 行：Windows 上按扩展名清理顶层其他产物。
+    // 旧版本的 .link-state 没有 exe 行：Windows 上按扩展名收集顶层其他产物。
     #[cfg(windows)]
     {
         let current_stem = Path::new(&plan.out_name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")
-            .to_ascii_lowercase();
+            .to_lowercase();
         if let Ok(entries) = std::fs::read_dir(scope_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -809,12 +859,19 @@ fn cleanup_stale_exe(scope_dir: &Path, plan: &Plan) {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
-                    .to_ascii_lowercase();
+                    .to_lowercase();
                 if stem != current_stem {
-                    remove_artifact(&path);
+                    stale.push(path);
                 }
             }
         }
+    }
+    stale
+}
+
+fn remove_artifacts(paths: &[PathBuf]) {
+    for path in paths {
+        remove_artifact(path);
     }
 }
 
@@ -1141,6 +1198,29 @@ mod tests {
         dir
     }
 
+    #[cfg(windows)]
+    fn make_dir_link(link: &Path, target: &Path) -> bool {
+        Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(unix)]
+    fn make_dir_link(link: &Path, target: &Path) -> bool {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+
+    fn remove_dir_link(path: &Path) {
+        #[cfg(windows)]
+        let _ = fs::remove_dir(path);
+        #[cfg(unix)]
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn user_flags_are_linked_once() {
         let dir = temp_dir("linkflags");
@@ -1306,6 +1386,17 @@ mod tests {
         fs::write(dir.join("src/util.cc"), "//").unwrap();
         let err = collect_sources(&dir, None).unwrap_err();
         assert!(err.contains("对象路径冲突"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn object_path_cannot_be_parent_directory() {
+        let dir = temp_dir("obj-parent");
+        fs::create_dir_all(dir.join("src/foo.o")).unwrap();
+        fs::write(dir.join("src/foo.cpp"), "//").unwrap();
+        fs::write(dir.join("src/foo.o/bar.cpp"), "//").unwrap();
+        let err = collect_sources(&dir, None).unwrap_err();
+        assert!(err.contains("路径与目录冲突"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1654,6 +1745,51 @@ mod tests {
     }
 
     #[test]
+    fn default_src_link_outside_project_rejected() {
+        let dir = temp_dir("link-src");
+        let outside = temp_dir("link-src-outside");
+        fs::write(outside.join("x.cpp"), "//").unwrap();
+        if !make_dir_link(&dir.join("src"), &outside) {
+            fs::remove_dir_all(dir).ok();
+            fs::remove_dir_all(outside).ok();
+            return;
+        }
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("项目外"), "got: {err}");
+        remove_dir_link(&dir.join("src"));
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(outside).ok();
+    }
+
+    #[test]
+    fn target_source_link_outside_project_rejected() {
+        let dir = temp_dir("link-target");
+        let outside = temp_dir("link-target-outside");
+        fs::write(outside.join("x.cpp"), "//").unwrap();
+        if !make_dir_link(&dir.join("applink"), &outside) {
+            fs::remove_dir_all(dir).ok();
+            fs::remove_dir_all(outside).ok();
+            return;
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"applink\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("项目外"), "got: {err}");
+        remove_dir_link(&dir.join("applink"));
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(outside).ok();
+    }
+
+    #[test]
     fn include_dir_is_on_include_path() {
         let dir = temp_dir("incflags");
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -1910,11 +2046,24 @@ mod tests {
         let obj = obj_path(&dir, "main");
         let scope = scope_of(&dir, &obj);
         fs::remove_file(scope.join(".obj-layout")).unwrap();
-        let stale = scope.join("obj/legacy.o");
-        fs::write(&stale, "").unwrap();
+        let stale_obj = scope.join("obj/legacy.o");
+        let stale_dep = scope.join("obj/dep/dep.o");
+        let stale_archive = scope.join("lib/x/libx.a");
+        fs::create_dir_all(stale_dep.parent().unwrap()).unwrap();
+        fs::create_dir_all(stale_archive.parent().unwrap()).unwrap();
+        fs::write(&stale_obj, "").unwrap();
+        fs::write(&stale_dep, "").unwrap();
+        fs::write(&stale_archive, "").unwrap();
         build_project(&dir).unwrap();
-        assert!(!stale.exists(), "旧对象布局必须整批清理");
+        assert!(!stale_obj.exists(), "旧对象布局必须整批清理");
+        assert!(!stale_dep.exists(), "旧依赖对象必须清理");
+        assert!(!stale_archive.exists(), "旧库归档必须清理");
         assert!(obj.exists(), "新布局对象应重建");
+
+        let obj_t = mtime(&obj);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        build_project(&dir).unwrap();
+        assert_eq!(mtime(&obj), obj_t, "布局迁移只应发生一次");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2060,31 +2209,105 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    fn rename_config(name: &str) -> String {
+        format!(
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = {name:?}\nkind = \"bin\"\nsources = [\"src\"]\n"
+        )
+    }
+
     #[test]
-    fn renaming_bin_target_removes_old_exe() {
+    fn library_allows_same_stem_across_dirs() {
         if !libs_supported() {
             return;
         }
-        let dir = target_project("rename-bin");
+        let dir = temp_dir("lib-same-stem");
+        fs::create_dir_all(dir.join("lib/a")).unwrap();
+        fs::create_dir_all(dir.join("lib/b")).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("lib/a/util.cpp"), "int a(){ return 1; }\n").unwrap();
+        fs::write(dir.join("lib/b/util.cpp"), "int b(){ return 2; }\n").unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "int a(); int b();\nint main(){ return a() + b() == 3 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert!(lib_archive_path(&dir, "foo").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn renaming_bin_target_removes_old_exe() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("rename-bin");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), rename_config("old")).unwrap();
         let old_exe = build_project(&dir).unwrap();
         assert!(old_exe.is_file());
         let old_pdb = old_exe.with_extension("pdb");
-        let had_pdb = old_pdb.exists();
+        fs::write(&old_pdb, "").unwrap();
 
-        fs::write(
-            dir.join("cizon.toml"),
-            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
-             [[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
-             [[target]]\nname = \"app2\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n",
-        )
-        .unwrap();
+        fs::write(dir.join("cizon.toml"), rename_config("new")).unwrap();
         let new_exe = build_project(&dir).unwrap();
         assert!(!old_exe.exists(), "bin 改名后旧 exe 必须清理");
-        if had_pdb {
-            assert!(!old_pdb.exists(), "旧 exe 的 .pdb 也应清理");
-        }
+        assert!(!old_pdb.exists(), "旧 exe 的 .pdb 也应清理");
         assert!(new_exe.is_file());
         assert_eq!(run_code(&new_exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn case_only_bin_rename_keeps_new_exe() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("rename-case");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), rename_config("case")).unwrap();
+        let _old_exe = build_project(&dir).unwrap();
+
+        fs::write(dir.join("cizon.toml"), rename_config("CASE")).unwrap();
+        let new_exe = build_project(&dir).unwrap();
+        assert!(new_exe.is_file(), "大小写改名不能删掉新 exe");
+        assert_eq!(run_code(&new_exe), 0);
+        #[cfg(unix)]
+        assert!(!_old_exe.exists(), "Unix 上大小写不同的旧 exe 应删除");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn failed_build_after_rename_keeps_old_exe() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("rename-fail");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), rename_config("old")).unwrap();
+        let old_exe = build_project(&dir).unwrap();
+
+        fs::write(
+            dir.join("src/main.cpp"),
+            "int main(){ return does_not_exist; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), rename_config("new")).unwrap();
+        let err = build_project(&dir).unwrap_err();
+        assert!(err.contains("编译失败"), "got: {err}");
+        assert!(old_exe.exists(), "构建失败时不能删除上一个可运行产物");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2148,28 +2371,27 @@ mod tests {
     }
 
     #[test]
-    fn bin_source_switch_with_same_stem_recompiles() {
+    fn source_switch_with_same_object_path_recompiles() {
         if !have_compiler() {
             return;
         }
         let dir = temp_dir("bin-switch");
-        fs::create_dir_all(dir.join("src/a")).unwrap();
-        fs::create_dir_all(dir.join("src/b")).unwrap();
-        fs::write(dir.join("src/a/main.cpp"), "int main(){ return 0; }\n").unwrap();
-        fs::write(dir.join("src/b/main.cpp"), "int main(){ return 1; }\n").unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){ return 0; }\n").unwrap();
+        fs::write(dir.join("src/main.cc"), "int main(){ return 1; }\n").unwrap();
         let config = |sources: &str| {
             format!(
                 "[project]\nname = \"t\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [{sources:?}]\n"
             )
         };
-        fs::write(dir.join("cizon.toml"), config("src/a")).unwrap();
+        fs::write(dir.join("cizon.toml"), config("src/main.cpp")).unwrap();
         let exe = build_project(&dir).unwrap();
         assert_eq!(run_code(&exe), 0);
 
-        // b 的 mtime 早于旧 main.o；旧 .d 不包含它，必须重编
-        fs::write(dir.join("cizon.toml"), config("src/b")).unwrap();
+        // 同一对象路径 obj/src/main.o；main.cc 比旧对象旧，旧 .d 也不包含它，必须重编
+        fs::write(dir.join("cizon.toml"), config("src/main.cc")).unwrap();
         let exe = build_project(&dir).unwrap();
-        assert_eq!(run_code(&exe), 1, "切换同 stem 的 bin 源后必须使用新源");
+        assert_eq!(run_code(&exe), 1, "同一对象路径切换源时必须按 .d 源校验重编");
         fs::remove_dir_all(dir).ok();
     }
 }

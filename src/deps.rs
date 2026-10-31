@@ -1301,6 +1301,35 @@ mod tests {
     }
 
     #[test]
+    fn dependency_named_src_does_not_collide_with_project_src() {
+        if !has_git() || crate::compiler::pick(None).is_err() {
+            return;
+        }
+        let origin_parent = temp("dep-src-parent");
+        let origin = origin_parent.join("src");
+        let proj = temp("dep-src-proj");
+        make_origin(&origin, false);
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::write(
+            proj.join("src/main.cpp"),
+            "#include \"dep.h\"\nint main(){ return depv() - 42; }\n",
+        )
+        .unwrap();
+        add_in(&proj, &add_args(&origin)).unwrap();
+
+        let cfg = config::load(&proj).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
+        assert!(Command::new(&exe).status().unwrap().success());
+        assert!(find_obj(&proj, Some("src"), "dep").is_file());
+        assert!(find_obj(&proj, None, "main").is_file());
+        fs::remove_dir_all(origin_parent).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
     fn prepare_missing_lock_suggests_update() {
         let proj = temp("no-lock-proj");
         fs::create_dir_all(&proj).unwrap();

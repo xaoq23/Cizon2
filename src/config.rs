@@ -103,6 +103,7 @@ fn validate_file_component(name: &str, what: &str) -> Result<(), String> {
         "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
         "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
     ];
+    const INTERNAL: &[&str] = &["obj", "lib", "deps-obj"];
     let bad_char = name
         .chars()
         .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'));
@@ -110,13 +111,15 @@ fn validate_file_component(name: &str, what: &str) -> Result<(), String> {
     if name.is_empty()
         || name == "."
         || name == ".."
+        || name.starts_with('.')
         || bad_char
         || name.ends_with(' ')
         || name.ends_with('.')
         || RESERVED.contains(&stem.as_str())
+        || INTERNAL.iter().any(|n| name.eq_ignore_ascii_case(n))
     {
         return Err(format!(
-            "{what} {name:?} 不能作为文件名：不允许空名、路径分隔符、Windows 保留字符/设备名，且不能以点或空格结尾。"
+            "{what} {name:?} 不能作为文件名：不允许空名、路径分隔符、以 . 开头、Windows 保留字符/设备名，且不能与 obj/lib/deps-obj 等内部目录冲突。"
         ));
     }
     Ok(())
@@ -127,32 +130,23 @@ pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
 }
 
 fn validate_target_name(name: &str) -> Result<(), String> {
-    validate_file_component(name, "target 名")?;
-    if name.starts_with('.')
-        || name.eq_ignore_ascii_case("obj")
-        || name.eq_ignore_ascii_case("lib")
-    {
-        return Err(format!(
-            "target 名 {name:?} 与构建内部目录/状态文件冲突（不能以 . 开头，也不能是 obj/lib）。"
-        ));
-    }
-    Ok(())
+    validate_file_component(name, "target 名")
 }
 
 /// 校验并解析 `[[target]]`：bin 省略 name 时使用项目名；库必须显式命名。
 fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
+    let Some(targets) = &mut cfg.targets else {
+        return Ok(());
+    };
+    if targets.is_empty() {
+        return Err("[[target]] 不能为空。".into());
+    }
     if cfg
         .project
         .as_ref()
         .is_some_and(|p| p.sources.is_some())
     {
         return Err("[project].sources 与 [[target]] 不能同时使用：请把源文件写到对应 target。".into());
-    }
-    let Some(targets) = &mut cfg.targets else {
-        return Ok(());
-    };
-    if targets.is_empty() {
-        return Err("[[target]] 不能为空。".into());
     }
 
     for target in targets.iter_mut() {
@@ -176,13 +170,13 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
     let mut bins = 0usize;
     for target in targets.iter() {
         let name = target.name.as_deref().expect("name resolved");
-        if !names.insert(name.to_ascii_lowercase()) {
+        if !names.insert(name.to_lowercase()) {
             return Err(format!("target 名 {name} 重复（大小写不敏感）。"));
         }
         match target.kind {
             TargetKind::Bin => bins += 1,
             TargetKind::StaticLib => {
-                libs.insert(name.to_ascii_lowercase());
+                libs.insert(name.to_lowercase());
                 if !target.links.is_empty() {
                     return Err(format!(
                         "静态库 target {name} 不支持 links（v0.4 不支持库依赖库）。"
@@ -211,7 +205,7 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
     let bin_name = bin.name.as_deref().expect("name resolved");
     let mut seen = HashSet::new();
     for link in &bin.links {
-        let lower = link.to_ascii_lowercase();
+        let lower = link.to_lowercase();
         if !libs.contains(&lower) {
             return Err(format!(
                 "bin target {bin_name} 链接了不存在的静态库 {link}。"
@@ -385,6 +379,17 @@ mod tests {
         assert_eq!(
             cfg.project.as_ref().and_then(|p| p.version.as_deref()),
             Some("1.2.3")
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn legacy_project_sources_load_without_targets() {
+        let (dir, cfg) = write_config("[project]\nname = \"a\"\nsources = [\"app\"]\n");
+        assert!(cfg.targets().is_none());
+        assert_eq!(
+            cfg.explicit_sources(),
+            Some(&["app".to_string()][..])
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -709,6 +714,22 @@ mod tests {
         )
         .unwrap();
         assert!(load(&dir).is_ok());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_names_use_unicode_case_folding() {
+        let dir = temp_dir("unicode-targets");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"Ä\"\nkind = \"static_lib\"\nsources = [\"lib/a.cpp\"]\n\n\
+                 [[target]]\nname = \"ä\"\nkind = \"static_lib\"\nsources = [\"lib/b.cpp\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("重复"));
         std::fs::remove_dir_all(dir).ok();
     }
 
