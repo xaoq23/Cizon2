@@ -286,9 +286,16 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 以下问题已识别，但尚未承诺实现；按真实需求与 AGENTS.md 的闸门推进。
 
-### 调试集成
+### 调试集成（未排期）
 
-- 当前靠手工 `.vscode` 配置；候选方案是可选生成 `launch.json`/`tasks.json`，需要区分 g++/gdb 与 clang++/lldb、debug/release，且不能覆盖用户已有文件
+目标是让断点调试成为一等开发体验，但 **cizon2 不实现调试器、DAP/MI 协议或断点 UI**；断点、变量和调用栈仍由 gdb / lldb / cppvsdbg 负责。
+
+- 产物契约：默认 debug `-g`、不 strip，产物路径固定为 `build/debug-<compiler>/<bin>.exe`
+- `cizon2 run` 保持直接执行，不改成调试器启动器；调试通过编辑器的 launch 配置 + `preLaunchTask` 构建
+- 触发方式优先 `[project] vscode = true`（默认关闭）：build 时按当前 plan 生成 `.vscode/launch.json` 与 `.vscode/tasks.json`；备选是一次性的 `build --vscode`，独立 `debug` 命令会触发“不加新命令”的闸门，暂不考虑
+- 生成策略非破坏：已有文件不覆盖；只补缺失文件或打印可粘贴的配置片段；目标改名/切编译器后重新 build 刷新
+- 调试器选择：g++/MinGW → `cppdbg` + gdb；clang++（MSVC target）→ `cppvsdbg`/PDB；clang++（GNU target）的 LLDB 配置后置
+- v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
 - 终端内 `cizon2 run --debug` 不能提供 VSCode 断点，不作为替代方案
 
 ### 可靠性
