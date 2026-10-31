@@ -68,29 +68,28 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             .iter()
             .find(|t| t.kind == TargetKind::Bin)
             .expect("config validation guarantees exactly one bin");
+        let bin_name = bin.name.as_deref().expect("config resolves bin name");
         let sources = collect_target_sources(
             dir,
             bin.sources.as_deref(),
-            &format!("bin target {}", bin.name),
+            &format!("bin target {bin_name}"),
         )?;
         if sources.is_empty() {
-            return Err(format!("bin target {} 没有可编译的源文件。", bin.name));
+            return Err(format!("bin target {bin_name} 没有可编译的源文件。"));
         }
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
+            let name = target.name.as_deref().expect("config resolves lib name");
             let lib_sources = collect_target_sources(
                 dir,
                 target.sources.as_deref(),
-                &format!("静态库 target {}", target.name),
+                &format!("静态库 target {name}"),
             )?;
             if lib_sources.is_empty() {
-                return Err(format!(
-                    "静态库 target {} 没有可编译的源文件。",
-                    target.name
-                ));
+                return Err(format!("静态库 target {name} 没有可编译的源文件。"));
             }
             libs.push(LibTarget {
-                name: target.name.clone(),
+                name: name.to_string(),
                 sources: lib_sources,
             });
         }
@@ -104,7 +103,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                     .unwrap_or_else(|| link.clone())
             })
             .collect();
-        (sources, libs, links, exe_name(&bin.name))
+        (sources, libs, links, exe_name(bin_name))
     } else {
         let sources = collect_sources(dir, cfg.explicit_sources())?;
         if sources.is_empty() {

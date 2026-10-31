@@ -45,7 +45,9 @@ pub enum TargetKind {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
-    pub name: String,
+    /// static_lib 必填；bin 可省略，默认使用 [project].name。
+    #[serde(default)]
+    pub name: Option<String>,
     pub kind: TargetKind,
     /// 文件或目录；目录递归扫描。bin 缺省为 src/，static_lib 必填。
     #[serde(default)]
@@ -137,14 +139,8 @@ fn validate_target_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 校验 `[[target]]` 的整体形状：恰好一个 bin；库不能链接库；links 必须存在且不重复。
-fn validate_targets(cfg: &Config) -> Result<(), String> {
-    let Some(targets) = &cfg.targets else {
-        return Ok(());
-    };
-    if targets.is_empty() {
-        return Err("[[target]] 不能为空。".into());
-    }
+/// 校验并解析 `[[target]]`：bin 省略 name 时使用项目名；库必须显式命名。
+fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
     if cfg
         .project
         .as_ref()
@@ -152,36 +148,54 @@ fn validate_targets(cfg: &Config) -> Result<(), String> {
     {
         return Err("[project].sources 与 [[target]] 不能同时使用：请把源文件写到对应 target。".into());
     }
+    let Some(targets) = &mut cfg.targets else {
+        return Ok(());
+    };
+    if targets.is_empty() {
+        return Err("[[target]] 不能为空。".into());
+    }
+
+    for target in targets.iter_mut() {
+        match target.kind {
+            TargetKind::Bin => {
+                if target.name.is_none() {
+                    target.name = Some(project_name.to_string());
+                }
+            }
+            TargetKind::StaticLib => {
+                if target.name.is_none() {
+                    return Err("静态库 target 必须提供 name。".into());
+                }
+            }
+        }
+        validate_target_name(target.name.as_deref().expect("name resolved"))?;
+    }
 
     let mut names = HashSet::new();
     let mut libs = HashSet::new();
     let mut bins = 0usize;
-    for target in targets {
-        validate_target_name(&target.name)?;
-        if !names.insert(target.name.to_ascii_lowercase()) {
-            return Err(format!("target 名 {} 重复（大小写不敏感）。", target.name));
+    for target in targets.iter() {
+        let name = target.name.as_deref().expect("name resolved");
+        if !names.insert(name.to_ascii_lowercase()) {
+            return Err(format!("target 名 {name} 重复（大小写不敏感）。"));
         }
         match target.kind {
             TargetKind::Bin => bins += 1,
             TargetKind::StaticLib => {
-                libs.insert(target.name.to_ascii_lowercase());
+                libs.insert(name.to_ascii_lowercase());
                 if !target.links.is_empty() {
                     return Err(format!(
-                        "静态库 target {} 不支持 links（v0.4 不支持库依赖库）。",
-                        target.name
+                        "静态库 target {name} 不支持 links（v0.4 不支持库依赖库）。"
                     ));
                 }
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
-                    return Err(format!(
-                        "静态库 target {} 必须提供 sources。",
-                        target.name
-                    ));
+                    return Err(format!("静态库 target {name} 必须提供 sources。"));
                 }
             }
         }
         if let Some(sources) = &target.sources {
             if target.kind == TargetKind::Bin && sources.is_empty() {
-                return Err(format!("bin target {} 的 sources 不能为空。", target.name));
+                return Err(format!("bin target {name} 的 sources 不能为空。"));
             }
         }
     }
@@ -194,17 +208,17 @@ fn validate_targets(cfg: &Config) -> Result<(), String> {
         .iter()
         .find(|t| t.kind == TargetKind::Bin)
         .expect("bins == 1");
+    let bin_name = bin.name.as_deref().expect("name resolved");
     let mut seen = HashSet::new();
     for link in &bin.links {
         let lower = link.to_ascii_lowercase();
         if !libs.contains(&lower) {
             return Err(format!(
-                "bin target {} 链接了不存在的静态库 {link}。",
-                bin.name
+                "bin target {bin_name} 链接了不存在的静态库 {link}。"
             ));
         }
         if !seen.insert(lower) {
-            return Err(format!("bin target {} 的 links 重复列出 {link}。", bin.name));
+            return Err(format!("bin target {bin_name} 的 links 重复列出 {link}。"));
         }
     }
     Ok(())
@@ -251,7 +265,7 @@ pub fn load(dir: &Path) -> Result<Config, String> {
         ));
     }
 
-    let cfg: Config = toml::Value::Table(table)
+    let mut cfg: Config = toml::Value::Table(table)
         .try_into::<Config>()
         .map_err(|e| format!("cizon.toml 结构错误:\n{e}"))?;
 
@@ -280,7 +294,7 @@ pub fn load(dir: &Path) -> Result<Config, String> {
             }
         }
     }
-    validate_targets(&cfg)?;
+    validate_targets(&mut cfg, &effective_name)?;
     Ok(cfg)
 }
 
@@ -503,7 +517,7 @@ mod tests {
         );
         let targets = cfg.targets().expect("targets");
         assert_eq!(targets.len(), 2);
-        assert_eq!(targets[0].name, "foo");
+        assert_eq!(targets[0].name.as_deref(), Some("foo"));
         assert_eq!(targets[0].kind, TargetKind::StaticLib);
         assert_eq!(targets[0].sources.as_deref(), Some(&["lib/foo.cpp".to_string()][..]));
         assert_eq!(targets[1].kind, TargetKind::Bin);
@@ -513,6 +527,37 @@ mod tests {
 
     fn target_config(targets: &str) -> String {
         format!("[project]\nname = \"t\"\n\n{targets}")
+    }
+
+    #[test]
+    fn bin_target_name_defaults_to_project_name() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"myapp\"\n\n\
+             [[target]]\nkind = \"bin\"\nsources = [\"src\"]\n",
+        );
+        let bin = cfg
+            .targets()
+            .unwrap()
+            .iter()
+            .find(|t| t.kind == TargetKind::Bin)
+            .unwrap();
+        assert_eq!(bin.name.as_deref(), Some("myapp"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn static_lib_target_requires_name() {
+        let dir = temp_dir("lib-no-name");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nkind = \"static_lib\"\nsources = [\"lib/x.cpp\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("必须提供 name"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -132,6 +132,7 @@ links = ["shape"]             # 按顺序链接静态库
 - 不写 `[[target]]` 时保持传统单可执行项目，行为完全不变
 - 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
 - 静态库暂不支持 `links`（v0.4 不做库依赖库）
+- `bin` 的 `name` 可省略，默认使用 `[project].name`；`static_lib` 的 `name` 必填
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - `cizon2 run` 始终运行唯一的 bin；产物名是 `<bin.name>`（Windows 加 `.exe`），与 `[project].name` 无关
