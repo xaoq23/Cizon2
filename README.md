@@ -182,6 +182,57 @@ compile_commands = true
 
 如果 clangd 在数据库生成之前就已经在运行，需要重启一次语言服务（VS Code：`clangd: Restart language server`）；之后数据库更新会被自动感知。MinGW/g++ 环境下 clangd 若仍找不到标准库，可在 clangd 参数中加 `--query-driver=<g++.exe 路径>`。
 
+## 调试（VSCode）
+
+`cizon2 build` 默认是 debug 构建（`-g`），产物路径固定，但断点调试需要 VSCode 的调试扩展（cpptools + gdb）接管进程；`cizon2 run` 本身只是直接执行产物。
+
+一次性配置 `.vscode/tasks.json`：
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cizon2: build",
+      "type": "shell",
+      "command": "cizon2",
+      "args": ["build"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": ["$gcc"]
+    }
+  ]
+}
+```
+
+`.vscode/launch.json`：
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "cizon2: debug (g++)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/debug-g++/hello.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "gdb",
+      "miDebuggerPath": "C:/Users/<user>/MinGW/mingw64/bin/gdb.exe",
+      "preLaunchTask": "cizon2: build"
+    }
+  ]
+}
+```
+
+- `program` 的 `hello.exe` 换成 bin target 名（省略 name 时为项目名）；`debug-g++` 换成实际的 `<mode>-<compiler>` 作用域
+- `miDebuggerPath` 指向本机 gdb；`cizon2` 不在 PATH 时把 task 的 `command` 改成完整路径
+- g++/MinGW 用 `cppdbg + gdb`；clang++（MSVC target）需要 cpptools 的 `cppvsdbg` 或 LLDB 扩展，配置方式不同
+- 用 `--release` 的产物调试体验较差；断点调试请使用默认 debug
+
 ## 增量与沙盒
 
 - 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
@@ -230,6 +281,37 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - 关闭 `compile_commands` 不会删除已有 `compile_commands.json`，不再需要时手动删除
 - 配置段或已知段内的未知键会直接报错，不会静默忽略
 - 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
+
+## 后续改进（未排期）
+
+以下问题已识别，但尚未承诺实现；按真实需求与 AGENTS.md 的闸门推进。
+
+### 调试集成
+
+- 当前靠手工 `.vscode` 配置；候选方案是可选生成 `launch.json`/`tasks.json`，需要区分 g++/gdb 与 clang++/lldb、debug/release，且不能覆盖用户已有文件
+- 终端内 `cizon2 run --debug` 不能提供 VSCode 断点，不作为替代方案
+
+### 可靠性
+
+- 构建/运行状态目前写 stdout；候选是统一到 stderr（cargo 风格），保证 `cizon2 run > file` 只包含程序输出
+- 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
+- 没有项目级构建锁；两个终端同时 build 仍不受支持
+- 关闭 `compile_commands` 不清理旧文件
+- 删除依赖后 `cizon.lock`/`deps/` 不自动清理；可能需要独立的 remove 命令（会触发二级闸）
+
+### 诊断与工程
+
+- Warning 头已是项目相对路径，但编译器诊断正文仍是绝对路径；可改用相对源路径或 prefix-map
+- 没有基础 CI；缺少编译器/git 时测试会静默跳过
+- `rustfmt`/`clippy` 尚未接入
+
+### 等真实需求再开
+
+- 共享库、多可执行 target、target 间传递依赖、per-target flags/include
+- install/export、一次性 CMake 导出命令
+- MSVC、交叉编译、外部包管理
+- `[project].version` 的生成头/编译宏消费者
+- 编译器常见安装目录发现与版本选择
 
 ## 什么时候该用 CMake
 

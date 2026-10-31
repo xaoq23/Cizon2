@@ -57,6 +57,12 @@
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
 - 用户不明确要求时，默认 debug 构建（`cizon2 build`）。
 
+## 已知待办（未排期）
+
+- VSCode 断点调试目前靠手工 `.vscode/launch.json` + `tasks.json`；可选生成是候选，需先确认编辑器边界
+- 候选工程改进：构建状态统一到 stderr、exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理、诊断相对路径、基础 CI
+- 详细清单与真实需求触发条件见 README「后续改进」；开工前按三道闸确认
+
 ## 路线
 
 1. v0.1 `build` / `run` —— 已发布 v0.1.0
