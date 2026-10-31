@@ -8,7 +8,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.4.2）
+## 当前边界（v0.4.3）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -74,4 +74,5 @@
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
 5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.2
-6. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+6. v0.4.3 `compile_commands` 开启时补 VS Code IntelliSense 配置 —— 已发布 v0.4.3
+7. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
