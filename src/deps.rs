@@ -672,14 +672,29 @@ mod tests {
         [dir.to_string_lossy().into_owned()]
     }
 
+    fn find_named(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.file_name().is_some_and(|n| n == name) {
+                return Some(path);
+            }
+            if path.is_dir() {
+                if let Some(found) = find_named(&path, name) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
     fn find_obj(proj: &Path, dep: Option<&str>, stem: &str) -> PathBuf {
+        let target = format!("{stem}.o");
         for scope in fs::read_dir(proj.join("build")).unwrap().flatten() {
-            let obj_dir = scope.path().join("obj");
-            let path = match dep {
-                Some(name) => obj_dir.join(name).join(format!("{stem}.o")),
-                None => obj_dir.join(format!("{stem}.o")),
+            let root = match dep {
+                Some(name) => scope.path().join("deps-obj").join(name),
+                None => scope.path().join("obj"),
             };
-            if path.exists() {
+            if let Some(path) = find_named(&root, &target) {
                 return path;
             }
         }

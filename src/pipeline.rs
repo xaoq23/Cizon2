@@ -182,46 +182,14 @@ fn state_current(path: &Path, wanted: &str) -> Result<bool, String> {
     }
 }
 
-/// 项目源对象在 obj/ 根层；依赖对象在 obj/<dep>/ 子目录。
+/// bin 对象按项目相对路径镜像，obj/ 只属于 bin。
 fn clear_project_objects(obj_dir: &Path) -> Result<(), String> {
-    let entries = match std::fs::read_dir(obj_dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("无法读取 {}: {e}", obj_dir.display())),
-    };
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("无法读取 {} 的目录项: {e}", obj_dir.display()))?;
-        let path = entry.path();
-        let is_file = entry
-            .file_type()
-            .map_err(|e| format!("无法读取 {} 的类型: {e}", path.display()))?
-            .is_file();
-        if is_file {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("删除 {} 失败: {e}", path.display()))?;
-        }
-    }
-    Ok(())
+    reset_dir(obj_dir)
 }
 
-fn clear_dep_objects(obj_dir: &Path) -> Result<(), String> {
-    let entries = match std::fs::read_dir(obj_dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(format!("无法读取 {}: {e}", obj_dir.display())),
-    };
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("无法读取 {} 的目录项: {e}", obj_dir.display()))?;
-        let path = entry.path();
-        let is_dir = entry
-            .file_type()
-            .map_err(|e| format!("无法读取 {} 的类型: {e}", path.display()))?
-            .is_dir();
-        if is_dir {
-            reset_dir(&path)?;
-        }
-    }
-    Ok(())
+/// 依赖对象独立放在 deps-obj/<dep>/。
+fn clear_dep_objects(deps_obj_dir: &Path) -> Result<(), String> {
+    reset_dir(deps_obj_dir)
 }
 
 /// 编译器名可能是完整路径（--compiler C:\...\g++.exe），目录名只保留安全字符。
@@ -295,7 +263,7 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
     } else {
         "src/"
     };
-    check_stems(&out, owner)?;
+    check_object_paths(dir, &out, owner)?;
     Ok(out)
 }
 
@@ -332,27 +300,47 @@ fn collect_target_sources(
         }
     }
     out.sort();
-    check_stems(&out, owner)?;
+    check_object_paths(dir, &out, owner)?;
     Ok(out)
 }
 
-/// 同一 target 内 stem 必须唯一（obj 按 stem 命名）；Windows 大小写不敏感。
-fn check_stems(sources: &[PathBuf], owner: &str) -> Result<(), String> {
-    let mut stems: HashMap<String, PathBuf> = HashMap::new();
+/// 同一 target 的对象路径必须唯一；跨目录同名 stem 允许，同目录同 stem 报错。
+fn check_object_paths(dir: &Path, sources: &[PathBuf], owner: &str) -> Result<(), String> {
+    let mut seen: HashMap<String, PathBuf> = HashMap::new();
     for src in sources {
-        let stem = src.file_stem().unwrap().to_string_lossy().to_string();
-        if let Some(prev) = stems.insert(stem.to_ascii_lowercase(), src.clone()) {
+        let rel = project_relative(dir, src)?;
+        let mut obj_rel = rel;
+        obj_rel.set_extension("o");
+        let key = obj_rel.to_string_lossy().to_ascii_lowercase();
+        if let Some(prev) = seen.insert(key, src.clone()) {
             if prev == *src {
                 return Err(format!("{owner} 重复列出: {}", src.display()));
             }
             return Err(format!(
-                "{owner} 的源文件对象名冲突（同 stem）:\n  {}\n  {}\n请改名；同一 target 内源文件 stem 必须唯一。",
+                "{owner} 的对象路径冲突:\n  {}\n  {}\n同一目录下源文件 stem 必须唯一（允许跨目录同名）。",
                 prev.display(),
                 src.display()
             ));
         }
     }
     Ok(())
+}
+
+/// 源文件相对项目根的路径（用于镜像对象路径）。
+fn project_relative(dir: &Path, src: &Path) -> Result<PathBuf, String> {
+    let rel = src
+        .strip_prefix(dir)
+        .map_err(|_| format!("源文件不在项目内: {}", src.display()))?;
+    let mut out = PathBuf::new();
+    for component in rel.components() {
+        if let std::path::Component::Normal(part) = component {
+            out.push(part);
+        }
+    }
+    if out.as_os_str().is_empty() {
+        return Err(format!("源文件路径为空: {}", src.display()));
+    }
+    Ok(out)
 }
 
 fn is_source(path: &Path) -> bool {
@@ -421,6 +409,17 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         reset_dir(&scope_dir)?;
     }
     let obj_dir = scope_dir.join("obj");
+    let deps_obj_dir = scope_dir.join("deps-obj");
+    // 对象布局版本：镜像源相对路径后，旧布局对象必须整批作废。
+    let layout_marker = scope_dir.join(".obj-layout");
+    let layout = "mirror-v1";
+    let layout_current = std::fs::read_to_string(&layout_marker)
+        .map_or(false, |t| t.trim() == layout);
+    if !layout_current {
+        reset_dir(&obj_dir)?;
+        reset_dir(&deps_obj_dir)?;
+        clear_lib_artifacts(&scope_dir)?;
+    }
     // 编译参数变化不触碰任何 mtime，不主动作废对象就会静默复用旧行为的 .o。
     // 项目、依赖、库分开记录：改用户 flags 重编项目与库；依赖 flags 只影响依赖。
     let project_state = scope_dir.join(".project-state");
@@ -435,13 +434,15 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         clear_lib_artifacts(&scope_dir)?;
     }
     if !state_current(&deps_state, &wanted_deps)? {
-        clear_dep_objects(&obj_dir)?;
+        clear_dep_objects(&deps_obj_dir)?;
     }
     if !state_current(&libs_state, &wanted_libs)? {
         clear_lib_artifacts(&scope_dir)?;
     }
     std::fs::create_dir_all(&obj_dir)
         .map_err(|e| format!("无法创建 {} : {e}", obj_dir.display()))?;
+    std::fs::create_dir_all(&deps_obj_dir)
+        .map_err(|e| format!("无法创建 {} : {e}", deps_obj_dir.display()))?;
     for lib in &plan.libs {
         let lib_obj = lib_obj_dir(&scope_dir, &lib.name);
         std::fs::create_dir_all(&lib_obj)
@@ -453,12 +454,14 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         .map_err(|e| format!("写 {} 失败: {e}", deps_state.display()))?;
     std::fs::write(&libs_state, &wanted_libs)
         .map_err(|e| format!("写 {} 失败: {e}", libs_state.display()))?;
+    std::fs::write(&layout_marker, layout)
+        .map_err(|e| format!("写 {} 失败: {e}", layout_marker.display()))?;
     std::fs::write(&marker, &plan.cxx.version)
         .map_err(|e| format!("写 {} 失败: {e}", marker.display()))?;
     cleanup_stale_exe(&scope_dir, plan);
 
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
-    let dep_jobs = deps::prepare(dir, cfg, &obj_dir)?;
+    let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir)?;
 
     // 0.5) 编辑器支持：显式开启才写项目根的编译数据库
     if cfg.compile_commands() {
@@ -468,7 +471,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     // 1) 判定需要重编译的源
     let mut jobs: Vec<Job> = Vec::new(); // 项目源
     for src in &plan.sources {
-        let obj = obj_for(src, &obj_dir);
+        let obj = obj_for(dir, src, &obj_dir)?;
         if needs_recompile(src, &obj) {
             jobs.push(Job { src: src.clone(), obj, flags: plan.flags.clone() });
         }
@@ -484,7 +487,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     }
     for lib in &plan.libs {
         for src in &lib.sources {
-            let obj = lib_obj_for(&scope_dir, &lib.name, src);
+            let obj = lib_obj_for(dir, &scope_dir, &lib.name, src)?;
             if needs_recompile(src, &obj) {
                 jobs.push(Job {
                     src: src.clone(),
@@ -555,19 +558,18 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         return Err(msg);
     }
     // 3) 静态库归档（对象有更新或归档缺失时重建；全部新鲜时不要求归档工具存在）
-    let pending_archives: Vec<(PathBuf, Vec<PathBuf>)> = plan
-        .libs
-        .iter()
-        .filter_map(|lib| {
-            let lib_objs: Vec<PathBuf> = lib
-                .sources
-                .iter()
-                .map(|src| lib_obj_for(&scope_dir, &lib.name, src))
-                .collect();
-            let archive = archive_path(&scope_dir, &lib.name);
-            archive_stale(&archive, &lib_objs).then_some((archive, lib_objs))
-        })
-        .collect();
+    let mut pending_archives: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for lib in &plan.libs {
+        let lib_objs: Vec<PathBuf> = lib
+            .sources
+            .iter()
+            .map(|src| lib_obj_for(dir, &scope_dir, &lib.name, src))
+            .collect::<Result<_, _>>()?;
+        let archive = archive_path(&scope_dir, &lib.name);
+        if archive_stale(&archive, &lib_objs) {
+            pending_archives.push((archive, lib_objs));
+        }
+    }
     let libs_rebuilt = !pending_archives.is_empty();
     if libs_rebuilt {
         let ar = compiler::archiver(&plan.cxx)?;
@@ -587,8 +589,8 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let mut objs: Vec<PathBuf> = plan
         .sources
         .iter()
-        .map(|src| obj_for(src, &obj_dir))
-        .collect();
+        .map(|src| obj_for(dir, src, &obj_dir))
+        .collect::<Result<_, _>>()?;
     objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
     // 对象集收缩（删源）不产生任何 mtime 变化，靠这项状态强制重链。
     let link_state = scope_dir.join(".link-state");
@@ -838,18 +840,25 @@ fn exe_is_fresh(exe: &Path, objs: &[PathBuf], archives: &[PathBuf]) -> bool {
         })
 }
 
-fn obj_for(src: &Path, obj_dir: &Path) -> PathBuf {
-    let stem = src.file_stem().unwrap().to_string_lossy();
-    obj_dir.join(format!("{stem}.o"))
+fn obj_for(dir: &Path, src: &Path, obj_dir: &Path) -> Result<PathBuf, String> {
+    let mut rel = project_relative(dir, src)?;
+    rel.set_extension("o");
+    Ok(obj_dir.join(rel))
 }
 
 fn lib_obj_dir(scope_dir: &Path, name: &str) -> PathBuf {
     scope_dir.join("lib").join(name).join("obj")
 }
 
-fn lib_obj_for(scope_dir: &Path, name: &str, src: &Path) -> PathBuf {
-    let stem = src.file_stem().unwrap().to_string_lossy();
-    lib_obj_dir(scope_dir, name).join(format!("{stem}.o"))
+fn lib_obj_for(
+    dir: &Path,
+    scope_dir: &Path,
+    name: &str,
+    src: &Path,
+) -> Result<PathBuf, String> {
+    let mut rel = project_relative(dir, src)?;
+    rel.set_extension("o");
+    Ok(lib_obj_dir(scope_dir, name).join(rel))
 }
 
 fn archive_path(scope_dir: &Path, name: &str) -> PathBuf {
@@ -1021,6 +1030,10 @@ fn compile_one(
     flags: &[String],
 ) -> Result<Option<String>, String> {
     let dep_file = dep_file_for(obj);
+    if let Some(parent) = obj.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建 {}: {e}", parent.display()))?;
+    }
     let tmp_obj = temp_sibling(obj);
     let tmp_dep = temp_sibling(&dep_file);
     let _ = std::fs::remove_file(&tmp_obj);
@@ -1179,15 +1192,17 @@ mod tests {
     #[test]
     fn split_state_clears_only_its_objects() {
         let dir = temp_dir("split-clear");
-        let obj = dir.join("obj");
-        fs::create_dir_all(obj.join("dep")).unwrap();
-        fs::write(obj.join("main.o"), "").unwrap();
-        fs::write(obj.join("dep/dep.o"), "").unwrap();
-        clear_project_objects(&obj).unwrap();
-        assert!(!obj.join("main.o").exists());
-        assert!(obj.join("dep/dep.o").exists(), "项目 flags 变化不应删依赖对象");
-        clear_dep_objects(&obj).unwrap();
-        assert!(!obj.join("dep").exists());
+        let bin_obj = dir.join("obj");
+        let deps_obj = dir.join("deps-obj");
+        fs::create_dir_all(bin_obj.join("src")).unwrap();
+        fs::create_dir_all(deps_obj.join("dep")).unwrap();
+        fs::write(bin_obj.join("src/main.o"), "").unwrap();
+        fs::write(deps_obj.join("dep/dep.o"), "").unwrap();
+        clear_project_objects(&bin_obj).unwrap();
+        assert!(!bin_obj.exists());
+        assert!(deps_obj.join("dep/dep.o").exists(), "项目 flags 变化不应删依赖对象");
+        clear_dep_objects(&deps_obj).unwrap();
+        assert!(!deps_obj.exists());
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1284,14 +1299,13 @@ mod tests {
     }
 
     #[test]
-    fn case_insensitive_stem_conflict_detected() {
-        let dir = temp_dir("case-conflict");
-        fs::create_dir_all(dir.join("src/a")).unwrap();
-        fs::create_dir_all(dir.join("src/b")).unwrap();
-        fs::write(dir.join("src/a/Main.cpp"), "//").unwrap();
-        fs::write(dir.join("src/b/main.cpp"), "//").unwrap();
+    fn same_directory_stem_conflict_detected() {
+        let dir = temp_dir("same-dir-conflict");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/util.cpp"), "//").unwrap();
+        fs::write(dir.join("src/util.cc"), "//").unwrap();
         let err = collect_sources(&dir, None).unwrap_err();
-        assert!(err.contains("冲突"), "got: {err}");
+        assert!(err.contains("对象路径冲突"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1401,14 +1415,38 @@ mod tests {
     }
 
     /// 在 build/<scope>/obj/ 下找 stem.o（scope 名含平台差异，测试不硬编码）。
-    fn obj_path(dir: &Path, stem: &str) -> PathBuf {
-        for scope in fs::read_dir(dir.join("build")).unwrap().flatten() {
-            let p = scope.path().join("obj").join(format!("{stem}.o"));
-            if p.exists() {
-                return p;
+    fn find_named(dir: &Path, name: &str) -> Option<PathBuf> {
+        for entry in fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_file() && path.file_name().is_some_and(|n| n == name) {
+                return Some(path);
+            }
+            if path.is_dir() {
+                if let Some(found) = find_named(&path, name) {
+                    return Some(found);
+                }
             }
         }
-        panic!("未找到 {stem}.o");
+        None
+    }
+
+    fn obj_path(dir: &Path, stem: &str) -> PathBuf {
+        let target = format!("{stem}.o");
+        for scope in fs::read_dir(dir.join("build")).unwrap().flatten() {
+            if let Some(path) = find_named(&scope.path().join("obj"), &target) {
+                return path;
+            }
+        }
+        panic!("未找到 {target}");
+    }
+
+    fn scope_of(dir: &Path, path: &Path) -> PathBuf {
+        for scope in fs::read_dir(dir.join("build")).unwrap().flatten() {
+            if path.starts_with(scope.path()) {
+                return scope.path();
+            }
+        }
+        panic!("未找到 {} 的构建作用域", path.display());
     }
 
     fn mtime(p: &Path) -> std::time::SystemTime {
@@ -1583,14 +1621,35 @@ mod tests {
     }
 
     #[test]
-    fn nested_stem_conflict_detected() {
-        let dir = temp_dir("nestedconflict");
+    fn same_stem_in_different_dirs_allowed() {
+        let dir = temp_dir("nested-same-stem");
         fs::create_dir_all(dir.join("src/a")).unwrap();
         fs::create_dir_all(dir.join("src/b")).unwrap();
         fs::write(dir.join("src/a/core.cpp"), "//").unwrap();
         fs::write(dir.join("src/b/core.cpp"), "//").unwrap();
-        let err = collect_sources(&dir, None).unwrap_err();
-        assert!(err.contains("冲突"), "got: {err}");
+        let sources = collect_sources(&dir, None).unwrap();
+        assert_eq!(sources.len(), 2, "跨目录同名 stem 必须允许");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn same_stem_in_different_dirs_builds() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("nested-same-stem-build");
+        fs::create_dir_all(dir.join("src/a")).unwrap();
+        fs::create_dir_all(dir.join("src/b")).unwrap();
+        fs::write(dir.join("src/a/util.cpp"), "int a(){ return 1; }\n").unwrap();
+        fs::write(dir.join("src/b/util.cpp"), "int b(){ return 2; }\n").unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "int a(); int b();\nint main(){ return a() + b() == 3 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1798,7 +1857,7 @@ mod tests {
         build_project(&dir).unwrap();
         let obj = obj_path(&dir, "main");
         let obj_t = mtime(&obj);
-        let scope = obj.parent().unwrap().parent().unwrap();
+        let scope = scope_of(&dir, &obj);
         fs::remove_file(scope.join(".compiler-version")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         build_project(&dir).unwrap();
@@ -1821,7 +1880,7 @@ mod tests {
         .unwrap();
         build_project(&dir).unwrap();
         let obj = obj_path(&dir, "main");
-        let obj_dir = obj.parent().unwrap().to_path_buf();
+        let obj_dir = scope_of(&dir, &obj).join("obj");
         fs::remove_dir_all(&obj_dir).unwrap();
         fs::write(&obj_dir, "").unwrap();
         fs::write(
@@ -1830,8 +1889,32 @@ mod tests {
         )
         .unwrap();
         let err = build_project(&dir).unwrap_err();
-        assert!(err.contains("无法读取"), "got: {err}");
+        assert!(
+            err.contains("无法清空") || err.contains("无法读取"),
+            "got: {err}"
+        );
         fs::remove_file(&obj_dir).ok();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn old_object_layout_is_cleared_once() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("obj-layout");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        build_project(&dir).unwrap();
+        let obj = obj_path(&dir, "main");
+        let scope = scope_of(&dir, &obj);
+        fs::remove_file(scope.join(".obj-layout")).unwrap();
+        let stale = scope.join("obj/legacy.o");
+        fs::write(&stale, "").unwrap();
+        build_project(&dir).unwrap();
+        assert!(!stale.exists(), "旧对象布局必须整批清理");
+        assert!(obj.exists(), "新布局对象应重建");
         fs::remove_dir_all(dir).ok();
     }
 
@@ -2013,7 +2096,7 @@ mod tests {
         let dir = target_project("lib-flags");
         build_project(&dir).unwrap();
         let archive = lib_archive_path(&dir, "foo");
-        let lib_obj = archive.parent().unwrap().join("obj/foo.o");
+        let lib_obj = find_named(&archive.parent().unwrap().join("obj"), "foo.o").unwrap();
         let main_obj = obj_path(&dir, "main");
         let (archive_t, obj_t, main_t) = (mtime(&archive), mtime(&lib_obj), mtime(&main_obj));
         std::thread::sleep(std::time::Duration::from_millis(50));

@@ -137,7 +137,9 @@ links = ["shape"]             # 按顺序链接静态库
 - 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - `cizon2 run` 始终运行唯一的 bin；产物名是 `<bin.name>`（Windows 加 `.exe`），与 `[project].name` 无关
 - target 名大小写不敏感、不能重复，也不能是 `obj` / `lib` 或以 `.` 开头
-- sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）
+- sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）；允许跨目录同名源文件
+- 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，库为 `lib/<name>/obj/<项目相对路径>.o`；依赖对象在 `deps-obj/<dep>/`
+- 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
 - `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建 `lib/` 并添加 `[[target]]`
 
 ## 依赖
@@ -170,7 +172,8 @@ compile_commands = true
 ## 增量与沙盒
 
 - 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
-- 编译参数（edition、优化级、flags、依赖 include）变化：对象全部作废
+- 项目 flags（edition、优化级、用户 flags、依赖 include）变化：bin 与库对象作废；依赖 flags 变化只影响依赖对象
+- 对象路径镜像源相对路径；布局升级后首次构建会自动清空旧对象并全量重编
 - 链接输入（对象清单、静态库归档、`link_flags`）变化：强制重链
 - 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
 - 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
