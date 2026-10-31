@@ -1,34 +1,59 @@
 # Cizon2
 
-零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
+[简体中文](README-zh.md) | English
 
-当前版本：**v0.4.2**。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
+Zero-config C++ build and run: `cizon2 build`, `cizon2 run` — out of the box like cargo/uv, with no build script language to learn first.
 
-## 特性
+Current version: **v0.4.2**. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
 
-- 一个 `cizon.toml` 描述项目，没有构建脚本
-- 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
-- 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
-- 现代 C++ 目录结构：递归收集源文件，`include/` 自动加入 `-I`
-- v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 按顺序链接
-- git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
-- 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
-- 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
-- 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
+## Features
 
-## 安装
+- One `cizon.toml` describes the project; there are no build scripts
+- Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
+- Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
+- Modern C++ layout: sources are collected recursively, `include/` is added to `-I` automatically
+- v0.4: one executable target plus multiple static library targets; archives are built automatically and `links` are linked in order
+- Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
+- Optional `compile_commands.json` for clangd / clang-tidy
+- Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
+- Compiler stderr is captured and replayed (lossy decoding for non-UTF-8); crash exit codes are translated into plain language
 
-需要 Rust 工具链，以及 PATH 中的 `g++` 或 `clang++`。
+## Installation
+
+Requires a Rust toolchain and `g++` or `clang++` on PATH.
 
 ```bash
 cargo build --release
-# 产物：target/release/cizon2（Windows 为 cizon2.exe）
+# artifact: target/release/cizon2 (cizon2.exe on Windows)
 
-# 或安装到 ~/.cargo/bin
+# or install into ~/.cargo/bin
 cargo install --path .
 ```
 
-## 快速开始
+### Calling `cizon2` from the command line
+
+`cargo install --path .` is the shortest route: it puts `cizon2.exe` in `%USERPROFILE%\.cargo\bin`, which rustup keeps on PATH, so a new terminal can run `cizon2` directly.
+
+If you only ran `cargo build --release`, either copy `target\release\cizon2.exe` into a directory already on PATH, or add the release directory to your user PATH:
+
+```powershell
+$dir = "C:\path\to\Cizon2\target\release"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path", "$userPath;$dir", "User")
+```
+
+Reopen the terminal, then verify:
+
+```powershell
+Get-Command cizon2
+cizon2 version
+```
+
+- Do not use `setx PATH "%PATH%;..."`: it folds the system PATH into the user PATH and truncates long values.
+- `g++` / `clang++` must be on PATH as well; cizon2 probes the compiler at build time.
+- Git Bash inherits the Windows PATH, so the same setting applies there.
+
+## Quick start
 
 ```bash
 cizon2 new hello
@@ -37,7 +62,7 @@ cizon2 run
 # Hello, World!
 ```
 
-`new` 生成的文件：
+Files created by `new`:
 
 ```
 hello/
@@ -47,76 +72,76 @@ hello/
     └── main.cpp
 ```
 
-它不会执行 `git init`：版本控制交给用户自己决定。`.gitignore` 预先忽略了 `build/`、`deps/` 与 `compile_commands.json`。
+It does not run `git init`: version control is your decision. The generated `.gitignore` already ignores `build/`, `deps/`, and `compile_commands.json`.
 
-## 命令
+## Commands
 
-| 命令 | 作用 |
+| Command | Purpose |
 |---|---|
-| `cizon2 new <目录名>` | 创建项目骨架 |
-| `cizon2 init` | 在当前目录初始化（已有文件不覆盖） |
-| `cizon2 build [--release] [--compiler <spec>]` | 构建 |
-| `cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]` | 构建后运行并转发参数 |
-| `cizon2 add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
-| `cizon2 update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
-| `cizon2 help` / `cizon2 version` | 帮助 / 版本 |
+| `cizon2 new <directory>` | Create a project skeleton |
+| `cizon2 init` | Initialize in the current directory (existing files are not overwritten) |
+| `cizon2 build [--release] [--compiler <spec>]` | Build |
+| `cizon2 run [--release] [--compiler <spec>] [-- <program args...>]` | Build, then run and forward arguments |
+| `cizon2 add <git-url> [--tag <tag>]` | Add a git dependency and write the lock file |
+| `cizon2 update <dependency>` | Align the lock with the intent in `cizon.toml` (upgrade or downgrade) |
+| `cizon2 help` / `cizon2 version` | Help / version |
 
-默认是 debug 构建（`-g`）；`--release` 使用 `-O2`。产物位于 `build/<mode>-<compiler>/`，不同模式与编译器之间禁止混链。
+The default is a debug build (`-g`); `--release` uses `-O2`. Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers is forbidden.
 
-`--compiler` 可以写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）。
+`--compiler` accepts `g++`, `clang++`, or a full path. Bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection).
 
-## 构建输出
+## Build output
 
-- `Compiling` / `Rebuilding g++ [n/m files]`：本次实际编译的翻译单元数 / 总数
-- 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
-- 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
-- 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon2 run > out.txt` 只包含程序输出
-- `Finished` 的状态：
+- `Compiling` / `Rebuilding g++ [n/m files]`: translation units actually compiled this run / total
+- Compiler warnings are grouped per source file: gold top and bottom rules plus a yellow `Warning <relative path> (compiler version)` header; project absolute path prefixes in diagnostic bodies are replaced with relative paths, while line numbers and message text stay untouched
+- Warnings do not fail the build; for strict mode use `[compiler].flags = ["-Werror"]`
+- Build and `Running` status go to stderr, keeping program stdout clean: `cizon2 run > out.txt` contains only program output
+- `Finished` states:
 
-| 状态 | 判定 |
+| Status | Meaning |
 |---|---|
-| `fresh build` | 所有翻译单元都编译了（含首次构建、flags/编译器版本变化导致的整批重编） |
-| `incremental rebuild` | 只重编了一部分翻译单元 |
-| `relinked` | 没有翻译单元重编，仅重链或重建静态库归档 |
-| `up to date` | 无需编译和链接 |
+| `fresh build` | Every translation unit was compiled (first build, or a full rebuild after flag/compiler-version changes) |
+| `incremental rebuild` | Only some translation units were recompiled |
+| `relinked` | No translation units were recompiled; only the link or a static archive was rebuilt |
+| `up to date` | Nothing to compile or link |
 
-## 项目结构
+## Project layout
 
 ```
 project/
-├── cizon.toml          # 项目配置
-├── cizon.lock          # 有依赖时生成，锁定 commit
-├── include/            # 公开头，自动 -I（可以不存在）
-│   └── shape/          # 可选：按库名分层，减少撞名
-├── src/                # bin 的源文件（传统项目递归收集）
-├── lib/                # 静态库源码与私有头（不自动 -I）
-│   └── detail/         # 私有头示例
-├── deps/               # git 依赖，自动忽略
-└── build/              # 构建产物
+├── cizon.toml          # project configuration
+├── cizon.lock          # created when dependencies exist; pins commits
+├── include/            # public headers, automatic -I (optional)
+│   └── shape/          # optional: one directory per library to avoid name clashes
+├── src/                # bin sources (collected recursively in traditional projects)
+├── lib/                # static library sources and private headers (no automatic -I)
+│   └── detail/         # example private header
+├── deps/               # git dependencies, ignored automatically
+└── build/              # build artifacts
 ```
 
-### 公开头与私有头
+### Public and private headers
 
-- `include/` 是唯一自动加入 `-I` 的目录，只放对外 API；bin 与库 target 都能包含
-- `lib/` 或实现文件旁边放私有头与实现细节，默认不在 include 路径里
-- 私有头用相对路径包含，如 `#include "detail/shape_impl.h"`；不要放进 `include/`
-- 不要在 `[compiler].flags` 里加 `-Ilib`：flags 是全局的，会把私有目录同时暴露给 bin
-- 公共头应自包含，不要依赖私有头或实现目录
-- 单 exe、没有外部消费者的项目可以把头放在 `src/` 旁边；header-only 库则全部放 `include/`
-- 将来 install/export 只发布 `include/` 与静态库，不发布 `lib/` 源码与私有头
+- `include/` is the only directory added to `-I` automatically; it holds the public API and is visible to both the bin and library targets
+- Private headers and implementation details belong in `lib/` or next to the implementation files and stay off the include path by default
+- Include private headers with relative paths, e.g. `#include "detail/shape_impl.h"`; never put them in `include/`
+- Do not add `-Ilib` to `[compiler].flags`: flags are global and would expose private directories to the bin as well
+- Public headers should be self-contained and must not depend on private headers or implementation directories
+- Single-executable projects without external consumers may keep headers next to `src/`; header-only libraries keep everything in `include/`
+- Future install/export will publish only `include/` and static libraries, never `lib/` sources or private headers
 
 ## cizon.toml
 
 ```toml
 [project]
 name = "hello"
-version = "0.1.0"           # 可选；当前仅元数据，不参与编译/产物命名
-edition = "c++23"           # 也接受 c++17 / gnu++20 / 裸版本号 "17"
-sources = ["src/main.cpp"]  # 可选；文件或目录（目录递归）；缺省扫描 src/
-compile_commands = true     # 可选；默认关闭
+version = "0.1.0"           # optional; metadata only, not used for compilation or artifact names
+edition = "c++23"           # also accepts c++17 / gnu++20 / a bare version "17"
+sources = ["src/main.cpp"]  # optional; file or directory (recursive); defaults to scanning src/
+compile_commands = true     # optional; off by default
 
 [compiler]
-cpp = "clang++"             # 可选；缺省按 g++ > clang++ 探测
+cpp = "clang++"             # optional; defaults to probing g++ > clang++
 flags = ["-Wall"]
 link_flags = ["-lm"]
 
@@ -124,73 +149,73 @@ link_flags = ["-lm"]
 fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 ```
 
-未知的配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
+Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
 
-### 静态库 target（v0.4）
+### Static library targets (v0.4)
 
-一个项目可以带多个静态库 target，但必须恰好有一个可执行 target：
+A project may carry multiple static library targets, but must have exactly one executable target:
 
 ```toml
 [[target]]
 name = "shape"
 kind = "static_lib"
-sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
+sources = ["lib/shape.cpp"]   # required; file or directory (recursive)
 
 [[target]]
 name = "app"
 kind = "bin"
-sources = ["src"]             # 可选；缺省扫描 src/
-links = ["shape"]             # 按顺序链接静态库
+sources = ["src"]             # optional; defaults to scanning src/
+links = ["shape"]             # static libraries, linked in order
 ```
 
-规则：
+Rules:
 
-- 不写 `[[target]]` 时保持传统单可执行项目，配置语义不变；0.4.1 首次构建会迁移对象布局（全量重编一次）
-- 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
-- 静态库暂不支持 `links`（v0.4 不做库依赖库）
-- `bin` 的 `name` 可省略：省略时使用 `[project].name`（缺省为目录名），并需满足 target 命名规则；`static_lib` 的 `name` 必填
-- 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
-- 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
-- `cizon2 run` 始终运行唯一的 bin；显式 `bin.name` 决定产物名，省略时等于项目名（Windows 加 `.exe`）
-- target/项目名大小写不敏感、不能重复，也不能是 `obj` / `lib` / `deps-obj` 或以 `.` 开头
-- sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）；允许跨目录同名源文件
-- 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，库为 `lib/<name>/obj/<项目相对路径>.o`；依赖对象在 `deps-obj/<dep>/`
-- 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
-- `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建 `lib/` 并添加 `[[target]]`
+- Without `[[target]]`, the project stays a traditional single-executable project with unchanged semantics; the first build in 0.4.1 migrates the object layout (one full rebuild)
+- With `[[target]]`, exactly one `kind = "bin"` is required, and `[project].sources` can no longer be used
+- Static libraries do not support `links` yet (no library-to-library dependencies in v0.4)
+- `bin` may omit `name`; it then defaults to `[project].name` (or the directory name) and must satisfy the target naming rules. `static_lib` must have a `name`
+- Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
+- Archiving uses `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- `cizon2 run` always runs the single bin; an explicit `bin.name` determines the artifact name, otherwise the project name is used (plus `.exe` on Windows)
+- Target/project names are case-insensitive, must be unique, and cannot be `obj` / `lib` / `deps-obj` or start with `.`
+- `sources` must be project-relative paths (no absolute paths or `..`); same-named sources in different directories are allowed
+- Object paths mirror source paths: `obj/<project-relative-path>.o` for the bin, `lib/<name>/obj/<project-relative-path>.o` for libraries, and `deps-obj/<dep>/` for dependency objects
+- Same stem in the same directory (e.g. `util.cpp` + `util.cc`) is still an error; rename one
+- `new` / `init` only generate the traditional single-executable skeleton; target projects need a manually created `lib/` and `[[target]]` entries
 
-## 依赖
+## Dependencies
 
 ```bash
 cizon2 add https://github.com/fmtlib/fmt --tag 11.0.2
 cizon2 update fmt
 ```
 
-- `cizon.lock` 是机器文件，锁定的 commit 是唯一真相；`build` 只执行锁里已经确定的事。
-- `add` / `update` 做浅克隆；`build` 在 `deps/` 缺失时按锁恢复。
-- 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon2 update <名字>`。
-- `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
-- 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
-- `deps/<name>` 缺少 `include/` 时，`add` 和 `build` 会给出布局警告；非标准布局请改用该库自己的构建系统，并通过 `link_flags` 接入。
-- `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
+- `cizon.lock` is a machine file; the pinned commit is the single source of truth, and `build` only does what the lock already determines.
+- `add` / `update` shallow-clone; `build` restores from the lock when `deps/` is missing.
+- To upgrade or downgrade, change only the `tag` in `cizon.toml`, then run `cizon2 update <name>`.
+- `update` replaces the entire `deps/<name>` tree and refuses when the directory has uncommitted changes. To keep local commits, push them and update the `tag` first.
+- Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. For other layouts or libraries that need a build system, use CMake.
+- When `deps/<name>` has no `include/`, `add` and `build` print a layout warning; for non-standard layouts, use the library's own build system and wire it in via `link_flags`.
+- Any mismatch among the git/tag in `cizon.toml`/`cizon.lock`, the `deps/` HEAD, and the working tree is a loud error; a missing dependency directory is restored from the lock, never silently self-healed.
 
-## 编辑器（clangd）
+## Editor (clangd)
 
-在 `cizon.toml` 中开启：
+Enable in `cizon.toml`:
 
 ```toml
 [project]
 compile_commands = true
 ```
 
-运行 `cizon2 build` 后，项目根会生成 `compile_commands.json`，包含项目源与依赖源的完整编译参数。关闭 `compile_commands` 后 cizon2 不再更新该文件；若不再需要请手动删除。
+After `cizon2 build`, the project root gets `compile_commands.json` containing full compile flags for project and dependency sources. With `compile_commands` off, cizon2 no longer updates the file; delete it manually if you no longer need it.
 
-如果 clangd 在数据库生成之前就已经在运行，需要重启一次语言服务（VS Code：`clangd: Restart language server`）；之后数据库更新会被自动感知。MinGW/g++ 环境下 clangd 若仍找不到标准库，可在 clangd 参数中加 `--query-driver=<g++.exe 路径>`。
+If clangd was already running before the database was generated, restart the language server once (VS Code: `clangd: Restart language server`); later database updates are picked up automatically. If clangd still cannot find the standard library in a MinGW/g++ setup, add `--query-driver=<path to g++.exe>` to clangd's arguments.
 
-## 调试（VSCode）
+## Debugging (VS Code)
 
-`cizon2 build` 默认是 debug 构建（`-g`），产物路径固定，但断点调试需要 VSCode 的调试扩展（cpptools + gdb）接管进程；`cizon2 run` 本身只是直接执行产物。
+`cizon2 build` is a debug build (`-g`) by default with a fixed artifact path, but breakpoint debugging requires VS Code's debug extension (cpptools + gdb) to own the process; `cizon2 run` itself only executes the artifact.
 
-一次性配置 `.vscode/tasks.json`：
+One-time `.vscode/tasks.json`:
 
 ```json
 {
@@ -208,7 +233,7 @@ compile_commands = true
 }
 ```
 
-`.vscode/launch.json`：
+`.vscode/launch.json`:
 
 ```json
 {
@@ -232,117 +257,117 @@ compile_commands = true
 }
 ```
 
-- `program` 的 `hello.exe` 换成 bin target 名（省略 name 时为项目名）；`debug-g++` 换成实际的 `<mode>-<compiler>` 作用域
-- `miDebuggerPath` 指向本机 gdb；`cizon2` 不在 PATH 时把 task 的 `command` 改成完整路径
-- g++/MinGW 用 `cppdbg + gdb`；clang++（MSVC target）需要 cpptools 的 `cppvsdbg` 或 LLDB 扩展，配置方式不同
-- 用 `--release` 的产物调试体验较差；断点调试请使用默认 debug
+- Replace `hello.exe` in `program` with the bin target name (the project name when `name` is omitted); replace `debug-g++` with the actual `<mode>-<compiler>` scope
+- Point `miDebuggerPath` at your local gdb; if `cizon2` is not on PATH, set the task `command` to its full path
+- g++/MinGW uses `cppdbg + gdb`; clang++ (MSVC target) needs cpptools' `cppvsdbg` or the LLDB extension, configured differently
+- `--release` artifacts are poor debugging targets; use the default debug build for breakpoints
 
-## 增量与沙盒
+## Incremental builds and sandbox
 
-- 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
-- 项目 flags（edition、优化级、用户 flags、依赖 include）变化：bin 与库对象作废；依赖 flags 变化只影响依赖对象
-- 对象路径镜像源相对路径；布局升级后首次构建会自动清空旧对象并全量重编
-- 链接输入（对象清单、静态库归档、`link_flags`）变化：强制重链
-- 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
-- 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
-- 同一项目不支持并发构建：请勿同时在两个终端运行 `cizon2 build`
+- A newer source file or header (tracked via `.d` files): only affected files are recompiled
+- Project flags (edition, optimization level, user flags, dependency includes) change: bin and library objects are invalidated; dependency flag changes only affect dependency objects
+- Object paths mirror source paths; after a layout upgrade the first build clears old objects and does one full rebuild
+- Link inputs (object list, static archives, `link_flags`) change: forced relink
+- Static library sources change: only that archive is rebuilt, then relinked; changing only the bin does not rebuild archives
+- Compiler version changes: the whole `build/<mode>-<compiler>/` scope is invalidated
+- Concurrent builds of the same project are unsupported: do not run `cizon2 build` in two terminals at once
 
-## 故障排查
+## Troubleshooting
 
-### GCC 下使用 `<print>` / `std::println` 链接失败
+### `<print>` / `std::println` fails to link with GCC
 
-报错形如：
+Typical errors:
 
 ```
 undefined reference to `std::__open_terminal(_iobuf*)'
 undefined reference to `std::__write_to_terminal(void*, std::span<char, ...>)'
 ```
 
-原因：libstdc++ 把 C++23 `<print>` 头里的函数归入实验库 `libstdc++exp`，需要显式链接；g++ 不会自动添加这个库。这是 libstdc++ 的打包方式，不是 MinGW 独有，也不是 cizon2 的问题。
+Cause: libstdc++ ships the C++23 `<print>` functions in an experimental library, `libstdc++exp`, which must be linked explicitly; g++ does not add it automatically. This is libstdc++ packaging, not specific to MinGW, and not a cizon2 problem.
 
-在 `cizon.toml` 的 `[compiler]` 中把它写进链接参数：
+Add it to the link flags in `[compiler]`:
 
 ```toml
 [compiler]
 link_flags = ["-lstdc++exp"]
 ```
 
-cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` / `std::println` 即可正常链接。
+cizon2 appends `link_flags` to the end of the link command; with that, `std::print` / `std::println` link normally.
 
-替代方案：
+Alternatives:
 
-- 改用 clang++（MSVC 目标，使用 MSVC STL）：不需要额外库；若 clang++ 仍使用 libstdc++，同样需要 `-lstdc++exp`
-- 不使用 `<print>`，改用 `std::format` + `std::cout`
+- Switch to clang++ (MSVC target with MSVC STL): no extra library needed; if clang++ uses libstdc++, `-lstdc++exp` is still required
+- Avoid `<print>` and use `std::format` + `std::cout`
 
-## 使用注意
+## Usage notes
 
-- 一个项目恰好一个可执行 target；`cizon2 run` 不提供 target 选择
-- 静态库产物是 `.a`（GNU 归档），不是 DLL/导入库；共享库暂不支持
-- `include/` 是唯一自动 `-I` 的目录；私有头不要放进去，也不要用全局 `-Ilib` 暴露
-- sources 必须是项目内相对路径；0.4.1 首次构建会迁移对象布局并全量重编一次
-- `[project].version` 当前仅作元数据，不参与编译或产物命名
-- 同一项目不支持并发构建；请勿在多个终端同时运行 `cizon2 build`
-- 关闭 `compile_commands` 不会删除已有 `compile_commands.json`，不再需要时手动删除
-- 配置段或已知段内的未知键会直接报错，不会静默忽略
-- 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
+- Exactly one executable target per project; `cizon2 run` has no target selection
+- Static library artifacts are `.a` (GNU archives), not DLLs or import libraries; shared libraries are unsupported
+- `include/` is the only automatic `-I` directory; keep private headers out of it and do not expose them with a global `-Ilib`
+- `sources` must be project-relative paths; the first 0.4.1 build migrates the object layout and does one full rebuild
+- `[project].version` is metadata only; it does not affect compilation or artifact names
+- Concurrent builds of one project are unsupported; never run `cizon2 build` in multiple terminals
+- Turning `compile_commands` off does not delete an existing `compile_commands.json`; delete it manually when no longer needed
+- Unknown sections or unknown keys in known sections are hard errors, never silently ignored
+- Compiler warnings (e.g. ignoring a `[[nodiscard]]` return value) do not fail the build; use `-Werror` for strict mode
 
-## 后续改进（未排期）
+## Roadmap (unscheduled)
 
-以下问题已识别，但尚未承诺实现；按真实需求与 AGENTS.md 的闸门推进。
+Known issues that are not committed work yet; they advance on real demand and the gates in AGENTS.md.
 
-### 调试集成（未排期）
+### Debugging integration (unscheduled)
 
-目标是让断点调试成为一等开发体验，但 **cizon2 不实现调试器、DAP/MI 协议或断点 UI**；断点、变量和调用栈仍由 gdb / lldb / cppvsdbg 负责。
+The goal is first-class breakpoint debugging, but **cizon2 does not implement a debugger, the DAP/MI protocol, or breakpoint UI**; breakpoints, variables, and call stacks remain gdb / lldb / cppvsdbg's job.
 
-- 产物契约：默认 debug `-g`、不 strip，产物路径固定为 `build/debug-<compiler>/<bin>.exe`
-- `cizon2 run` 保持直接执行，不改成调试器启动器；调试通过编辑器的 launch 配置 + `preLaunchTask` 构建
-- 触发方式优先 `[project] vscode = true`（默认关闭）：build 时按当前 plan 生成 `.vscode/launch.json` 与 `.vscode/tasks.json`；备选是一次性的 `build --vscode`，独立 `debug` 命令会触发“不加新命令”的闸门，暂不考虑
-- 生成策略非破坏：已有文件不覆盖；只补缺失文件或打印可粘贴的配置片段；目标改名/切编译器后重新 build 刷新
-- 调试器选择：g++/MinGW → `cppdbg` + gdb；clang++（MSVC target）→ `cppvsdbg`/PDB；clang++（GNU target）的 LLDB 配置后置
-- v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
-- 终端内 `cizon2 run --debug` 不能提供 VSCode 断点，不作为替代方案
+- Artifact contract: debug builds use `-g`, are not stripped, and land at the fixed path `build/debug-<compiler>/<bin>.exe`
+- `cizon2 run` stays a direct executor and will not become a debugger launcher; debugging is driven by an editor launch configuration plus a `preLaunchTask` build
+- Preferred trigger: `[project] vscode = true` (off by default), generating `.vscode/launch.json` and `.vscode/tasks.json` at build time from the current plan; a one-shot `build --vscode` is the fallback, while a standalone `debug` command would trip the "no new commands" gate and is not planned
+- Generation is non-destructive: existing files are never overwritten; only missing files are added or paste-ready snippets printed; a target rename or compiler switch refreshes them on the next build
+- Debugger choice: g++/MinGW → `cppdbg` + gdb; clang++ (MSVC target) → `cppvsdbg`/PDB; LLDB for clang++ (GNU target) comes later
+- v1 is validated on float_test with g++/MinGW + gdb; tests cover configuration content, scope/paths, non-overwrite behavior, and a clear error when gdb is missing—without actually starting a debugger
+- Terminal-only `cizon2 run --debug` cannot provide VS Code breakpoints and is not a substitute
 
-### 可靠性
+### Reliability
 
-- 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
-- 没有项目级构建锁；两个终端同时 build 仍不受支持
-- 关闭 `compile_commands` 不清理旧文件
-- 删除依赖后 `cizon.lock`/`deps/` 不自动清理；可能需要独立的 remove 命令（会触发二级闸）
+- The linker writes the exe directly, and lock/`cizon.toml` writes are not power-loss atomic; temporary-file replacement could be added
+- No project-level build lock; two terminals building at once remain unsupported
+- Disabling `compile_commands` leaves stale files behind
+- Removing a dependency leaves `cizon.lock`/`deps/` untouched; a separate remove command may be needed (would trip the second gate)
 
-### 诊断与工程
+### Diagnostics and engineering
 
-- 配置结构错误来自 serde，`unknown field` 等提示为英文（低优先级风格项）
-- 没有基础 CI；缺少编译器/git 时测试会静默跳过
-- `rustfmt`/`clippy` 尚未接入
+- Config structure errors come from serde; messages such as `unknown field` are English (low-priority style issue)
+- No baseline CI; tests silently skip when the compiler/git is missing
+- `rustfmt`/`clippy` are not wired in yet
 
-### 等真实需求再开
+### Wait for real demand
 
-- 共享库、多可执行 target、target 间传递依赖、per-target flags/include
-- install/export、一次性 CMake 导出命令
-- MSVC、交叉编译、外部包管理
-- `[project].version` 的生成头/编译宏消费者
-- 编译器常见安装目录发现与版本选择
+- Shared libraries, multiple executable targets, transitive target dependencies, per-target flags/include
+- install/export, a one-shot CMake export command
+- MSVC, cross-compilation, external package managers
+- Consumers of a generated header/compile macro for `[project].version`
+- Compiler discovery in common install locations and version selection
 
-## 什么时候该用 CMake
+## When to use CMake
 
-Cizon2 面向中小型单可执行项目（可带静态库 target）。出现以下需求时，请直接使用 CMake：
+Cizon2 targets small-to-medium single-executable projects (optionally with static library targets). Reach for CMake when you need:
 
-- 多个可执行 target、嵌套 target 图、库之间的传递依赖
-- 共享库（dll/so）、install / export / find_package / 打包发布
-- 代码生成（protobuf、Qt moc）、自定义构建步骤
-- MSVC、交叉编译、复杂工具链条件
-- vcpkg / Conan 等外部包管理
+- Multiple executable targets, nested target graphs, transitive dependencies between libraries
+- Shared libraries (dll/so), install / export / find_package / packaging
+- Code generation (protobuf, Qt moc), custom build steps
+- MSVC, cross-compilation, complex toolchain conditions
+- External package managers such as vcpkg / Conan
 
-这些目前都不支持
+None of these are supported today.
 
-## 开发
+## Development
 
 ```bash
 cargo test
 cargo build --release
 ```
 
-单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
-功能与修复提交到 `dev`，确认可发布后合入 `main`。
+Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
+Features and fixes go to `dev`, then merge into `main` once releasable.
 
-更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
+See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).
