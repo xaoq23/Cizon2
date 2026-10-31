@@ -96,7 +96,7 @@ project/
 name = "hello"
 version = "0.1.0"           # 可选；当前仅元数据，不参与编译/产物命名
 edition = "c++23"           # 也接受 c++17 / gnu++20 / 裸版本号 "17"
-sources = ["src/main.cpp"]  # 可选；缺省递归扫描 src/
+sources = ["src/main.cpp"]  # 可选；文件或目录（目录递归）；缺省扫描 src/
 compile_commands = true     # 可选；默认关闭
 
 [compiler]

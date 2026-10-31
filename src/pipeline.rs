@@ -265,15 +265,22 @@ fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBu
         Some(list) => {
             for raw in list {
                 let path = resolve_source_path(dir, raw, "[project].sources")?;
-                if !path.is_file() {
+                if path.is_dir() {
+                    if std::fs::canonicalize(&path).ok() == std::fs::canonicalize(dir).ok() {
+                        return Err("[project].sources 不能指向项目根目录。".into());
+                    }
+                    collect_recursive(&path, &mut out)?;
+                } else if path.is_file() {
+                    check_source_ext(&path)?;
+                    out.push(path);
+                } else {
                     return Err(format!(
-                        "[project].sources 列出的文件不存在（或不是文件）: {}",
+                        "[project].sources 列出的路径不存在: {}",
                         path.display()
                     ));
                 }
-                check_source_ext(&path)?;
-                out.push(path);
             }
+            out.sort();
         }
         None => {
             let src = dir.join("src");
@@ -1254,6 +1261,26 @@ mod tests {
         let bad_ext = vec!["notes.txt".to_string()];
         let err = collect_sources(&dir, Some(&bad_ext)).unwrap_err();
         assert!(err.contains("只接受"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn explicit_sources_accept_directory() {
+        let dir = temp_dir("explicit-dir");
+        fs::create_dir_all(dir.join("app/sub")).unwrap();
+        fs::write(dir.join("app/a.cpp"), "//").unwrap();
+        fs::write(dir.join("app/sub/b.cc"), "//").unwrap();
+        fs::write(dir.join("app/notes.txt"), "ignore").unwrap();
+        let list = vec!["app".to_string()];
+        let s = collect_sources(&dir, Some(&list)).unwrap();
+        let names: Vec<String> = s
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.cpp", "b.cc"]);
+        let root = vec![".".to_string()];
+        let err = collect_sources(&dir, Some(&root)).unwrap_err();
+        assert!(err.contains("项目根"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 
