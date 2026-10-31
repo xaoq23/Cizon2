@@ -70,12 +70,24 @@ hello/
 project/
 ├── cizon.toml          # 项目配置
 ├── cizon.lock          # 有依赖时生成，锁定 commit
-├── include/            # 公有头，自动 -I（可以不存在）
+├── include/            # 公开头，自动 -I（可以不存在）
+│   └── shape/          # 可选：按库名分层，减少撞名
 ├── src/                # bin 的源文件（传统项目递归收集）
-├── lib/                # 静态库源码（使用 [[target]] 时）
+├── lib/                # 静态库源码与私有头（不自动 -I）
+│   └── detail/         # 私有头示例
 ├── deps/               # git 依赖，自动忽略
 └── build/              # 构建产物
 ```
+
+### 公开头与私有头
+
+- `include/` 是唯一自动加入 `-I` 的目录，只放对外 API；bin 与库 target 都能包含
+- `lib/` 或实现文件旁边放私有头与实现细节，默认不在 include 路径里
+- 私有头用相对路径包含，如 `#include "detail/shape_impl.h"`；不要放进 `include/`
+- 不要在 `[compiler].flags` 里加 `-Ilib`：flags 是全局的，会把私有目录同时暴露给 bin
+- 公共头应自包含，不要依赖私有头或实现目录
+- 单 exe、没有外部消费者的项目可以把头放在 `src/` 旁边；header-only 库则全部放 `include/`
+- 将来 install/export 只发布 `include/` 与静态库，不发布 `lib/` 源码与私有头
 
 ## cizon.toml
 

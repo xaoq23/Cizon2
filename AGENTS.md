@@ -22,6 +22,13 @@
 
 未知配置段与已知段内的未知键一律报错，不静默忽略。
 
+## 项目结构约定
+
+- `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
+- 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
+- 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
+- `[[target]]` 的 sources 必须是项目内相对路径；恰好一个 bin，库不能链接库
+
 ## 非目标（重开需明确讨论）
 
 - monorepo / workspace / 多包、crates.io 式包注册表
