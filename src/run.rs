@@ -15,11 +15,11 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
     let exe = pipeline::build(dir, cfg, &plan)?;
 
-    println!(
+    eprintln!(
         "\x1b[36m     Running\x1b[0m {}",
         pipeline::rel_display(dir, &exe)
     );
-    println!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+    eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
     let mut child = std::process::Command::new(&exe)
         .args(app_args)
         .spawn()

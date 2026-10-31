@@ -165,6 +165,19 @@ pub(crate) fn rel_display(base: &Path, path: &Path) -> String {
     path.strip_prefix(base).unwrap_or(path).display().to_string()
 }
 
+/// 编译器诊断里的项目绝对路径前缀替换为相对路径；行号与其余原文保持不变。
+fn relativize_diagnostics(dir: &Path, text: &str) -> String {
+    let root = dir.to_string_lossy();
+    let roots = [root.replace('/', "\\"), root.replace('\\', "/")];
+    let mut out = text.to_string();
+    for root in roots {
+        for sep in ['\\', '/'] {
+            out = out.replace(&format!("{root}{sep}"), "");
+        }
+    }
+    out
+}
+
 /// 删除目录（不存在视为成功）；失败必须上报，否则旧对象会静默存活。
 fn reset_dir(path: &Path) -> Result<(), String> {
     match std::fs::remove_dir_all(path) {
@@ -569,11 +582,17 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
                     let Some(Job { src, obj, flags }) = job else { break };
                     match compile_one(&plan.cxx.name, &src, &obj, &flags) {
                         Ok(Some(stderr)) => {
-                            warnings.lock().expect("warn poisoned").push((src, stderr));
+                            warnings
+                                .lock()
+                                .expect("warn poisoned")
+                                .push((src, relativize_diagnostics(dir, &stderr)));
                         }
                         Ok(None) => {}
                         Err(stderr) => {
-                            failures.lock().expect("fail poisoned").push((src, stderr));
+                            failures
+                                .lock()
+                                .expect("fail poisoned")
+                                .push((src, relativize_diagnostics(dir, &stderr)));
                         }
                     }
                 });
@@ -659,7 +678,13 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         &plan.flags,
         &plan.link_flags,
     )
-    .map_err(|e| format!("链接失败: {}\n{e}", rel_display(dir, &exe)))?;
+    .map_err(|e| {
+        format!(
+            "链接失败: {}\n{}",
+            rel_display(dir, &exe),
+            relativize_diagnostics(dir, &e)
+        )
+    })?;
     std::fs::write(&link_state, &wanted_link)
         .map_err(|e| format!("写 {} 失败: {e}", link_state.display()))?;
     remove_artifacts(&stale_exes);
@@ -1171,7 +1196,7 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 fn step_line(label: &str, detail: &str) {
-    println!("{GREEN}{label:>12}{RESET} {detail}", label = label, detail = detail);
+    eprintln!("{GREEN}{label:>12}{RESET} {detail}", label = label, detail = detail);
 }
 
 /// 编译器告警区块：金色上下分隔线 + 源文件/编译器 header，原始诊断不做改写。
@@ -1299,6 +1324,26 @@ mod tests {
         assert_eq!(finish_note(0, 3), "relinked");
         assert_eq!(finish_note(3, 3), "fresh build");
         assert_eq!(finish_note(1, 3), "incremental rebuild");
+    }
+
+    #[test]
+    fn compiler_diagnostics_paths_are_relativized() {
+        let dir = Path::new("proj");
+        let sep = std::path::MAIN_SEPARATOR;
+        let raw = format!("{}{sep}src{sep}main.cpp:1: warning: x", dir.display());
+        assert_eq!(
+            relativize_diagnostics(dir, &raw),
+            format!("src{sep}main.cpp:1: warning: x")
+        );
+        let forward = format!(
+            "{}/src/main.cpp:1: error: y",
+            dir.display().to_string().replace('\\', "/")
+        );
+        assert_eq!(
+            relativize_diagnostics(dir, &forward),
+            "src/main.cpp:1: error: y"
+        );
+        assert_eq!(relativize_diagnostics(dir, "other.cpp:1: warning"), "other.cpp:1: warning");
     }
 
     #[test]

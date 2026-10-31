@@ -71,6 +71,9 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         return Err(rollback_error(e, toml_ok && lock_ok && dep_ok, &name));
     }
     ignore_deps_dir(&dir);
+    if let Some(warning) = layout_warning(&dep_dir, &name) {
+        eprintln!("{warning}");
+    }
 
     println!("\x1b[32m      Added\x1b[0m {name} → deps/{name} (锁 commit {commit})");
     println!("\x1b[32m      Next\x1b[0m cizon2 build");
@@ -83,6 +86,16 @@ fn remove_dep_dir(path: &Path) -> bool {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
         Err(_) => false,
     }
+}
+
+/// 依赖布局提示：非标准布局不阻止构建，但明确告诉用户为什么可能找不到头。
+fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
+    if dep_dir.join("include").is_dir() {
+        return None;
+    }
+    Some(format!(
+        "警告: deps/{name} 缺少 include/，不符合 cizon2 依赖布局（include/ + 平铺 src/*.cpp）。若该库使用其它构建系统，请改用它构建并通过 link_flags 接入。"
+    ))
 }
 
 fn remove_file_if_exists(path: &Path) -> bool {
@@ -486,7 +499,11 @@ pub fn prepare(
             }
         } else {
             clone_pinned(dir, &info.git, info.tag.as_deref(), &commit, name)?;
-            println!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+            eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+        }
+
+        if let Some(warning) = layout_warning(&dep_dir, name) {
+            eprintln!("{warning}");
         }
 
         let src_dir = dep_dir.join("src");
@@ -857,6 +874,17 @@ mod tests {
         let regular = dir.join("main.cpp");
         fs::write(&regular, "#include <iostream>\nint main() {}\n").unwrap();
         assert!(!is_module_unit(&regular).unwrap());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn layout_warning_checks_include_dir() {
+        let dir = temp("layout-warning");
+        fs::create_dir_all(&dir).unwrap();
+        let warning = layout_warning(&dir, "dep").expect("missing include should warn");
+        assert!(warning.contains("include/"), "got: {warning}");
+        fs::create_dir_all(dir.join("include")).unwrap();
+        assert!(layout_warning(&dir, "dep").is_none());
         fs::remove_dir_all(dir).ok();
     }
 
