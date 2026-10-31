@@ -23,6 +23,9 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Project {
     pub name: Option<String>,
+    /// 项目版本（元数据）；当前不参与编译或产物命名，预留给 install/export。
+    #[serde(default)]
+    pub version: Option<String>,
     pub edition: Option<String>,
     /// 显式源文件列表（相对项目根）。缺省时递归扫描 src/ 下的 .cpp/.cc/.cxx。
     #[serde(default)]
@@ -260,6 +263,14 @@ pub fn load(dir: &Path) -> Result<Config, String> {
             .unwrap_or_else(|| "app".into()),
     };
     validate_project_name(&effective_name)?;
+    if let Some(version) = cfg.project.as_ref().and_then(|p| p.version.as_deref()) {
+        if version.trim().is_empty() {
+            return Err("[project].version 不能为空。".into());
+        }
+        if version.chars().any(|c| c.is_control()) {
+            return Err("[project].version 不能包含控制字符。".into());
+        }
+    }
     if let Some(deps) = &cfg.dependencies {
         for name in deps.keys() {
             if !is_valid_dep_name(name) {
@@ -351,6 +362,28 @@ mod tests {
     fn parse_minimal() {
         let (dir, cfg) = write_config("[project]\nname = \"hello\"\n");
         assert_eq!(cfg.name(&dir), "hello");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn project_version_is_metadata_only() {
+        let (dir, cfg) = write_config("[project]\nname = \"a\"\nversion = \"1.2.3\"\n");
+        assert_eq!(
+            cfg.project.as_ref().and_then(|p| p.version.as_deref()),
+            Some("1.2.3")
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn empty_project_version_rejected() {
+        let dir = temp_dir("empty-version");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\nversion = \"  \"\n",
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("不能为空"));
         std::fs::remove_dir_all(dir).ok();
     }
 
