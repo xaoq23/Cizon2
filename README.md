@@ -129,14 +129,14 @@ links = ["shape"]             # 按顺序链接静态库
 
 规则：
 
-- 不写 `[[target]]` 时保持传统单可执行项目，行为完全不变
+- 不写 `[[target]]` 时保持传统单可执行项目，配置语义不变；0.4.1 首次构建会迁移对象布局（全量重编一次）
 - 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
 - 静态库暂不支持 `links`（v0.4 不做库依赖库）
-- `bin` 的 `name` 可省略，默认使用 `[project].name`；`static_lib` 的 `name` 必填
+- `bin` 的 `name` 可省略：省略时使用 `[project].name`（缺省为目录名），并需满足 target 命名规则；`static_lib` 的 `name` 必填
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
-- `cizon2 run` 始终运行唯一的 bin；产物名是 `<bin.name>`（Windows 加 `.exe`），与 `[project].name` 无关
-- target 名大小写不敏感、不能重复，也不能是 `obj` / `lib` 或以 `.` 开头
+- `cizon2 run` 始终运行唯一的 bin；显式 `bin.name` 决定产物名，省略时等于项目名（Windows 加 `.exe`）
+- target/项目名大小写不敏感、不能重复，也不能是 `obj` / `lib` / `deps-obj` 或以 `.` 开头
 - sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）；允许跨目录同名源文件
 - 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，库为 `lib/<name>/obj/<项目相对路径>.o`；依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可

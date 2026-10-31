@@ -27,7 +27,8 @@
 - `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
-- `[[target]]` 的 sources 必须是项目内相对路径；恰好一个 bin，库不能链接库
+- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；恰好一个 bin，库不能链接库
+- bin 的 name 可省略并默认项目名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 
 ## 非目标（重开需明确讨论）
 
@@ -56,5 +57,5 @@
 2. v0.2 `new` / `init` / `add` / `update`，git 依赖与锁生命周期 —— 已发布 v0.2.0
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
-5. v0.4 `[[target]]`：单 bin + 多静态库 —— dev 完成，待发布；共享库、多 bin 等真实需求
+5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.1（dev，待发布）；共享库、多 bin 等真实需求
 6. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
