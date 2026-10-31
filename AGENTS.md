@@ -30,6 +30,12 @@
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；恰好一个 bin，库不能链接库
 - bin 的 name 可省略并默认项目名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 
+## 输出约定
+
+- 用户面路径用项目相对路径；编译器原始诊断不改写、不缩进
+- 警告按源文件分组：金色上下分隔线 + 黄色 `Warning` 头
+- `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
+
 ## 非目标（重开需明确讨论）
 
 - monorepo / workspace / 多包、crates.io 式包注册表
@@ -57,5 +63,5 @@
 2. v0.2 `new` / `init` / `add` / `update`，git 依赖与锁生命周期 —— 已发布 v0.2.0
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
-5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.1（dev，待发布）；共享库、多 bin 等真实需求
+5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.1 已合并 main；dev 待发布构建输出改进
 6. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

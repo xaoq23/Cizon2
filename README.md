@@ -2,17 +2,18 @@
 
 零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
 
-当前版本：**v0.4.1**（dev 分支，待发布）。主要面向 Windows x86-64(未编译linux/macos版以及其他架构)，支持使用 g++ 或 clang++(暂不支持 MSVC)。
+当前版本：**v0.4.1**（已合并 main）。dev 分支另有构建输出改进（警告区块、`relinked` 状态），待下个版本发布。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
 
 ## 特性
 
 - 一个 `cizon.toml` 描述项目，没有构建脚本
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
-- 文件级增量：mtime + `-MMD`；编译参数或链接输入变化会正确触发重编/重链
-- 现代 C++ 目录结构：递归收集 `src/`，`include/` 自动加入 `-I`
+- 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
+- 现代 C++ 目录结构：递归收集源文件，`include/` 自动加入 `-I`
 - v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 按顺序链接
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
+- 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
 
 ## 安装
@@ -63,6 +64,18 @@ hello/
 默认是 debug 构建（`-g`）；`--release` 使用 `-O2`。产物位于 `build/<mode>-<compiler>/`，不同模式与编译器之间禁止混链。
 
 `--compiler` 可以写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）。
+
+## 构建输出
+
+- `Compiling` / `Rebuilding g++ [n/m files]`：本次实际编译的翻译单元数 / 总数
+- 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头，诊断正文保持编译器原始格式，便于 IDE 匹配
+- 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
+- `Finished` 的状态：
+  - `fresh build`：所有翻译单元都编译了（首次构建、flags/编译器版本变化等）
+  - `incremental rebuild`：只重编了一部分翻译单元
+  - `relinked`：没有翻译单元重编，仅重链或重建静态库归档
+  - `up to date`：无需编译和链接
+- 构建状态与 `Running` 目前写在 stdout；需要只捕获程序输出时，先 `cizon2 build`，再直接执行产物
 
 ## 项目结构
 
@@ -205,6 +218,18 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 - 改用 clang++（MSVC 目标，使用 MSVC STL）：不需要额外库；若 clang++ 仍使用 libstdc++，同样需要 `-lstdc++exp`
 - 不使用 `<print>`，改用 `std::format` + `std::cout`
+
+## 使用注意
+
+- 一个项目恰好一个可执行 target；`cizon2 run` 不提供 target 选择
+- 静态库产物是 `.a`（GNU 归档），不是 DLL/导入库；共享库暂不支持
+- `include/` 是唯一自动 `-I` 的目录；私有头不要放进去，也不要用全局 `-Ilib` 暴露
+- sources 必须是项目内相对路径；0.4.1 首次构建会迁移对象布局并全量重编一次
+- `[project].version` 当前仅作元数据，不参与编译或产物命名
+- 同一项目不支持并发构建；请勿在多个终端同时运行 `cizon2 build`
+- 关闭 `compile_commands` 不会删除已有 `compile_commands.json`，不再需要时手动删除
+- 配置段或已知段内的未知键会直接报错，不会静默忽略
+- 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
 
 ## 什么时候该用 CMake
 
