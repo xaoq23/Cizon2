@@ -554,7 +554,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     }
 
     // 2) 并行编译（工作队列 + n 线程），先收集输出再统一打印，避免交错乱序
-    let warnings = Mutex::new(Vec::<String>::new());
+    let warnings = Mutex::new(Vec::<(PathBuf, String)>::new());
     let failures = Mutex::new(Vec::<(PathBuf, String)>::new());
     if !jobs.is_empty() {
         let queue = Mutex::new(jobs);
@@ -568,11 +568,10 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
                     let job = queue.lock().expect("queue poisoned").pop();
                     let Some(Job { src, obj, flags }) = job else { break };
                     match compile_one(&plan.cxx.name, &src, &obj, &flags) {
-                        Ok(err) => {
-                            if let Some(stderr) = err {
-                                warnings.lock().expect("warn poisoned").push(stderr);
-                            }
+                        Ok(Some(stderr)) => {
+                            warnings.lock().expect("warn poisoned").push((src, stderr));
                         }
+                        Ok(None) => {}
                         Err(stderr) => {
                             failures.lock().expect("fail poisoned").push((src, stderr));
                         }
@@ -582,12 +581,14 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         });
     }
 
-    let warnings = warnings.into_inner().expect("warn poisoned");
+    let mut warnings = warnings.into_inner().expect("warn poisoned");
+    warnings.sort_by(|a, b| a.0.cmp(&b.0));
     let failures = failures.into_inner().expect("fail poisoned");
     // 先输出成功翻译单元的警告：失败后下次只会重编失败文件，警告不能丢
-    let mut all = std::io::stderr();
-    for w in &warnings {
-        let _ = all.write_all(w.as_bytes());
+    if !warnings.is_empty() {
+        let text = warning_section_text(dir, &plan.cxx, &warnings);
+        let mut err = std::io::stderr();
+        let _ = err.write_all(text.as_bytes());
     }
     if !failures.is_empty() {
         let mut msg = String::new();
@@ -1164,6 +1165,8 @@ fn link(
 // ── 输出风格（cargo-like） ─────────────────────────────────
 
 const GREEN: &str = "\x1b[32m";
+const YELLOW: &str = "\x1b[33m";
+const GOLD: &str = "\x1b[38;2;255;241;168m";
 const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
@@ -1171,13 +1174,40 @@ fn step_line(label: &str, detail: &str) {
     println!("{GREEN}{label:>12}{RESET} {detail}", label = label, detail = detail);
 }
 
-fn step_fin(started: Instant, recompiled: usize, total: usize) {
-    let secs = started.elapsed().as_secs_f32();
-    let note = if recompiled == total {
+/// 编译器告警区块：金色上下分隔线 + 源文件/编译器 header，原始诊断不做改写。
+fn warning_section_text(dir: &Path, cxx: &Cxx, warnings: &[(PathBuf, String)]) -> String {
+    let sep = format!("  {GOLD}{}{RESET}\n", "─".repeat(44));
+    let mut out = sep.clone();
+    for (src, text) in warnings {
+        out.push_str(&format!(
+            "{YELLOW}{:>12}{RESET} {} ({} {})\n",
+            "Warning",
+            rel_display(dir, src),
+            cxx.name,
+            cxx.short_version()
+        ));
+        out.push_str(text);
+        if !text.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str(&sep);
+    out
+}
+
+fn finish_note(recompiled: usize, total: usize) -> &'static str {
+    if recompiled == 0 {
+        "relinked"
+    } else if recompiled == total {
         "fresh build"
     } else {
         "incremental rebuild"
-    };
+    }
+}
+
+fn step_fin(started: Instant, recompiled: usize, total: usize) {
+    let secs = started.elapsed().as_secs_f32();
+    let note = finish_note(recompiled, total);
     step_line("Finished", &format!("{DIM}{secs:.2}{RESET}s ({note})"));
 }
 
@@ -1245,6 +1275,30 @@ mod tests {
         assert_eq!(scope_label("g++"), "g++");
         assert_eq!(scope_label(r"C:\mingw64\bin\g++.exe"), "C__mingw64_bin_g++.exe");
         assert_eq!(scope_label("/usr/bin/clang++"), "_usr_bin_clang++");
+    }
+
+    #[test]
+    fn warning_section_has_gold_divider_and_header() {
+        let dir = Path::new("proj");
+        let cxx = Cxx { name: "g++".into(), version: "g++ 14.2.0".into() };
+        let warnings = vec![(
+            dir.join("src").join("main.cpp"),
+            "main.cpp:54: warning: ignored\n".to_string(),
+        )];
+        let text = warning_section_text(dir, &cxx, &warnings);
+        assert!(text.starts_with("  \x1b[38;2;255;241;168m"));
+        assert_eq!(text.matches('─').count(), 88, "上下两条 44 格金色分隔线");
+        assert!(text.contains("Warning"), "got: {text}");
+        assert!(text.contains("main.cpp"), "got: {text}");
+        assert!(text.contains("g++ 14.2.0"), "got: {text}");
+        assert!(text.contains("warning: ignored"), "got: {text}");
+    }
+
+    #[test]
+    fn finish_note_distinguishes_relink() {
+        assert_eq!(finish_note(0, 3), "relinked");
+        assert_eq!(finish_note(3, 3), "fresh build");
+        assert_eq!(finish_note(1, 3), "incremental rebuild");
     }
 
     #[test]
