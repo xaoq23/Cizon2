@@ -11,7 +11,7 @@ use crate::config;
 const TOML_TEMPLATE: &str = r#"[project]
 name = "{name}"
 edition = "c++23"
-# compile_commands = true     # 生成 compile_commands.json（clangd / clang-tidy 用）
+# compile_commands = true     # 生成编译数据库；缺失时补 VS Code IntelliSense 配置（不覆盖）
 
 # [compiler]
 # flags = ["-Wall"]        # 附加编译参数
@@ -25,7 +25,8 @@ int main() {
 }
 "#;
 
-const GITIGNORE_TEMPLATE: &str = "build/\ndeps/\ncompile_commands.json\n";
+const GITIGNORE_TEMPLATE: &str =
+    "build/\ndeps/\ncompile_commands.json\n.vscode/c_cpp_properties.json\n";
 
 /// `cizon2 new <目录名>`：在当前目录下创建新项目。
 pub fn new_cmd(args: &[String]) -> Result<i32, String> {
@@ -348,7 +349,12 @@ mod tests {
         let text = fs::read_to_string(p.join(".gitignore")).unwrap();
         assert!(text.contains("/target"));
         assert!(text.contains("custom"));
-        for entry in ["build/", "deps/", "compile_commands.json"] {
+        for entry in [
+            "build/",
+            "deps/",
+            "compile_commands.json",
+            ".vscode/c_cpp_properties.json",
+        ] {
             assert_eq!(
                 text.lines().filter(|l| *l == entry).count(),
                 1,

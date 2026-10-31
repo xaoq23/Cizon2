@@ -17,7 +17,7 @@
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | vcpkg / conda 等外部包管理 |
-| compile_commands.json（默认关闭，`[project].compile_commands` 开启） | 自定义错误格式化器 |
+| compile_commands.json + VS Code IntelliSense 配置（默认关闭，`[project].compile_commands` 开启） | 自定义错误格式化器 |
 | 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | 与 CMake 全功能对齐 |
 
 未知配置段与已知段内的未知键一律报错，不静默忽略。
@@ -29,6 +29,7 @@
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；恰好一个 bin，库不能链接库
 - bin 的 name 可省略并默认项目名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
+- `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
 
 ## 输出约定
 

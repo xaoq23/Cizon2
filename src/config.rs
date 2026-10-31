@@ -30,7 +30,7 @@ pub struct Project {
     /// 显式源文件列表（相对项目根）。缺省时递归扫描 src/ 下的 .cpp/.cc/.cxx。
     #[serde(default)]
     pub sources: Option<Vec<String>>,
-    /// 是否在项目根生成 compile_commands.json（clangd / clang-tidy 用）。
+    /// 是否在项目根生成 compile_commands.json（并补缺失的 VS Code IntelliSense 配置）。
     #[serde(default)]
     pub compile_commands: Option<bool>,
 }

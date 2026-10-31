@@ -516,9 +516,18 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     // 0) 依赖契约：restore / 校验。目录缺失按锁恢复，与锁不一致当 loud 报错。
     let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir)?;
 
-    // 0.5) 编辑器支持：显式开启才写项目根的编译数据库
+    // 0.5) 编辑器支持：显式开启才写项目根的编译数据库，并补 VS Code IntelliSense 配置
     if cfg.compile_commands() {
         write_compile_db(dir, plan, &dep_jobs)?;
+        let compiler_path = compiler::executable_path(&plan.cxx.name)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| plan.cxx.name.clone());
+        let standard = cpp_standard(&plan.flags);
+        match ensure_cpptools_config(dir, &compiler_path, standard) {
+            Ok(true) => step_line("Writing", ".vscode/c_cpp_properties.json"),
+            Ok(false) => {}
+            Err(e) => eprintln!("警告: 未能生成 .vscode/c_cpp_properties.json: {e}"),
+        }
     }
 
     // 1) 判定需要重编译的源
@@ -789,6 +798,76 @@ fn write_compile_db(
         std::fs::write(&path, json).map_err(|e| format!("写 {} 失败: {e}", path.display()))?;
     }
     Ok(())
+}
+
+/// 取实际生效的 C++ 标准：重复 `-std=` 时最后一个获胜（与编译器一致）。
+fn cpp_standard(flags: &[String]) -> &str {
+    flags
+        .iter()
+        .rev()
+        .find_map(|f| f.strip_prefix("-std="))
+        .unwrap_or("c++23")
+}
+
+/// 微软 C/C++ 扩展不会自动读取 compile_commands.json；缺 c_cpp_properties.json 时补一份。
+/// 已有文件一律不覆盖，避免改坏用户自己的 IntelliSense 配置。
+fn ensure_cpptools_config(dir: &Path, compiler: &str, standard: &str) -> Result<bool, String> {
+    let vscode = dir.join(".vscode");
+    let path = vscode.join("c_cpp_properties.json");
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(&vscode)
+        .map_err(|e| format!("创建 {} 失败: {e}", rel_display(dir, &vscode)))?;
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(format!("写 {} 失败: {e}", rel_display(dir, &path))),
+    };
+    if let Err(e) = file.write_all(render_cpptools_config(compiler, standard).as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("写 {} 失败: {e}", rel_display(dir, &path)));
+    }
+    Ok(true)
+}
+
+fn render_cpptools_config(compiler: &str, standard: &str) -> String {
+    let compiler = compiler.replace('\\', "/");
+    format!(
+        "{{\n  \"version\": 4,\n  \"configurations\": [\n    {{\n      \"name\": \"{}\",\n      \"compilerPath\": \"{}\",\n      \"intelliSenseMode\": \"{}\",\n      \"includePath\": [\"${{workspaceFolder}}/include\"],\n      \"cppStandard\": \"{}\",\n      \"compileCommands\": \"${{workspaceFolder}}/compile_commands.json\"\n    }}\n  ]\n}}\n",
+        cpptools_config_name(),
+        json_escape(&compiler),
+        intelli_sense_mode(&compiler),
+        json_escape(standard)
+    )
+}
+
+fn cpptools_config_name() -> &'static str {
+    if cfg!(windows) {
+        "Win32"
+    } else if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "Linux"
+    }
+}
+
+fn intelli_sense_mode(compiler: &str) -> &'static str {
+    let clang = compiler.to_ascii_lowercase().contains("clang");
+    if cfg!(windows) {
+        if clang { "windows-clang-x64" } else { "windows-gcc-x64" }
+    } else if cfg!(target_os = "macos") {
+        if clang { "macos-clang-x64" } else { "macos-gcc-x64" }
+    } else if clang {
+        "linux-clang-x64"
+    } else {
+        "linux-gcc-x64"
+    }
 }
 
 fn render_compile_db(dir: &Path, cxx: &str, entries: &[(&Path, &[String])]) -> String {
@@ -1940,6 +2019,69 @@ mod tests {
     }
 
     #[test]
+    fn render_cpptools_config_uses_compiler_and_standard() {
+        let json = render_cpptools_config(r"C:\MinGW\bin\g++.exe", "c++23");
+        assert!(json.contains("\"version\": 4"), "got: {json}");
+        assert!(
+            json.contains("\"compilerPath\": \"C:/MinGW/bin/g++.exe\""),
+            "got: {json}"
+        );
+        assert!(json.contains("\"cppStandard\": \"c++23\""), "got: {json}");
+        assert!(
+            json.contains("\"compileCommands\": \"${workspaceFolder}/compile_commands.json\""),
+            "got: {json}"
+        );
+        if cfg!(windows) {
+            assert!(
+                json.contains("\"intelliSenseMode\": \"windows-gcc-x64\""),
+                "got: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn cpp_standard_uses_effective_last_flag() {
+        let flags = vec!["-std=c++17".to_string(), "-std=c++20".to_string()];
+        assert_eq!(cpp_standard(&flags), "c++20");
+        assert_eq!(cpp_standard(&[]), "c++23");
+    }
+
+    #[test]
+    fn cpptools_config_is_created_once_and_never_overwritten() {
+        let dir = temp_dir("vscode-cfg");
+        assert!(
+            ensure_cpptools_config(&dir, r"C:\MinGW\bin\g++.exe", "c++23").unwrap(),
+            "缺失时应生成配置"
+        );
+        let path = dir.join(".vscode").join("c_cpp_properties.json");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("compile_commands.json"), "got: {text}");
+
+        fs::write(&path, "{\"sentinel\": true}\n").unwrap();
+        assert!(
+            !ensure_cpptools_config(&dir, r"C:\LLVM\bin\clang++.exe", "c++20").unwrap(),
+            "已有文件不应重写"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{\"sentinel\": true}\n");
+
+        fs::remove_file(&path).unwrap();
+        assert!(
+            ensure_cpptools_config(&dir, r"C:\MinGW\bin\g++.exe", "c++23").unwrap(),
+            "删除后应重新生成"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn cpptools_config_reports_vscode_file() {
+        let dir = temp_dir("vscode-file");
+        fs::write(dir.join(".vscode"), "x").unwrap();
+        let err = ensure_cpptools_config(&dir, "g++", "c++23").unwrap_err();
+        assert!(err.contains(".vscode"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn render_compile_db_emits_entries() {
         let flags_a = vec!["-std=c++23".to_string(), "-IX".to_string()];
         let flags_b = vec!["-O2".to_string()];
@@ -1971,6 +2113,10 @@ mod tests {
         assert!(
             !dir.join("compile_commands.json").exists(),
             "未开启时不应生成 compile_commands.json"
+        );
+        assert!(
+            !dir.join(".vscode").join("c_cpp_properties.json").exists(),
+            "未开启时不应生成 VS Code IntelliSense 配置"
         );
         fs::remove_dir_all(dir).ok();
     }
@@ -2016,11 +2162,28 @@ mod tests {
         if cfg!(windows) {
             assert!(text.contains(r"\\"), "Windows 路径反斜杠必须转义: {text}");
         }
+        let vscode_cfg = dir.join(".vscode").join("c_cpp_properties.json");
+        let vscode_text = fs::read_to_string(&vscode_cfg).unwrap();
+        assert!(
+            vscode_text.contains("\"cppStandard\": \"c++17\""),
+            "got: {vscode_text}"
+        );
+        assert!(
+            vscode_text
+                .contains("\"compileCommands\": \"${workspaceFolder}/compile_commands.json\""),
+            "got: {vscode_text}"
+        );
+        assert!(
+            vscode_text.contains("\"compilerPath\": \""),
+            "got: {vscode_text}"
+        );
         let db = dir.join("compile_commands.json");
         let db_t = mtime(&db);
+        let cfg_t = mtime(&vscode_cfg);
         std::thread::sleep(std::time::Duration::from_millis(50));
         build_project(&dir).unwrap();
         assert_eq!(mtime(&db), db_t, "内容未变不应重写 compile_commands.json");
+        assert_eq!(mtime(&vscode_cfg), cfg_t, "已有 c_cpp_properties.json 不应重写");
         fs::remove_dir_all(dir).ok();
     }
 

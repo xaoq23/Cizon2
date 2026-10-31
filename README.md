@@ -14,7 +14,7 @@ Current version: **v0.4.2**. Primarily targets Windows x86-64 (no Linux/macOS bu
 - Modern C++ layout: sources are collected recursively, `include/` is added to `-I` automatically
 - v0.4: one executable target plus multiple static library targets; archives are built automatically and `links` are linked in order
 - Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
-- Optional `compile_commands.json` for clangd / clang-tidy
+- Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
 - Compiler stderr is captured and replayed (lossy decoding for non-UTF-8); crash exit codes are translated into plain language
 
@@ -72,7 +72,7 @@ hello/
     └── main.cpp
 ```
 
-It does not run `git init`: version control is your decision. The generated `.gitignore` already ignores `build/`, `deps/`, and `compile_commands.json`.
+It does not run `git init`: version control is your decision. The generated `.gitignore` already ignores `build/`, `deps/`, `compile_commands.json`, and `.vscode/c_cpp_properties.json`.
 
 ## Commands
 
@@ -96,6 +96,7 @@ The default is a debug build (`-g`); `--release` uses `-O2`. Artifacts live unde
 - Compiler warnings are grouped per source file: gold top and bottom rules plus a yellow `Warning <relative path> (compiler version)` header; project absolute path prefixes in diagnostic bodies are replaced with relative paths, while line numbers and message text stay untouched
 - Warnings do not fail the build; for strict mode use `[compiler].flags = ["-Werror"]`
 - Build and `Running` status go to stderr, keeping program stdout clean: `cizon2 run > out.txt` contains only program output
+- With `compile_commands` enabled, a missing VS Code config prints `Writing .vscode/c_cpp_properties.json` once (stderr) and is then created
 - `Finished` states:
 
 | Status | Meaning |
@@ -138,7 +139,7 @@ name = "hello"
 version = "0.1.0"           # optional; metadata only, not used for compilation or artifact names
 edition = "c++23"           # also accepts c++17 / gnu++20 / a bare version "17"
 sources = ["src/main.cpp"]  # optional; file or directory (recursive); defaults to scanning src/
-compile_commands = true     # optional; off by default
+compile_commands = true     # optional; generates compile_commands.json and VS Code config
 
 [compiler]
 cpp = "clang++"             # optional; defaults to probing g++ > clang++
@@ -198,7 +199,7 @@ cizon2 update fmt
 - When `deps/<name>` has no `include/`, `add` and `build` print a layout warning; for non-standard layouts, use the library's own build system and wire it in via `link_flags`.
 - Any mismatch among the git/tag in `cizon.toml`/`cizon.lock`, the `deps/` HEAD, and the working tree is a loud error; a missing dependency directory is restored from the lock, never silently self-healed.
 
-## Editor (clangd)
+## Editors (clangd / VS Code)
 
 Enable in `cizon.toml`:
 
@@ -207,7 +208,9 @@ Enable in `cizon.toml`:
 compile_commands = true
 ```
 
-After `cizon2 build`, the project root gets `compile_commands.json` containing full compile flags for project and dependency sources. With `compile_commands` off, cizon2 no longer updates the file; delete it manually if you no longer need it.
+After `cizon2 build`, the project root gets `compile_commands.json` containing full compile flags for project and dependency sources. With `compile_commands` off, cizon2 no longer updates the database or creates the VS Code config; delete them manually if you no longer need them.
+
+The Microsoft C/C++ extension does not read `compile_commands.json` on its own. When `compile_commands` is enabled, cizon2 therefore also creates `.vscode/c_cpp_properties.json` if that file is missing, pointing it at the generated database, the detected compiler, and `include/`. Existing files are never overwritten; delete the file and rebuild to regenerate it. If the file cannot be written, the build continues with a warning. clangd ignores this file. New projects' `.gitignore` excludes it; add the same line to older projects if you do not want to commit machine-specific compiler paths.
 
 If clangd was already running before the database was generated, restart the language server once (VS Code: `clangd: Restart language server`); later database updates are picked up automatically. If clangd still cannot find the standard library in a MinGW/g++ setup, add `--query-driver=<path to g++.exe>` to clangd's arguments.
 
@@ -307,7 +310,7 @@ Alternatives:
 - `sources` must be project-relative paths; the first 0.4.1 build migrates the object layout and does one full rebuild
 - `[project].version` is metadata only; it does not affect compilation or artifact names
 - Concurrent builds of one project are unsupported; never run `cizon2 build` in multiple terminals
-- Turning `compile_commands` off does not delete an existing `compile_commands.json`; delete it manually when no longer needed
+- Turning `compile_commands` off does not delete an existing `compile_commands.json` or `.vscode/c_cpp_properties.json`; delete them manually when no longer needed
 - Unknown sections or unknown keys in known sections are hard errors, never silently ignored
 - Compiler warnings (e.g. ignoring a `[[nodiscard]]` return value) do not fail the build; use `-Werror` for strict mode
 
@@ -331,7 +334,7 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 - The linker writes the exe directly, and lock/`cizon.toml` writes are not power-loss atomic; temporary-file replacement could be added
 - No project-level build lock; two terminals building at once remain unsupported
-- Disabling `compile_commands` leaves stale files behind
+- Disabling `compile_commands` leaves the generated `compile_commands.json` and `.vscode/c_cpp_properties.json` behind
 - Removing a dependency leaves `cizon.lock`/`deps/` untouched; a separate remove command may be needed (would trip the second gate)
 
 ### Diagnostics and engineering

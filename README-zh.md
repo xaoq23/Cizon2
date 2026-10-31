@@ -14,7 +14,7 @@
 - 现代 C++ 目录结构：递归收集源文件，`include/` 自动加入 `-I`
 - v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 按顺序链接
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
-- 可选生成 `compile_commands.json`，供 clangd / clang-tidy 使用
+- 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
 
@@ -75,7 +75,7 @@ hello/
     └── main.cpp
 ```
 
-它不会执行 `git init`：版本控制交给用户自己决定。`.gitignore` 预先忽略了 `build/`、`deps/` 与 `compile_commands.json`。
+它不会执行 `git init`：版本控制交给用户自己决定。`.gitignore` 预先忽略了 `build/`、`deps/`、`compile_commands.json` 与 `.vscode/c_cpp_properties.json`。
 
 ## 命令
 
@@ -99,6 +99,7 @@ hello/
 - 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
 - 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
 - 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon2 run > out.txt` 只包含程序输出
+- 开启 `compile_commands` 且 VS Code 配置缺失时，会输出一次 `Writing .vscode/c_cpp_properties.json`（stderr）并生成该文件
 - `Finished` 的状态：
 
 | 状态 | 判定 |
@@ -141,7 +142,7 @@ name = "hello"
 version = "0.1.0"           # 可选；当前仅元数据，不参与编译/产物命名
 edition = "c++23"           # 也接受 c++17 / gnu++20 / 裸版本号 "17"
 sources = ["src/main.cpp"]  # 可选；文件或目录（目录递归）；缺省扫描 src/
-compile_commands = true     # 可选；默认关闭
+compile_commands = true     # 可选；生成编译数据库与 VS Code 配置
 
 [compiler]
 cpp = "clang++"             # 可选；缺省按 g++ > clang++ 探测
@@ -201,7 +202,7 @@ cizon2 update fmt
 - `deps/<name>` 缺少 `include/` 时，`add` 和 `build` 会给出布局警告；非标准布局请改用该库自己的构建系统，并通过 `link_flags` 接入。
 - `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
 
-## 编辑器（clangd）
+## 编辑器（clangd / VS Code）
 
 在 `cizon.toml` 中开启：
 
@@ -210,7 +211,9 @@ cizon2 update fmt
 compile_commands = true
 ```
 
-运行 `cizon2 build` 后，项目根会生成 `compile_commands.json`，包含项目源与依赖源的完整编译参数。关闭 `compile_commands` 后 cizon2 不再更新该文件；若不再需要请手动删除。
+运行 `cizon2 build` 后，项目根会生成 `compile_commands.json`，包含项目源与依赖源的完整编译参数。关闭 `compile_commands` 后 cizon2 不再更新数据库、也不再生成 VS Code 配置；两份文件若不再需要请手动删除。
+
+微软 C/C++ 扩展不会自动读取 `compile_commands.json`。因此开启 `compile_commands` 后，若 `.vscode/c_cpp_properties.json` 不存在，cizon2 会顺手生成一份，指向编译数据库、探测到的编译器与 `include/`；已有文件一律不覆盖，删掉后下次 build 会重新生成。写入失败时构建继续，只打一条警告。clangd 不读这个文件。新项目的 `.gitignore` 已忽略它；老项目若不想提交机器相关的编译器路径，请自行补上该行。
 
 如果 clangd 在数据库生成之前就已经在运行，需要重启一次语言服务（VS Code：`clangd: Restart language server`）；之后数据库更新会被自动感知。MinGW/g++ 环境下 clangd 若仍找不到标准库，可在 clangd 参数中加 `--query-driver=<g++.exe 路径>`。
 
@@ -310,7 +313,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - sources 必须是项目内相对路径；0.4.1 首次构建会迁移对象布局并全量重编一次
 - `[project].version` 当前仅作元数据，不参与编译或产物命名
 - 同一项目不支持并发构建；请勿在多个终端同时运行 `cizon2 build`
-- 关闭 `compile_commands` 不会删除已有 `compile_commands.json`，不再需要时手动删除
+- 关闭 `compile_commands` 不会删除已有的 `compile_commands.json` 或 `.vscode/c_cpp_properties.json`，不再需要时手动删除
 - 配置段或已知段内的未知键会直接报错，不会静默忽略
 - 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
 
@@ -334,7 +337,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 - 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
 - 没有项目级构建锁；两个终端同时 build 仍不受支持
-- 关闭 `compile_commands` 不清理旧文件
+- 关闭 `compile_commands` 不清理已生成的 `compile_commands.json` 与 `.vscode/c_cpp_properties.json`
 - 删除依赖后 `cizon.lock`/`deps/` 不自动清理；可能需要独立的 remove 命令（会触发二级闸）
 
 ### 诊断与工程

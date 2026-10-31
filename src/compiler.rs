@@ -84,6 +84,41 @@ pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
         .into())
 }
 
+/// 解析编译器可执行文件的路径：含路径分隔符的规格转成绝对路径，裸名按 PATH 查找。
+/// Windows 上显式路径可能省略 `.exe`（`Command` 会自动补），这里也要补上。
+pub fn executable_path(name: &str) -> Option<PathBuf> {
+    let path = Path::new(name);
+    if path.components().count() > 1 {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir().ok()?.join(path)
+        };
+        if path.is_file() {
+            return Some(path);
+        }
+        if cfg!(windows) && path.extension().is_none() {
+            let mut with_ext = path.as_os_str().to_os_string();
+            with_ext.push(".exe");
+            let with_ext = PathBuf::from(with_ext);
+            if with_ext.is_file() {
+                return Some(with_ext);
+            }
+        }
+        return Some(path);
+    }
+    let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
+    for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
+        for ext in exts {
+            let candidate = dir.join(format!("{name}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// 静态库归档工具：clang 优先 llvm-ar，其余优先 ar。
 /// 先找编译器同目录（--compiler 指向完整路径时 LLVM/MinGW 可能不在 PATH），再找 PATH。
 pub fn archiver(cxx: &Cxx) -> Result<String, String> {
@@ -131,6 +166,7 @@ pub fn edition_flag(edition: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn resolve_spec_passthrough() {
@@ -142,6 +178,29 @@ mod tests {
         // 完整路径中的 @ 是路径的一部分，不能被当作版本后缀截断
         assert_eq!(resolve_spec(r"C:\gcc@14\bin\g++.exe"), r"C:\gcc@14\bin\g++.exe");
         assert_eq!(resolve_spec("/opt/gcc@14/bin/g++"), "/opt/gcc@14/bin/g++");
+    }
+
+    #[test]
+    fn executable_path_keeps_explicit_paths() {
+        #[cfg(windows)]
+        let raw = r"C:\gcc@14\bin\g++.exe";
+        #[cfg(not(windows))]
+        let raw = "/opt/gcc/bin/clang++";
+        let path = Path::new(raw);
+        assert_eq!(executable_path(raw).as_deref(), Some(path));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn executable_path_appends_exe_for_explicit_path() {
+        let dir = std::env::temp_dir().join(format!("cizon2-exe-path-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("g++.exe");
+        fs::write(&exe, "").unwrap();        assert_eq!(
+            executable_path(&dir.join("g++").to_string_lossy()).as_deref(),
+            Some(exe.as_path())
+        );
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
