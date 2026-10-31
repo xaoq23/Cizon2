@@ -2,7 +2,7 @@
 
 零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
 
-当前版本：**v0.4.1**（已合并 main）。dev 分支另有构建输出改进（警告区块、`relinked` 状态），待下个版本发布。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
+当前版本：**v0.4.2**。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
 
 ## 特性
 
@@ -68,14 +68,17 @@ hello/
 ## 构建输出
 
 - `Compiling` / `Rebuilding g++ [n/m files]`：本次实际编译的翻译单元数 / 总数
-- 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头，诊断正文保持编译器原始格式，便于 IDE 匹配
+- 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
 - 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
+- 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon2 run > out.txt` 只包含程序输出
 - `Finished` 的状态：
-  - `fresh build`：所有翻译单元都编译了（首次构建、flags/编译器版本变化等）
-  - `incremental rebuild`：只重编了一部分翻译单元
-  - `relinked`：没有翻译单元重编，仅重链或重建静态库归档
-  - `up to date`：无需编译和链接
-- 构建状态与 `Running` 目前写在 stdout；需要只捕获程序输出时，先 `cizon2 build`，再直接执行产物
+
+| 状态 | 判定 |
+|---|---|
+| `fresh build` | 所有翻译单元都编译了（含首次构建、flags/编译器版本变化导致的整批重编） |
+| `incremental rebuild` | 只重编了一部分翻译单元 |
+| `relinked` | 没有翻译单元重编，仅重链或重建静态库归档 |
+| `up to date` | 无需编译和链接 |
 
 ## 项目结构
 
@@ -167,6 +170,7 @@ cizon2 update fmt
 - 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon2 update <名字>`。
 - `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
 - 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
+- `deps/<name>` 缺少 `include/` 时，`add` 和 `build` 会给出布局警告；非标准布局请改用该库自己的构建系统，并通过 `link_flags` 接入。
 - `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
 
 ## 编辑器（clangd）
@@ -300,7 +304,6 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ### 可靠性
 
-- 构建/运行状态目前写 stdout；候选是统一到 stderr（cargo 风格），保证 `cizon2 run > file` 只包含程序输出
 - 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
 - 没有项目级构建锁；两个终端同时 build 仍不受支持
 - 关闭 `compile_commands` 不清理旧文件
@@ -308,7 +311,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ### 诊断与工程
 
-- Warning 头已是项目相对路径，但编译器诊断正文仍是绝对路径；可改用相对源路径或 prefix-map
+- 配置结构错误来自 serde，`unknown field` 等提示为英文（低优先级风格项）
 - 没有基础 CI；缺少编译器/git 时测试会静默跳过
 - `rustfmt`/`clippy` 尚未接入
 

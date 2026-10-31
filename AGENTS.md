@@ -8,7 +8,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.4.1）
+## 当前边界（v0.4.2）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -32,7 +32,8 @@
 
 ## 输出约定
 
-- 用户面路径用项目相对路径；编译器原始诊断不改写、不缩进
+- 用户面路径用项目相对路径；编译器诊断保留行号与文本，只把项目绝对路径前缀替换为相对路径
+- 构建/运行状态写 stderr，程序 stdout 保持纯净
 - 警告按源文件分组：金色上下分隔线 + 黄色 `Warning` 头
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
 
@@ -60,7 +61,7 @@
 ## 已知待办（未排期）
 
 - VSCode 断点调试当前靠手工 `.vscode/launch.json` + `tasks.json`；未来优先按 `[project] vscode = true` 非破坏生成（不实现调试器，gdb 先行），详见 README「后续改进」
-- 候选工程改进：构建状态统一到 stderr、exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理、诊断相对路径、基础 CI
+- 候选工程改进：exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理、基础 CI
 - 详细清单与真实需求触发条件见 README「后续改进」；开工前按三道闸确认
 
 ## 路线
@@ -69,5 +70,5 @@
 2. v0.2 `new` / `init` / `add` / `update`，git 依赖与锁生命周期 —— 已发布 v0.2.0
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
-5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.1 已合并 main；dev 待发布构建输出改进
+5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.2
 6. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
