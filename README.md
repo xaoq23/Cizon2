@@ -6,6 +6,8 @@ Zero-config C++ build and run: `cizon2 build`, `cizon2 run` — out of the box l
 
 Current version: **v0.4.3**. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
 
+> **Status:** personally maintained and still under active development. Do not use it for real projects yet.
+
 ## Features
 
 - One `cizon.toml` describes the project; there are no build scripts
