@@ -57,6 +57,7 @@
 - `main` 只收可发布版本；功能与修复提交到 `dev`，可发布后合入 `main`。
 - 一个功能一个 commit；测试先行（模块单测 + 真实编译器/git 端到端）。
 - git commit 信息一律使用英文（保留 `feat:` / `fix:` / `docs:` 等类型前缀）。
+- 源码注释、文档注释和用户面字符串一律使用英文；`README-zh.md` 保留中文文档。
 - `README.md` 是英文主文档，`README-zh.md` 是中文版；修改文档时两份同步。
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
 - 用户不明确要求时，默认 debug 构建（`cizon2 build`）。

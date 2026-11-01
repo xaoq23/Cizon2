@@ -1,8 +1,9 @@
-//! `cizon2 new <目录名>` 与 `cizon2 init`：生成项目骨架。
+//! `cizon2 new <directory name>` and `cizon2 init`: generate the project skeleton.
 //!
-//! 模板极简（AGENTS.md v0.2）：cizon.toml + src/main.cpp + .gitignore，不做 git init。
-//! 模板里不放任何 Cizon2 不解析的段：注释的 `[dependencies]` 一旦被用户启用会
-//! 当场报错（config 边界检查），shipped 模板不允许自己埋雷。
+//! The template is minimal (AGENTS.md v0.2): cizon.toml + src/main.cpp + .gitignore, no git init.
+//! The template carries no section Cizon2 does not parse: a commented-out `[dependencies]` would
+//! fail loudly the moment a user enables it (the config boundary check), and the shipped template
+//! must not plant that trap itself.
 
 use std::path::{Path, PathBuf};
 
@@ -11,11 +12,11 @@ use crate::config;
 const TOML_TEMPLATE: &str = r#"[project]
 name = "{name}"
 edition = "c++23"
-# compile_commands = true     # 生成编译数据库；缺失时补 VS Code IntelliSense 配置（不覆盖）
+# compile_commands = true     # generate the compilation database; add the VS Code IntelliSense configuration when missing (never overwrite an existing one)
 
 # [compiler]
-# flags = ["-Wall"]        # 附加编译参数
-# link_flags = []          # 附加链接参数
+# flags = ["-Wall"]        # extra compile flags
+# link_flags = []          # extra link flags
 "#;
 
 const MAIN_TEMPLATE: &str = r#"#include <iostream>
@@ -28,14 +29,14 @@ int main() {
 const GITIGNORE_TEMPLATE: &str =
     "build/\ndeps/\ncompile_commands.json\n.vscode/c_cpp_properties.json\n";
 
-/// `cizon2 new <目录名>`：在当前目录下创建新项目。
+/// `cizon2 new <directory name>`: create a new project in the current directory.
 pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     let name = match args {
         [name] if !name.is_empty() => name,
-        _ => return Err("用法: cizon2 new <目录名>".into()),
+        _ => return Err("Usage: cizon2 new <directory name>".into()),
     };
     if name.starts_with('-') {
-        return Err("用法: cizon2 new <目录名>（目录名不能以 - 开头）".into());
+        return Err("Usage: cizon2 new <directory name> (the directory name must not start with -)".into());
     }
     let dir = Path::new(name);
     validate_new_path(dir)?;
@@ -45,10 +46,10 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(format!(
-                "目录 {name} 已存在。换个名字，或进到目录里用 `cizon2 init`。"
+                "the directory {name} already exists. Pick another name, or cd into it and use `cizon2 init`."
             ));
         }
-        Err(e) => return Err(format!("无法创建目录 {name}: {e}")),
+        Err(e) => return Err(format!("cannot create the directory {name}: {e}")),
     }
     if let Err(e) = scaffold(dir, &project) {
         let _ = std::fs::remove_dir_all(dir);
@@ -59,23 +60,23 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// `cizon2 init`：在当前目录就地初始化；已有 cizon.toml 则拒绝。
+/// `cizon2 init`: initialize the current directory in place; refused when a cizon.toml exists.
 pub fn init_cmd(args: &[String]) -> Result<i32, String> {
     if !args.is_empty() {
-        return Err("用法: cizon2 init（不接受参数）".into());
+        return Err("Usage: cizon2 init (accepts no arguments)".into());
     }
-    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    let dir = std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
     init_in(&dir)
 }
 
 pub fn init_in(dir: &Path) -> Result<i32, String> {
     if dir.join("cizon.toml").exists() {
-        return Err("当前目录已有 cizon.toml，不重复初始化。".into());
+        return Err("the current directory already has a cizon.toml; not initializing twice.".into());
     }
-    // 比 Cizon1 多的保险：绝不覆盖用户已写的文件
+    // Extra safety net compared to Cizon1: never overwrite a file the user already wrote.
     if let Some(existing) = existing_main_source(dir)? {
         return Err(format!(
-            "已存在 {}，拒绝覆盖。删除或移走后重试。",
+            "{} already exists, refusing to overwrite it. Delete or move it and try again.",
             existing.display()
         ));
     }
@@ -87,11 +88,11 @@ pub fn init_in(dir: &Path) -> Result<i32, String> {
     Ok(0)
 }
 
-/// new 允许相对或绝对路径，但不能包含 . / .. 组件，
-/// 保证失败清理只会删除本次创建的叶子目录。
+/// new accepts a relative or an absolute path, but no . or .. components, so that failure
+/// cleanup only ever removes the leaf directory this run created.
 fn validate_new_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() {
-        return Err("用法: cizon2 new <目录名>".into());
+        return Err("Usage: cizon2 new <directory name>".into());
     }
     for component in path.components() {
         if matches!(
@@ -99,7 +100,7 @@ fn validate_new_path(path: &Path) -> Result<(), String> {
             std::path::Component::CurDir | std::path::Component::ParentDir
         ) {
             return Err(format!(
-                "目录名 {} 不能包含 . 或 .. 组件。",
+                "the directory name {} must not contain . or .. components.",
                 path.display()
             ));
         }
@@ -107,20 +108,20 @@ fn validate_new_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// src/ 下是否已有名为 main 的 C++ 源（任意大小写/扩展名/子目录）。
+/// Whether src/ already holds a C++ source named main (any case, any extension, any subdirectory).
 fn existing_main_source(dir: &Path) -> Result<Option<PathBuf>, String> {
     fn walk(dir: &Path) -> Result<Option<PathBuf>, String> {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(format!("无法读取 {}: {e}", dir.display())),
+            Err(e) => return Err(format!("cannot read {}: {e}", dir.display())),
         };
         for entry in entries {
-            let entry = entry.map_err(|e| format!("无法读取 {} 的目录项: {e}", dir.display()))?;
+            let entry = entry.map_err(|e| format!("cannot read the entries of {}: {e}", dir.display()))?;
             let path = entry.path();
             let file_type = entry
                 .file_type()
-                .map_err(|e| format!("无法读取 {} 的类型: {e}", path.display()))?;
+                .map_err(|e| format!("cannot read the type of {}: {e}", path.display()))?;
             if file_type.is_dir() {
                 if let Some(found) = walk(&path)? {
                     return Ok(Some(found));
@@ -143,17 +144,19 @@ fn existing_main_source(dir: &Path) -> Result<Option<PathBuf>, String> {
     walk(&dir.join("src"))
 }
 
-/// 项目名：路径最后一段；new 时兜底为整个 name，init 兜底 "project"。
+/// Project name: the last component of the path; the fallback is the whole name for new and
+/// "project" for init.
 fn project_name(dir: &Path, fallback: &str) -> String {
     dir.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| fallback.into())
 }
 
-/// 写入模板文件；create_new 防止 check-then-write 之间被其他进程抢占。
+/// Write the template files; create_new prevents another process from winning the race between
+/// the check and the write.
 fn scaffold(dir: &Path, name: &str) -> Result<(), String> {
     let src = dir.join("src");
-    std::fs::create_dir_all(&src).map_err(|e| format!("无法创建 {}: {e}", src.display()))?;
+    std::fs::create_dir_all(&src).map_err(|e| format!("cannot create {}: {e}", src.display()))?;
     let main_cpp = src.join("main.cpp");
     write_new(&main_cpp, MAIN_TEMPLATE)?;
     let toml = dir.join("cizon.toml");
@@ -177,26 +180,27 @@ fn write_new(path: &Path, content: &str) -> Result<(), String> {
         .open(path)
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
-                format!("已存在 {}，拒绝覆盖。删除或移走后重试。", path.display())
+                format!("{} already exists, refusing to overwrite it. Delete or move it and try again.", path.display())
             } else {
-                format!("写入 {} 失败: {e}", path.display())
+                format!("failed to write {}: {e}", path.display())
             }
         })?;
     if let Err(e) = file.write_all(content.as_bytes()) {
         drop(file);
         let _ = std::fs::remove_file(path);
-        return Err(format!("写入 {} 失败: {e}", path.display()));
+        return Err(format!("failed to write {}: {e}", path.display()));
     }
     Ok(())
 }
 
-/// init 可能遇到用户已有的 .gitignore：只补缺失条目，绝不覆盖。
+/// init may meet a .gitignore the user already has: only append the missing entries, never
+/// overwrite.
 fn ensure_gitignore(dir: &Path) -> Result<(), String> {
     let path = dir.join(".gitignore");
     let mut text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("读 {} 失败: {e}", path.display())),
+        Err(e) => return Err(format!("failed to read {}: {e}", path.display())),
     };
     let mut changed = false;
     for entry in GITIGNORE_TEMPLATE.lines() {
@@ -213,13 +217,13 @@ fn ensure_gitignore(dir: &Path) -> Result<(), String> {
     if !changed {
         return Ok(());
     }
-    std::fs::write(&path, text).map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+    std::fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn print_summary(project: &str) {
-    println!("\x1b[32m      Ready\x1b[0m 项目 {project} 已就绪");
-    println!("\x1b[2m   cizon.toml   → 项目配置");
-    println!("   src/main.cpp → 程序入口（从这里开始写）\x1b[0m");
+    println!("\x1b[32m      Ready\x1b[0m the project {project} is ready");
+    println!("\x1b[2m   cizon.toml   → project configuration");
+    println!("   src/main.cpp → program entry point (start writing here)\x1b[0m");
 }
 
 #[cfg(test)]
@@ -258,10 +262,11 @@ mod tests {
         for entry in GITIGNORE_TEMPLATE.lines() {
             assert!(
                 ignore.lines().any(|l| l == entry),
-                ".gitignore 缺少 {entry}: {ignore}"
+                ".gitignore is missing {entry}: {ignore}"
             );
         }
-        // 模板必须能被解析器直接接受 —— shipped 模板与解析器互锁
+        // The template must be accepted by the parser as-is: shipped template and parser are
+        // locked together.
         crate::config::load(&dir).unwrap();
         fs::remove_dir_all(dir).ok();
     }
@@ -271,7 +276,7 @@ mod tests {
         let name = "-cizon2-option-like-name".to_string();
         assert!(!Path::new(&name).exists());
         assert!(new_cmd(&[name.clone()]).is_err());
-        assert!(!Path::new(&name).exists(), "拒绝后不应留下目录");
+        assert!(!Path::new(&name).exists(), "a rejected name must not leave a directory behind");
     }
 
     #[test]
@@ -279,7 +284,7 @@ mod tests {
         for name in ["a/../b", "..", "foo."] {
             let err = new_cmd(&[name.to_string()]).unwrap_err();
             assert!(
-                err.contains("不能") || err.contains("必须是相对路径"),
+                err.contains("must not contain") || err.contains("file name"),
                 "name={name} got: {err}"
             );
         }
@@ -292,7 +297,7 @@ mod tests {
         fs::create_dir_all(p.join("src")).unwrap();
         fs::write(p.join("src/main.cc"), "// mine").unwrap();
         let err = init_in(&p).unwrap_err();
-        assert!(err.contains("已存在"), "got: {err}");
+        assert!(err.contains("already exists"), "got: {err}");
         assert_eq!(fs::read_to_string(p.join("src/main.cc")).unwrap(), "// mine");
         fs::remove_dir_all(p).ok();
     }
@@ -323,7 +328,7 @@ mod tests {
         let p = PathBuf::from(&dir);
         fs::create_dir_all(p.join("src")).unwrap();
         fs::write(p.join("src/main.cpp"), "// mine").unwrap();
-        assert!(init_in(&p).is_err(), "已有 main.cpp 应拒绝");
+        assert!(init_in(&p).is_err(), "an existing main.cpp should be refused");
         assert_eq!(fs::read_to_string(p.join("src/main.cpp")).unwrap(), "// mine");
         fs::remove_dir_all(p).ok();
     }
@@ -334,7 +339,7 @@ mod tests {
         let p = PathBuf::from(&dir);
         fs::create_dir_all(p.join("src/app")).unwrap();
         fs::write(p.join("src/app/main.cpp"), "// mine").unwrap();
-        assert!(init_in(&p).is_err(), "递归扫描下嵌套 main 也应拒绝");
+        assert!(init_in(&p).is_err(), "the recursive scan should refuse a nested main too");
         assert_eq!(fs::read_to_string(p.join("src/app/main.cpp")).unwrap(), "// mine");
         fs::remove_dir_all(p).ok();
     }
@@ -358,7 +363,7 @@ mod tests {
             assert_eq!(
                 text.lines().filter(|l| *l == entry).count(),
                 1,
-                "{entry} 应只出现一次: {text}"
+                "{entry} should appear exactly once: {text}"
             );
         }
         fs::remove_dir_all(p).ok();

@@ -92,6 +92,8 @@ The default is a debug build (`-g`); `--release` uses `-O2`. Artifacts live unde
 
 `--compiler` accepts `g++`, `clang++`, or a full path. Bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection).
 
+When passing arguments to the program, call `cizon2` directly or use a PowerShell alias (`Set-Alias cizon C:\path\to\cizon2.exe`). A PowerShell function wrapper can consume the bare `--` before cizon2 receives it.
+
 ## Build output
 
 - `Compiling` / `Rebuilding g++ [n/m files]`: translation units actually compiled this run / total

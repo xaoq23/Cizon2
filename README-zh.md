@@ -95,6 +95,8 @@ hello/
 
 `--compiler` 可以写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）。
 
+给程序传参时请直接调用 `cizon2`，或使用 PowerShell 别名（`Set-Alias cizon C:\path\to\cizon2.exe`）。函数包装可能在参数进入 cizon2 前吞掉裸 `--`。
+
 ## 构建输出
 
 - `Compiling` / `Rebuilding g++ [n/m files]`：本次实际编译的翻译单元数 / 总数

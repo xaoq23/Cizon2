@@ -1,7 +1,7 @@
-//! cizon2 —— 零配置 C++ build & run。
+//! cizon2 — zero-config C++ build & run.
 //!
-//! 边界见 AGENTS.md：单 crate、src/ 递归源文件、g++/clang++；v0.2 起支持 git 依赖。
-//! 手写参数分发，避免引入 clap（依赖白名单：serde、toml）。
+//! See AGENTS.md for scope: single crate, recursive src/ sources, g++/clang++; git deps since v0.2.
+//! Hand-written argument dispatch to avoid clap (dependency whitelist: serde, toml).
 
 mod compiler;
 mod config;
@@ -14,19 +14,19 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = env!("CARGO_PKG_NAME");
 
 const USAGE: &str = "\
-cizon2 — 零配置 C++ 构建与运行管理器
+cizon2 — zero-config C++ build & run manager
 
-用法:
-  cizon2 new <目录名>             # 创建新项目
-  cizon2 init                     # 在当前目录就地初始化
-  cizon2 add <git-url> [--tag <tag>]  # 添加 git 依赖（锁进 cizon.lock）
-  cizon2 update <依赖名>          # 按 cizon.toml 意图对齐锁（升/降通用）
+Usage:
+  cizon2 new <dir-name>           # create a new project
+  cizon2 init                     # initialize in place in the current directory
+  cizon2 add <git-url> [--tag <tag>]  # add a git dependency (locked into cizon.lock)
+  cizon2 update <dep-name>        # align the lock with cizon.toml intent (upgrade/downgrade)
   cizon2 build [--release] [--compiler <spec>]
-  cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]
+  cizon2 run [--release] [--compiler <spec>] [-- <program args...>]
   cizon2 help | version
 
-仅读取 cizon.toml 的 [project]、[dependencies]、[compiler] 与 [[target]]; \
-其他配置段一律明确报错。";
+Only reads the [project], [dependencies], [compiler] and [[target]] sections of cizon.toml; \
+any other config section is a hard error.";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,21 +54,21 @@ fn dispatch(args: &[String]) -> i32 {
         "add" => top_err(deps::add_cmd(&args[1..])),
         "update" => top_err(deps::update_cmd(&args[1..])),
         other => {
-            eprint_top(&format!("未知命令 \"{other}\"。\n\n{USAGE}"));
+            eprint_top(&format!("Unknown command \"{other}\".\n\n{USAGE}"));
             2
         }
     }
 }
 
-/// build 与 run 的公共 flag 前缀解析: --release / --compiler <spec>
+/// Common flag prefix parsing for build and run: --release / --compiler <spec>
 #[derive(Debug)]
 struct Flags {
     release: bool,
     cc: Option<String>,
 }
 
-/// 解析至 `--` 为止的 flags，之后剩余的透传。
-fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
+/// Parse flags up to `--`; everything after it is passed through.
+fn parse_flags<'a>(mut args: &'a [String], is_run: bool) -> Result<(Flags, &'a [String]), String> {
     let mut flags = Flags { release: false, cc: None };
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -79,13 +79,21 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
                     args = &args[2..];
                     continue;
                 }
-                _ => return Err("--compiler 需要一个参数，如 --compiler g++".into()),
+                _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
             "--" => {
                 args = &args[1..];
                 break;
             }
-            other => return Err(format!("未知标志 {other}。\n\n{USAGE}")),
+            other => {
+                let mut msg = format!("Unknown flag {other}.\n\n{USAGE}");
+                if is_run {
+                    msg.push_str(
+                        "\n\nTo pass arguments to your program, use `cizon2 run -- <args>`; a PowerShell function wrapper may swallow a bare `--`, so call the exe directly or use Set-Alias.",
+                    );
+                }
+                return Err(msg);
+            }
         }
         args = &args[1..];
     }
@@ -93,15 +101,15 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
 }
 
 fn load_config() -> Result<(std::path::PathBuf, config::Config), String> {
-    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    let dir = std::env::current_dir().map_err(|e| format!("cannot read current directory: {e}"))?;
     let cfg = config::load(&dir)?;
     Ok((dir, cfg))
 }
 
 fn build_cmd(args: &[String]) -> Result<i32, String> {
-    let (flags, rest) = parse_flags(args)?;
+    let (flags, rest) = parse_flags(args, false)?;
     if !rest.is_empty() {
-        return Err(format!("build 不接受程序参数: {}", rest.join(" ")));
+        return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
     let (dir, cfg) = load_config()?;
     let cxx = compiler::pick(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
@@ -110,7 +118,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
 }
 
 fn execute_run(args: &[String]) -> Result<i32, String> {
-    let (flags, app_args) = parse_flags(args)?;
+    let (flags, app_args) = parse_flags(args, true)?;
     let (dir, cfg) = load_config()?;
     run::run(&dir, &cfg, flags.release, flags.cc.as_deref(), app_args)
 }
@@ -142,7 +150,7 @@ mod tests {
     #[test]
     fn parse_flags_defaults_and_passthrough() {
         let input = args(&["--", "a", "b"]);
-        let (flags, rest) = parse_flags(&input).unwrap();
+        let (flags, rest) = parse_flags(&input, false).unwrap();
         assert!(!flags.release);
         assert!(flags.cc.is_none());
         assert_eq!(rest, &args(&["a", "b"]));
@@ -151,7 +159,7 @@ mod tests {
     #[test]
     fn parse_flags_accepts_release_and_compiler() {
         let input = args(&["--release", "--compiler", "clang++"]);
-        let (flags, rest) = parse_flags(&input).unwrap();
+        let (flags, rest) = parse_flags(&input, false).unwrap();
         assert!(flags.release);
         assert_eq!(flags.cc.as_deref(), Some("clang++"));
         assert!(rest.is_empty());
@@ -164,14 +172,23 @@ mod tests {
             args(&["--compiler", ""]),
             args(&["--compiler", "--release"]),
         ] {
-            let err = parse_flags(&input).unwrap_err();
+            let err = parse_flags(&input, false).unwrap_err();
             assert!(err.contains("--compiler"), "got: {err}");
         }
     }
 
     #[test]
     fn parse_flags_rejects_unknown_flag() {
-        let err = parse_flags(&args(&["--nope"])).unwrap_err();
-        assert!(err.contains("未知标志"), "got: {err}");
+        let err = parse_flags(&args(&["--nope"]), false).unwrap_err();
+        assert!(err.contains("Unknown flag"), "got: {err}");
+        assert!(!err.contains("Set-Alias"), "build errors should not show the run hint: {err}");
+    }
+
+    #[test]
+    fn run_unknown_flag_mentions_powershell_wrapper() {
+        let err = parse_flags(&args(&["--hello"]), true).unwrap_err();
+        assert!(err.contains("Unknown flag"), "got: {err}");
+        assert!(err.contains("cizon2 run --"), "got: {err}");
+        assert!(err.contains("Set-Alias"), "got: {err}");
     }
 }

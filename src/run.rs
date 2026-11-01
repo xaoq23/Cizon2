@@ -1,7 +1,7 @@
-//! `cizon2 run`：构建后直接执行并转发参数。
+//! `cizon2 run`: build, then execute directly and forward arguments.
 //!
-//! 附带从 Cizon1 迁移的退出码翻译表 —— 对初学者真正有用的部分：
-//! segfault / heap corruption / DLL 缺失这类崩溃当场说人话。
+//! Ships the exit-code translation table migrated from Cizon1 — the part genuinely useful to beginners:
+//! crashes like segfault / heap corruption / missing DLL are explained in plain terms on the spot.
 
 use std::io::Write;
 
@@ -9,7 +9,7 @@ use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
 
-/// 执行 `run`；返回子进程退出码（构建/运行失败返回 Some(错误码) 或 None 语义由 main 处理）。
+/// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
 pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>, app_args: &[String]) -> Result<i32, String> {
     let cxx = compiler::pick(cc.or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
@@ -23,10 +23,10 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
     let mut child = std::process::Command::new(&exe)
         .args(app_args)
         .spawn()
-        .map_err(|e| format!("无法启动 {}: {e}", pipeline::rel_display(dir, &exe)))?;
+        .map_err(|e| format!("cannot start {}: {e}", pipeline::rel_display(dir, &exe)))?;
     let status = child
         .wait()
-        .map_err(|e| format!("等待子进程失败: {e}"))?;
+        .map_err(|e| format!("failed to wait for child process: {e}"))?;
 
     if status.success() {
         return Ok(0);
@@ -37,16 +37,16 @@ pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>,
     if let Some(hint) = hint {
         let _ = writeln!(
             err,
-            "\n\x1b[0m\x1b[31m    危险\x1b[0m 进程退出码: {code} ({code:#x})"
+            "\n\x1b[0m\x1b[31m    Crash\x1b[0m Process exit code: {code} ({code:#x})"
         );
         let _ = writeln!(err, "\x1b[2m    {hint}\x1b[0m");
     } else {
-        let _ = writeln!(err, "\n\x1b[0m    退出码: {code} ({code:#x})");
+        let _ = writeln!(err, "\n\x1b[0m    Exit code: {code} ({code:#x})");
     }
     Ok(code)
 }
 
-/// 退出码：Windows 直接取 NTSTATUS；Unix 被信号杀死时换算成 128 + signal。
+/// Exit code: on Windows take the NTSTATUS directly; on Unix, when killed by a signal, convert to 128 + signal.
 fn exit_code(status: std::process::ExitStatus) -> i32 {
     #[cfg(unix)]
     {
@@ -58,44 +58,44 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
     status.code().unwrap_or(-1)
 }
 
-/// 退出码 → 人话。Windows NTSTATUS 异常码 + POSIX signal 约定（移植自 Cizon1）。
+/// Exit code → plain language. Windows NTSTATUS exception codes + POSIX signal convention (ported from Cizon1).
 #[allow(clippy::manual_map)]
 fn describe_exit_code(code: i32) -> Option<&'static str> {
-    // Windows NTSTATUS（以无符号形式通常为负）
+    // Windows NTSTATUS (usually negative in unsigned form)
     if cfg!(windows) {
         match code as u32 {
             0xC0000005 => {
-                return Some("ACCESS_VIOLATION: 空指针解引用或 use-after-free");
+                return Some("ACCESS_VIOLATION: null pointer dereference or use-after-free");
             }
             0xC0000374 => {
-                return Some("HEAP_CORRUPTION: 堆被破坏（double free 或越界写）");
+                return Some("HEAP_CORRUPTION: heap corruption (double free or out-of-bounds write)");
             }
-            0xC0000094 => return Some("INTEGER_DIVIDE_BY_ZERO: 除以零"),
-            0xC00000FD => return Some("STACK_OVERFLOW: 栈溢出（可能是无限递归）"),
-            0xC000001D => return Some("ILLEGAL_INSTRUCTION: 非法 CPU 指令"),
-            0xC0000135 => return Some("DLL_NOT_FOUND: 缺少动态库（检查 PATH）"),
-            0xC000013A => return Some("CONTROL_C_EXIT: 被 Ctrl+C 终止"),
-            0xC0000142 => return Some("DLL_INIT_FAILED: 动态库初始化失败"),
+            0xC0000094 => return Some("INTEGER_DIVIDE_BY_ZERO: division by zero"),
+            0xC00000FD => return Some("STACK_OVERFLOW: stack overflow (possibly infinite recursion)"),
+            0xC000001D => return Some("ILLEGAL_INSTRUCTION: illegal CPU instruction"),
+            0xC0000135 => return Some("DLL_NOT_FOUND: missing DLL (check PATH)"),
+            0xC000013A => return Some("CONTROL_C_EXIT: terminated by Ctrl+C"),
+            0xC0000142 => return Some("DLL_INIT_FAILED: dynamic library initialization failed"),
             _ => {}
         }
     }
 
-    // POSIX：退出码 = 128 + signal（仅 Unix；Windows 上 139 是普通退出码）
+    // POSIX: exit code = 128 + signal (Unix only; on Windows 139 is an ordinary exit code)
     #[cfg(unix)]
     if code > 128 && code < 160 {
         let sig = code - 128;
         return match sig {
-            4 => Some("SIGILL: 非法指令"),
-            6 => Some("SIGABRT: abort() — 断言失败或不可恢复错误"),
-            7 => Some("SIGBUS: 总线错误 — 地址对齐问题"),
-            8 => Some("SIGFPE: 浮点异常（如除以零）"),
-            11 => Some("SIGSEGV: 段错误 — 空指针或非法地址"),
-            15 => Some("SIGTERM: 被终止"),
+            4 => Some("SIGILL: illegal instruction"),
+            6 => Some("SIGABRT: abort() — assertion failure or unrecoverable error"),
+            7 => Some("SIGBUS: bus error — address alignment problem"),
+            8 => Some("SIGFPE: floating-point exception (e.g. division by zero)"),
+            11 => Some("SIGSEGV: segmentation fault — null pointer or illegal address"),
+            15 => Some("SIGTERM: terminated"),
             _ => None,
         };
     }
 
-    // 普通非零退出（如测试失败返回 1）不当作崩溃，不翻译
+    // An ordinary non-zero exit (e.g. a test failure returning 1) is not treated as a crash and is not translated
     None
 }
 
@@ -132,7 +132,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_normal_exit_139_is_not_sigsegv() {
-        // Windows 上 139 是普通退出码，不能被当成 POSIX 信号
+        // On Windows 139 is an ordinary exit code and must not be treated as a POSIX signal
         assert_eq!(describe_exit_code(139), None);
     }
 
@@ -145,7 +145,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn posix_signals_named() {
-        // 语义检查:139 = 128 + 11 (SIGSEGV)
+        // Semantic check: 139 = 128 + 11 (SIGSEGV)
         assert!(describe_exit_code(139).unwrap().contains("SIGSEGV"));
     }
 

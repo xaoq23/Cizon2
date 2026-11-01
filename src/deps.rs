@@ -1,12 +1,15 @@
-//! `cizon2 add <git-url> [--tag <tag>]`：git 依赖的最小正确实现（v0.2 路线）。
+//! `cizon2 add <git-url> [--tag <tag>]`: the minimal correct implementation of git
+//! dependencies (v0.2 route).
 //!
-//! 设计边界：
-//! - 承诺"常规布局"：`<dep>/include/` 头文件 + 平铺 `<dep>/src/*.cpp`；
-//!   超出此形状的库不迁 —— 那是 CMake 的领地
-//! - `cizon.lock` 是机器文件（每次整表重写，不保注释），锁定的 commit 是唯一真相；
-//!   cizon.toml ↔ cizon.lock ↔ deps/ 任一不一致 → 大声报错，绝不静默自愈
-//! - 头文件路径无条件写进 flags（`-I<dep>/include` 与 `-I<dep>`），
-//!   目录不存在时编译器安全忽略，因此 planning 不需要先做网络操作
+//! Design boundaries:
+//! - Commit to the "regular layout": `<dep>/include/` headers + flat `<dep>/src/*.cpp`;
+//!   libraries beyond this shape are not accommodated -- that is CMake's territory
+//! - `cizon.lock` is a machine file (rewritten as a whole table each time, comments not
+//!   preserved), the locked commit is the single source of truth; any mismatch between
+//!   cizon.toml <-> cizon.lock <-> deps/ -> report loudly, never silently self-heal
+//! - Header paths are written into flags unconditionally (`-I<dep>/include` and `-I<dep>`);
+//!   when the directory does not exist the compiler safely ignores it, so planning does not
+//!   need to do any network operation first
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +22,7 @@ const DEP_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 /// `cizon2 add <git-url> [--tag <tag>]`
 pub fn add_cmd(args: &[String]) -> Result<i32, String> {
-    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    let dir = std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
     add_in(&dir, args)
 }
 
@@ -29,23 +32,23 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let name = dep_name(&url)?;
 
     if cfg.dependencies().map_or(false, |m| m.contains_key(&name)) {
-        return Err(format!("[dependencies] 中已有 {name}。删除该条目后再重试。"));
+        return Err(format!("[dependencies] already contains {name}. Delete that entry and retry."));
     }
     let dep_dir = dir.join("deps").join(&name);
     if dep_dir.exists() {
         return Err(format!(
-            "deps/{name} 已存在但未被 cizon2 管理。确认无用后删除该目录，再重跑 add。"
+            "deps/{name} exists but is not managed by cizon2. Confirm it is unneeded, delete the directory, then rerun add."
         ));
     }
 
     let toml_path = dir.join("cizon.toml");
     let original_toml =
-        std::fs::read_to_string(&toml_path).map_err(|e| format!("读 cizon.toml 失败: {e}"))?;
+        std::fs::read_to_string(&toml_path).map_err(|e| format!("failed to read cizon.toml: {e}"))?;
     let lock_path = dir.join(CIZON_LOCK);
     let original_lock = match std::fs::read_to_string(&lock_path) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(format!("读 {CIZON_LOCK} 失败: {e}")),
+        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
     };
 
     let rel = format!("deps/{name}");
@@ -75,7 +78,7 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         eprintln!("{warning}");
     }
 
-    println!("\x1b[32m      Added\x1b[0m {name} → deps/{name} (锁 commit {commit})");
+    println!("\x1b[32m      Added\x1b[0m {name} → deps/{name} (locked commit {commit})");
     println!("\x1b[32m      Next\x1b[0m cizon2 build");
     Ok(0)
 }
@@ -88,13 +91,14 @@ fn remove_dep_dir(path: &Path) -> bool {
     }
 }
 
-/// 依赖布局提示：非标准布局不阻止构建，但明确告诉用户为什么可能找不到头。
+/// Dependency layout hint: a non-standard layout does not block the build, but clearly
+/// tells the user why headers might not be found.
 fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
     if dep_dir.join("include").is_dir() {
         return None;
     }
     Some(format!(
-        "警告: deps/{name} 缺少 include/，不符合 cizon2 依赖布局（include/ + 平铺 src/*.cpp）。若该库使用其它构建系统，请改用它构建并通过 link_flags 接入。"
+        "Warning: deps/{name} is missing include/, which does not match the cizon2 dependency layout (include/ + flat src/*.cpp). If this library uses another build system, build it with that system and wire it in through link_flags."
     ))
 }
 
@@ -108,16 +112,16 @@ fn remove_file_if_exists(path: &Path) -> bool {
 
 fn rollback_error(err: String, ok: bool, name: &str) -> String {
     if ok {
-        format!("{err}\n已回滚 cizon.toml、{CIZON_LOCK} 与 deps/{name}。")
+        format!("{err}\nRolled back cizon.toml, {CIZON_LOCK} and deps/{name}.")
     } else {
         format!(
-            "{err}\n自动回滚未完成，请手动检查 cizon.toml、{CIZON_LOCK} 与 deps/{name}。"
+            "{err}\nAutomatic rollback failed, please check cizon.toml, {CIZON_LOCK} and deps/{name} manually."
         )
     }
 }
 
 fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
-    let usage = "用法: cizon2 add <git-url> [--tag <tag>]";
+    let usage = "Usage: cizon2 add <git-url> [--tag <tag>]";
     let mut iter = args.iter();
     let url = match iter.next() {
         Some(u) if !u.is_empty() => u.clone(),
@@ -128,16 +132,17 @@ fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
         match arg.as_str() {
             "--tag" => match iter.next() {
                 Some(t) if !t.is_empty() => tag = Some(t.clone()),
-                _ => return Err("--tag 需要一个参数。".into()),
+                _ => return Err("--tag requires an argument.".into()),
             },
-            other => return Err(format!("未知参数 {other}。{usage}")),
+            other => return Err(format!("Unknown argument {other}. {usage}")),
         }
     }
     Ok((url, tag))
 }
 
-/// 依赖名 = URL 去掉尾部 / 与 .git 后的最后一段。只允许字母数字、- 和 _
-/// （同时满足 TOML bare key 与 Windows 目录名的交集）。
+/// Dependency name = the last URL segment after stripping trailing / and .git.
+/// Only letters, digits, - and _ are allowed (the intersection of a valid TOML bare key
+/// and a valid Windows directory name).
 fn dep_name(url: &str) -> Result<String, String> {
     let mut name = url
         .replace('\\', "/")
@@ -151,15 +156,15 @@ fn dep_name(url: &str) -> Result<String, String> {
         name.truncate(new_len);
     }
     if name.is_empty() {
-        return Err("无法从 URL 解析依赖名。".into());
+        return Err("failed to parse a dependency name from the URL.".into());
     }
     if !config::is_valid_dep_name(&name) {
-        return Err(format!("依赖名 {name} 含非法字符（只允许字母数字、- 和 _）。"));
+        return Err(format!("dependency name {name} contains illegal characters (only letters, digits, - and _ are allowed)."));
     }
     Ok(name)
 }
 
-/// 浅克隆（有 tag 则一并 --branch 定位）到 `rel`，返回所在 commit。
+/// Shallow clone (locate with --branch when a tag is given) into `rel`, return the resulting commit.
 fn shallow_clone(dir: &Path, url: &str, tag: Option<&str>, rel: &str) -> Result<String, String> {
     let mut args: Vec<String> = ["clone", "--depth", "1"]
         .iter()
@@ -175,7 +180,8 @@ fn shallow_clone(dir: &Path, url: &str, tag: Option<&str>, rel: &str) -> Result<
     git_cmd(dir, &["-C".into(), rel.into(), "rev-parse".into(), "HEAD".into()])
 }
 
-/// 把 git 执行细节收敛在一处：cwd = 项目根，args 原样转发，stdout trim 返回。
+/// Centralize git execution details in one place: cwd = project root, args forwarded
+/// verbatim, stdout returned trimmed.
 fn git_cmd(dir: &Path, args: &[String]) -> Result<String, String> {
     let out = Command::new("git")
         .current_dir(dir)
@@ -183,10 +189,10 @@ fn git_cmd(dir: &Path, args: &[String]) -> Result<String, String> {
         .env("GCM_INTERACTIVE", "never")
         .args(args)
         .output()
-        .map_err(|e| format!("启动 git 失败: {e}"))?;
+        .map_err(|e| format!("failed to start git: {e}"))?;
     if !out.status.success() {
         return Err(format!(
-            "git {} 失败: {}",
+            "git {} failed: {}",
             git_verb(args),
             String::from_utf8_lossy(&out.stderr).trim()
         ));
@@ -194,7 +200,7 @@ fn git_cmd(dir: &Path, args: &[String]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// 错误信息里显示真正的 git 子命令（跳过 -C/-c 及其取值）。
+/// Show the real git subcommand in error messages (skipping -C/-c and their values).
 fn git_verb(args: &[String]) -> &str {
     let mut i = 0;
     while i < args.len() {
@@ -207,7 +213,7 @@ fn git_verb(args: &[String]) -> &str {
     "git"
 }
 
-/// TOML 基本串转义（URL/tag 都走这里）。
+/// Escape a TOML basic string (both URL and tag go through here).
 fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -219,8 +225,8 @@ fn entry_line(name: &str, url: &str, tag: Option<&str>) -> String {
     }
 }
 
-/// `[dependencies]` 表头；允许括号内外空白与行尾注释，
-/// 但不会把 `[dependencies.foo]` 误认成表头。
+/// `[dependencies]` table header; allows whitespace inside and around the brackets and a
+/// trailing comment, but never mistakes `[dependencies.foo]` for the header.
 fn is_dependencies_header(line: &str) -> bool {
     let t = line.trim().trim_start_matches('\u{feff}').trim();
     let Some(rest) = t.strip_prefix('[') else {
@@ -233,15 +239,16 @@ fn is_dependencies_header(line: &str) -> bool {
         && (tail.trim().is_empty() || tail.trim_start().starts_with('#'))
 }
 
-/// 在 cizon.toml 里登记：有 [dependencies] 头就在其下一行插入；
-/// 没有则整段追加到文件尾。写前重新解析，拒绝把合法文件改成非法 TOML。
+/// Register in cizon.toml: if a [dependencies] header exists, insert on the line after it;
+/// otherwise append the whole section to the end of the file. Re-parse before writing,
+/// refusing to turn a valid file into invalid TOML.
 fn append_entry(dir: &Path, name: &str, url: &str, tag: Option<&str>) -> Result<(), String> {
     let path = dir.join("cizon.toml");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("读 cizon.toml 失败: {e}"))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read cizon.toml: {e}"))?;
     let has_header = text.lines().any(is_dependencies_header);
     if !has_header && text.parse::<toml::Table>().is_ok_and(|t| t.contains_key("dependencies")) {
         return Err(
-            "cizon.toml 用内联表声明了 dependencies；请改成 [dependencies] 表头后再重试（未改动文件）。"
+            "cizon.toml declares dependencies with an inline table; change it to a [dependencies] header and retry (file not modified)."
                 .into(),
         );
     }
@@ -264,20 +271,21 @@ fn append_entry(dir: &Path, name: &str, url: &str, tag: Option<&str>) -> Result<
     }
     let table: toml::Table = out
         .parse()
-        .map_err(|e| format!("更新 cizon.toml 会得到非法 TOML（未改动文件）: {e}"))?;
+        .map_err(|e| format!("updating cizon.toml would produce invalid TOML (file not modified): {e}"))?;
     let registered = table
         .get("dependencies")
         .and_then(|v| v.as_table())
         .is_some_and(|t| t.contains_key(name));
     if !registered {
         return Err(format!(
-            "无法在 cizon.toml 的 [dependencies] 中登记 {name}（未改动文件）。请检查该段格式。"
+            "failed to register {name} in cizon.toml's [dependencies] (file not modified). Check that section's format."
         ));
     }
-    std::fs::write(&path, out).map_err(|e| format!("写 cizon.toml 失败: {e}"))
+    std::fs::write(&path, out).map_err(|e| format!("failed to write cizon.toml: {e}"))
 }
 
-/// 锁文件是机器文件：读原表 → 插入/更新条目 → 整表重写。
+/// The lock file is a machine file: read the original table → insert/update the entry →
+/// rewrite the whole table.
 fn write_lock_entry(
     dir: &Path,
     name: &str,
@@ -289,9 +297,9 @@ fn write_lock_entry(
     let mut table: toml::Table = match std::fs::read_to_string(&lock_path) {
         Ok(text) => text
             .parse()
-            .map_err(|e| format!("{CIZON_LOCK} 解析失败（未改动文件）: {e}"))?,
+            .map_err(|e| format!("{CIZON_LOCK} failed to parse (file not modified): {e}"))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
-        Err(e) => return Err(format!("读 {CIZON_LOCK} 失败: {e}")),
+        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
     };
     let mut entry = toml::Table::new();
     entry.insert("git".into(), url.into());
@@ -300,19 +308,20 @@ fn write_lock_entry(
     }
     entry.insert("commit".into(), commit.into());
     table.insert(name.into(), entry.into());
-    let text = toml::to_string(&table).map_err(|e| format!("锁序列化失败: {e}"))?;
-    std::fs::write(&lock_path, text).map_err(|e| format!("写 {CIZON_LOCK} 失败: {e}"))
+    let text = toml::to_string(&table).map_err(|e| format!("failed to serialize the lock: {e}"))?;
+    std::fs::write(&lock_path, text).map_err(|e| format!("failed to write {CIZON_LOCK}: {e}"))
 }
 
-/// 尽力把 deps/ 加进 .gitignore（没有就创建；已有 deps/ 行则不动）。
-/// 读失败时只警告，绝不用空内容覆盖用户文件。
+/// Best-effort add deps/ to .gitignore (create it if missing; leave it alone if a deps/
+/// line already exists). On a read failure only warn, never overwrite the user's file with
+/// empty content.
 fn ignore_deps_dir(dir: &Path) {
     let path = dir.join(".gitignore");
     let mut text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
-            eprintln!("警告: 读 {} 失败，未更新 .gitignore: {e}", path.display());
+            eprintln!("Warning: failed to read {}, .gitignore not updated: {e}", path.display());
             return;
         }
     };
@@ -324,38 +333,40 @@ fn ignore_deps_dir(dir: &Path) {
     }
     text.push_str("deps/\n");
     if let Err(e) = std::fs::write(&path, text) {
-        eprintln!("警告: 更新 {} 失败: {e}", path.display());
+        eprintln!("Warning: failed to update {}: {e}", path.display());
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-// 锁生命周期第三环:update —— 把锁与 deps 对齐 cizon.toml 的意图。
-// 升级/降级/横切同一命令:tag 只改在 cizon.toml,update 负责落地;
-// build 永远执行锁里已定的事,不追 toml 里的新愿望。
+// Third stage of the lock lifecycle: update -- align the lock and deps with the intent in
+// cizon.toml. Upgrade/downgrade/cross-grade share one command: the tag is only changed in
+// cizon.toml, update lands it; build always executes what the lock has already decided,
+// never chasing new wishes in the toml.
 // ─────────────────────────────────────────────────────────────
 
-/// `cizon2 update <依赖名>`：把锁与 deps 对齐 cizon.toml 的 tag 意图（升/降同构）。
+/// `cizon2 update <dependency-name>`: align the lock and deps with cizon.toml's tag intent
+/// (upgrade and downgrade are symmetric).
 pub fn update_cmd(args: &[String]) -> Result<i32, String> {
-    let dir = std::env::current_dir().map_err(|e| format!("无法读取当前目录: {e}"))?;
+    let dir = std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
     update_in(&dir, args)
 }
 
 pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     if args.len() != 1 || args[0].is_empty() {
-        return Err("用法: cizon2 update <依赖名>".into());
+        return Err("Usage: cizon2 update <dependency-name>".into());
     }
     let name = &args[0];
     let cfg = config::load(dir)?;
     let info = cfg
         .dependencies()
         .and_then(|m| m.get(name))
-        .ok_or_else(|| format!("{name} 不在 [dependencies] 里。先 cizon2 add,或检查拼写。"))?;
+        .ok_or_else(|| format!("{name} is not in [dependencies]. Run cizon2 add first, or check the spelling."))?;
 
     let deps_dir = dir.join("deps");
     std::fs::create_dir_all(&deps_dir)
-        .map_err(|e| format!("无法创建 {}: {e}", deps_dir.display()))?;
+        .map_err(|e| format!("failed to create {}: {e}", deps_dir.display()))?;
     let dep_dir = deps_dir.join(name);
-    // update 会替换整个 checkout；未提交改动必须显式放弃
+    // update replaces the whole checkout; uncommitted changes must be explicitly discarded
     if dep_dir.exists() {
         let status = git_cmd(
             dir,
@@ -368,11 +379,12 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         )?;
         if !status.is_empty() {
             return Err(format!(
-                "deps/{name} 有未提交改动，update 会丢弃它们。提交并推送到远端、更新 cizon.toml 后重试；或删除该目录放弃改动。"
+                "deps/{name} has uncommitted changes, update would discard them. Commit and push to the remote, update cizon.toml, then retry; or delete the directory to discard the changes."
             ));
         }
     }
-    // 先克隆到临时目录：网络失败时保留旧的 checkout，而不是先删后拉
+    // Clone to a temp directory first: on a network failure keep the old checkout instead of
+    // deleting then pulling
     let tmp_rel = format!(
         "deps/.{name}.tmp-{}",
         std::time::SystemTime::now()
@@ -391,16 +403,16 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     if dep_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dep_dir) {
             let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!("删 deps/{name} 失败: {e}"));
+            return Err(format!("failed to delete deps/{name}: {e}"));
         }
     }
     if let Err(e) = std::fs::rename(&tmp_dir, &dep_dir) {
         let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(format!("将 {tmp_rel} 移到 deps/{name} 失败: {e}"));
+        return Err(format!("failed to move {tmp_rel} to deps/{name}: {e}"));
     }
     if let Err(e) = write_lock_entry(dir, name, &info.git, info.tag.as_deref(), &commit) {
         return Err(format!(
-            "{e}\n依赖目录已更新，但锁写入失败；修复后重跑 cizon2 update {name}。"
+            "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon2 update {name}."
         ));
     }
     println!("\x1b[32m   Updated\x1b[0m {name} @ {commit}");
@@ -408,12 +420,13 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// build 期的依赖契约：restore / 校验 / 产出编译三元组
+// Dependency contract during build: restore / verify / produce the compile triple
 // ─────────────────────────────────────────────────────────────
 
-/// build 调用：依赖目录满足锁则跳过，缺失则按锁恢复（含 tag 校验），
-/// 成功后返回 (dep名, src, obj) 编译三元组；obj 放 obj_dir/<dep>/<stem>.o，
-/// 与项目 obj 物理隔离。
+/// Called by build: skip when the dependency directory already matches the lock, restore
+/// from the lock when it is missing (including tag verification), and on success return the
+/// (dep-name, src, obj) compile triple; obj goes to obj_dir/<dep>/<stem>.o, physically
+/// isolated from the project objs.
 pub fn prepare(
     dir: &Path,
     cfg: &config::Config,
@@ -428,14 +441,14 @@ pub fn prepare(
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "{CIZON_LOCK} 缺失，但 [dependencies] 声明了依赖。运行 cizon2 update <依赖名> 按 cizon.toml 重建锁。"
+                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon2 update <dependency-name> to rebuild the lock from cizon.toml."
             ));
         }
-        Err(e) => return Err(format!("读 {CIZON_LOCK} 失败: {e}")),
+        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
     };
     let lock: toml::Table = lock_text
         .parse()
-        .map_err(|e| format!("{CIZON_LOCK} 解析失败: {e}"))?;
+        .map_err(|e| format!("{CIZON_LOCK} failed to parse: {e}"))?;
 
     let mut jobs = Vec::new();
     for (name, info) in map {
@@ -443,26 +456,26 @@ pub fn prepare(
             .get(name)
             .and_then(|v| v.as_table())
             .ok_or_else(|| {
-                format!("{CIZON_LOCK} 里没有 {name} 的锁。运行 cizon2 update {name} 建锁。")
+                format!("no lock for {name} in {CIZON_LOCK}. Run cizon2 update {name} to create the lock.")
             })?;
         if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
             return Err(format!(
-                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 git 地址不一致。按 [dependencies] 为准:运行 cizon2 update {name} 对齐。"
+                "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon2 update {name} to align."
             ));
         }
         if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
             return Err(format!(
-                "[dependencies] 与 {CIZON_LOCK} 对 {name} 的 tag 不一致。运行 cizon2 update {name} 对齐。"
+                "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon2 update {name} to align."
             ));
         }
         let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {
             return Err(format!(
-                "{CIZON_LOCK} 中 {name} 缺少 commit。运行 cizon2 update {name} 重建锁。"
+                "{name} in {CIZON_LOCK} is missing a commit. Run cizon2 update {name} to rebuild the lock."
             ));
         };
         if !is_commit_hash(commit) {
             return Err(format!(
-                "{CIZON_LOCK} 中 {name} 的 commit 不是 40/64 位十六进制。运行 cizon2 update {name} 重建锁。"
+                "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon2 update {name} to rebuild the lock."
             ));
         }
         let commit = commit.to_ascii_lowercase();
@@ -480,7 +493,7 @@ pub fn prepare(
             )?;
             if head != commit {
                 return Err(format!(
-                    "deps/{name} 的 HEAD ({head}) 与锁 ({commit}) 不一致。若本地有需要保留的提交，先推送到远端并更新 cizon.toml 的 tag；否则运行 cizon2 update {name} 对齐，或删除该目录后 build 按锁恢复。"
+                    "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). If a local commit must be kept, push to the remote and update cizon.toml's tag first; otherwise run cizon2 update {name} to align, or delete the directory and let build restore from the lock."
                 ));
             }
             let status = git_cmd(
@@ -494,7 +507,7 @@ pub fn prepare(
             )?;
             if !status.is_empty() {
                 return Err(format!(
-                    "deps/{name} 有未提交改动，锁不再代表实际代码。提交并推送到远端、更新 cizon.toml 的 tag 后再 update；或删除该目录后 build 按锁恢复。"
+                    "deps/{name} has uncommitted changes, the lock no longer represents the actual code. Commit and push to the remote, update cizon.toml's tag, then run update; or delete the directory and let build restore from the lock."
                 ));
             }
         } else {
@@ -509,18 +522,18 @@ pub fn prepare(
         let src_dir = dep_dir.join("src");
         let dep_obj_dir = obj_dir.join(name);
         std::fs::create_dir_all(&dep_obj_dir)
-            .map_err(|e| format!("无法创建 {}: {e}", dep_obj_dir.display()))?;
+            .map_err(|e| format!("failed to create {}: {e}", dep_obj_dir.display()))?;
         let mut stems: HashMap<String, PathBuf> = HashMap::new();
         for src in flat_sources(&src_dir)? {
-            // C++20 模块单元（如 fmt 的 src/fmt.cc）无法按常规方式编译，
-            // 且常规 .cpp 不可能以 `module;` 开头 —— 静默跳过。
+            // A C++20 module unit (e.g. fmt's src/fmt.cc) cannot be compiled the normal way,
+            // and a normal .cpp can never start with `module;` -- skip it silently.
             if is_module_unit(&src)? {
                 continue;
             }
             let stem = src.file_stem().unwrap().to_string_lossy().into_owned();
             if let Some(prev) = stems.insert(stem.to_ascii_lowercase(), src.clone()) {
                 return Err(format!(
-                    "依赖 {name} 的源文件对象名冲突（同 stem）:\n  {}\n  {}\n请让依赖的 src/ 保持平铺且文件名唯一。",
+                    "object name conflict (same stem) among {name}'s dependency source files:\n  {}\n  {}\nKeep the dependency's src/ flat with unique file names.",
                     prev.display(),
                     src.display()
                 ));
@@ -536,8 +549,9 @@ fn is_commit_hash(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// 按 tag（浅克隆 + commit 校验）或裸 commit（完整克隆 + checkout）还原。
-/// 失败时清理半成品目录，避免下次 build 撞上不可信的 checkout。
+/// Restore by tag (shallow clone + commit verification) or by bare commit (full clone +
+/// checkout). On failure, clean up the half-built directory so the next build never hits an
+/// untrusted checkout.
 fn clone_pinned(
     dir: &Path,
     url: &str,
@@ -558,7 +572,7 @@ fn clone_pinned(
                     git_cmd(dir, &["-C".into(), rel.clone(), "rev-parse".into(), "HEAD".into()])?;
                 if head != commit {
                     return Err(format!(
-                        "tag {t} 当前指向 {head}，与锁 {commit} 不一致（tag 被移动过）。运行 cizon2 update {name} 刷新锁。"
+                        "tag {t} now points to {head}, which mismatches the lock {commit} (the tag was moved). Run cizon2 update {name} to refresh the lock."
                     ));
                 }
             }
@@ -569,7 +583,7 @@ fn clone_pinned(
                     git_cmd(dir, &["-C".into(), rel, "rev-parse".into(), "HEAD".into()])?;
                 if head != commit {
                     return Err(format!(
-                        "checkout {commit} 后 HEAD 为 {head}，与锁不一致。运行 cizon2 update {name} 重建锁。"
+                        "after checkout {commit}, HEAD is {head}, which mismatches the lock. Run cizon2 update {name} to rebuild the lock."
                     ));
                 }
             }
@@ -582,9 +596,10 @@ fn clone_pinned(
     result
 }
 
-/// 是否为 C++20 模块单元：跳过 BOM、空白与行/块注释后，首个 token 是 `module;`。
+/// Whether this is a C++20 module unit: after skipping BOM, whitespace and line/block
+/// comments, the first token is `module;`.
 fn is_module_unit(path: &Path) -> Result<bool, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let text = String::from_utf8_lossy(&bytes);
     let mut rest = text.trim_start_matches('\u{feff}');
     loop {
@@ -603,16 +618,16 @@ fn is_module_unit(path: &Path) -> Result<bool, String> {
     Ok(rest.starts_with("module;"))
 }
 
-/// 平铺扫描 dep 的 src/（依赖契约仍是平铺布局，不递归）。
+/// Flat scan of the dep's src/ (the dependency contract is still a flat layout, no recursion).
 fn flat_sources(src: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = match std::fs::read_dir(src) {
         Ok(e) => e,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(format!("无法读取 {}: {e}", src.display())),
+        Err(e) => return Err(format!("failed to read {}: {e}", src.display())),
     };
     let mut out = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|e| format!("无法读取 {} 的目录项: {e}", src.display()))?;
+        let entry = entry.map_err(|e| format!("failed to read a directory entry of {}: {e}", src.display()))?;
         let path = entry.path();
         let is_source = path
             .extension()
@@ -621,13 +636,13 @@ fn flat_sources(src: &Path) -> Result<Vec<PathBuf>, String> {
         if !is_source {
             continue;
         }
-        // 只对源文件取元数据；跟随符号链接，悬空链接视为不存在
+        // Only fetch metadata for source files; follow symlinks, treat dangling links as nonexistent
         match std::fs::metadata(&path) {
             Ok(meta) if meta.is_file() => out.push(path),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
-                return Err(format!("无法读取 {} 的元数据: {e}", path.display()));
+                return Err(format!("failed to read metadata of {}: {e}", path.display()));
             }
         }
     }
@@ -658,13 +673,13 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// 本地"远端"仓库（无网络）：include/dep.h + 平铺 src/dep.cpp + init commit。
+    /// A local "remote" repo (no network): include/dep.h + flat src/dep.cpp + init commit.
     fn make_origin(dir: &Path, with_tag: bool) {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("include")).unwrap();
         fs::write(dir.join("include/dep.h"), "int depv();\n").unwrap();
         fs::write(dir.join("src/dep.cpp"), "int depv() { return 42; }\n").unwrap();
-        git_cmd(dir, &["init".into()]).expect("本测试需要 git 在 PATH");
+        git_cmd(dir, &["init".into()]).expect("this test needs git on PATH");
         git_cmd(dir, &["add".into(), "-A".into()]).unwrap();
         git_cmd(
             dir,
@@ -715,7 +730,7 @@ mod tests {
                 return path;
             }
         }
-        panic!("未找到对象 {stem}");
+        panic!("object not found: {stem}");
     }
 
     fn mtime(path: &Path) -> std::time::SystemTime {
@@ -790,8 +805,8 @@ mod tests {
         let cfg = config::load(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
-        assert_eq!(mtime(&dep_obj), dep_t, "用户 flags 变化不应重编依赖源");
-        assert_ne!(mtime(&main_obj), main_t, "项目源应按新 flags 重编");
+        assert_eq!(mtime(&dep_obj), dep_t, "a user flags change should not recompile dependency sources");
+        assert_ne!(mtime(&main_obj), main_t, "project sources should recompile with the new flags");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
     }
@@ -841,7 +856,7 @@ mod tests {
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert!(
             Command::new(&exe).status().unwrap().success(),
-            "每个依赖必须优先看到自己的 config.h"
+            "each dependency must see its own config.h first"
         );
         fs::remove_dir_all(origin_a).ok();
         fs::remove_dir_all(origin_b).ok();
@@ -856,7 +871,7 @@ mod tests {
         fs::write(dir.join(CIZON_LOCK), original).unwrap();
         let err = write_lock_entry(&dir, "x", "https://example.com/x", None, "abc")
             .unwrap_err();
-        assert!(err.contains("解析失败"), "got: {err}");
+        assert!(err.contains("failed to parse"), "got: {err}");
         assert_eq!(fs::read_to_string(dir.join(CIZON_LOCK)).unwrap(), original);
         fs::remove_dir_all(dir).ok();
     }
@@ -870,7 +885,7 @@ mod tests {
         assert!(is_module_unit(&module).unwrap());
         let block = dir.join("block.cc");
         fs::write(&block, "\u{feff}/* license */\nmodule;\n").unwrap();
-        assert!(is_module_unit(&block).unwrap(), "BOM + 块注释头也应识别");
+        assert!(is_module_unit(&block).unwrap(), "BOM + block comment header should also be recognized");
         let regular = dir.join("main.cpp");
         fs::write(&regular, "#include <iostream>\nint main() {}\n").unwrap();
         assert!(!is_module_unit(&regular).unwrap());
@@ -930,7 +945,7 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, ["A.CPP", "b.cc"], "应只收源文件: {names:?}");
+        assert_eq!(names, ["A.CPP", "b.cc"], "should collect only source files: {names:?}");
         assert!(flat_sources(&dir.join("missing")).unwrap().is_empty());
         fs::remove_dir_all(dir).ok();
     }
@@ -980,7 +995,7 @@ mod tests {
             "dependencies = { fmt = { git = \"x\" } }\n\n[project]\nname = \"t\"\n";
         fs::write(dir.join("cizon.toml"), original).unwrap();
         let err = append_entry(&dir, "fmt", "https://example.com/fmt", None).unwrap_err();
-        assert!(err.contains("内联"), "got: {err}");
+        assert!(err.contains("inline"), "got: {err}");
         assert_eq!(fs::read_to_string(dir.join("cizon.toml")).unwrap(), original);
         fs::remove_dir_all(dir).ok();
     }
@@ -1070,7 +1085,7 @@ mod tests {
         let expect = git_cmd(&origin, &["rev-parse".into(), "v1".into()]).unwrap();
         assert_eq!(entry.get("commit").unwrap().as_str(), Some(expect.as_str()));
 
-        // tag 恢复路径：删掉 deps 后 prepare 应按 tag 克隆并校验 commit
+        // tag restore path: after deleting deps, prepare should clone by tag and verify the commit
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let cfg = config::load(&proj).unwrap();
         prepare(&proj, &cfg, &proj.join("obj")).unwrap();
@@ -1083,7 +1098,7 @@ mod tests {
             expect
         );
 
-        // tag 被移动：按锁恢复必须拒绝
+        // tag moved: restore from the lock must reject it
         fs::write(origin.join("second.txt"), "later").unwrap();
         git_cmd(&origin, &["add".into(), "-A".into()]).unwrap();
         git_cmd(
@@ -1103,7 +1118,7 @@ mod tests {
         git_cmd(&origin, &["tag".into(), "-f".into(), "v1".into()]).unwrap();
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
-        assert!(err.contains("tag 被移动"), "got: {err}");
+        assert!(err.contains("tag was moved"), "got: {err}");
 
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
@@ -1133,7 +1148,7 @@ mod tests {
         assert_eq!(
             git_cmd(&dep_dir, &["rev-parse".into(), "HEAD".into()]).unwrap(),
             c0,
-            "克隆失败时旧 checkout 必须保留"
+            "the old checkout must be kept when the clone fails"
         );
         let lock: toml::Table = fs::read_to_string(proj.join(CIZON_LOCK))
             .unwrap()
@@ -1160,7 +1175,7 @@ mod tests {
         let args = add_args(&origin);
         add_in(&proj, &args).unwrap();
         let err = add_in(&proj, &args).unwrap_err();
-        assert!(err.contains("已有"), "got: {err}");
+        assert!(err.contains("already contains"), "got: {err}");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
     }
@@ -1173,12 +1188,13 @@ mod tests {
         assert!(
             update_in(&proj, &[String::from("nope")])
                 .unwrap_err()
-                .contains("不在 [dependencies] 里")
+                .contains("is not in [dependencies]")
         );
         fs::remove_dir_all(proj).ok();
     }
 
-    /// 升/降同构的验收:tag 只改在 cizon.toml,update 把锁+deps 拉过去。
+    /// Acceptance test for symmetric upgrade/downgrade: the tag is only changed in
+    /// cizon.toml, update pulls the lock+deps along.
     #[test]
     fn update_aligns_lock_with_toml_intent() {
         if !has_git() {
@@ -1195,7 +1211,7 @@ mod tests {
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         let c0 = git_cmd(&origin, &["rev-parse".into(), "v1".into()]).unwrap();
 
-        // origin 前进到 c1 并打 v2(远端"新版本")
+        // advance origin to c1 and tag v2 (the remote "new version")
         fs::write(origin.join("second.txt"), "later").unwrap();
         git_cmd(&origin, &["add".into(), "-A".into()]).unwrap();
         git_cmd(
@@ -1215,7 +1231,7 @@ mod tests {
         git_cmd(&origin, &["tag".into(), "v2".into()]).unwrap();
         let c1 = git_cmd(&origin, &["rev-parse".into(), "HEAD".into()]).unwrap();
 
-        // 用户唯一动作:在 cizon.toml 表达新意图
+        // the user's only action: express the new intent in cizon.toml
         fs::write(
             proj.join("cizon.toml"),
             format!("[project]\nname = \"t\"\n\n[dependencies]\n{name} = {{ git = \"{}\", tag = \"v2\" }}\n", esc(&origin.to_string_lossy())),
@@ -1240,7 +1256,7 @@ mod tests {
             c1
         );
 
-        // 降级同构：改回 v1 → update 把锁与 deps 拉回 c0
+        // symmetric downgrade: switch back to v1 → update pulls the lock and deps back to c0
         fs::write(
             proj.join("cizon.toml"),
             format!("[project]\nname = \"t\"\n\n[dependencies]\n{name} = {{ git = \"{}\", tag = \"v1\" }}\n", esc(&origin.to_string_lossy())),
@@ -1272,7 +1288,7 @@ mod tests {
             return;
         }
         if crate::compiler::pick(None).is_err() {
-            return; // 无编译器环境跳过（与 pick_finds… 同一跳过策略）
+            return; // skip when no compiler is available (same skip strategy as pick_finds...)
         }
         let origin = temp("e2e-origin");
         let proj = temp("e2e-proj");
@@ -1293,13 +1309,13 @@ mod tests {
         let cfg = config::load(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
-        assert!(exe.is_file(), "首次构建应产出 exe");
+        assert!(exe.is_file(), "the first build should produce an exe");
         assert!(
             Command::new(&exe).status().unwrap().success(),
-            "依赖构建出的程序应正常运行"
+            "the program built from the dependency should run correctly"
         );
 
-        // 依赖工作区被改动 → 锁不再代表实际代码，必须报错
+        // the dependency working tree is modified → the lock no longer represents the actual code, it must error
         fs::write(
             proj.join("deps").join(&name).join("src/dep.cpp"),
             "int depv() { return 0; }\n",
@@ -1308,9 +1324,9 @@ mod tests {
         let cfg = config::load(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
         let err = crate::pipeline::build(&proj, &cfg, &plan).unwrap_err();
-        assert!(err.contains("未提交改动"), "got: {err}");
+        assert!(err.contains("uncommitted changes"), "got: {err}");
 
-        // 关键契约：deps/ 被删除 → build 自动按锁恢复并重编
+        // key contract: deps/ deleted → build automatically restores from the lock and recompiles
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let cfg = config::load(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
@@ -1322,7 +1338,7 @@ mod tests {
             )
             .unwrap(),
             c0,
-            "恢复后的 HEAD 必须回到锁中的 commit"
+            "the restored HEAD must return to the commit in the lock"
         );
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
@@ -1424,7 +1440,7 @@ mod tests {
 
         let cfg = config::load(&proj).unwrap();
         let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
-        assert!(err.contains("冲突"), "got: {err}");
+        assert!(err.contains("conflict"), "got: {err}");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
     }

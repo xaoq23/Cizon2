@@ -1,20 +1,20 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 编译器探测优先级（沿用 Cizon1 的结论：g++ 最常见，clang++ 次之）。
+/// Compiler detection priority (carried over from Cizon1's conclusion: g++ is most common, clang++ second).
 pub const PREFERENCE: &[&str] = &["g++", "clang++"];
 
 #[derive(Debug, Clone)]
 pub struct Cxx {
-    /// 可执行名，如 "g++"
+    /// executable name, e.g. "g++"
     pub name: String,
-    /// `--version` 第一行，如 "g++ (MinGW-W64 ...) 14.2.0"
+    /// first line of `--version`, e.g. "g++ (MinGW-W64 ...) 14.2.0"
     pub version: String,
 }
 
 impl Cxx {
-    /// 短版本号：version 行中第一个纯「数字+点分」token（g++ → "14.2.0"，
-    /// clang → "22.1.7"，clang 行尾的提交哈希不会被误取）。
+    /// Short version number: the first pure "digits+dots" token in the version line (g++ → "14.2.0",
+    /// clang → "22.1.7"; the commit hash at the end of the clang line is not picked up by mistake).
     pub fn short_version(&self) -> &str {
         self.version
             .split_whitespace()
@@ -23,9 +23,9 @@ impl Cxx {
     }
 }
 
-/// 规格别名归一化："gcc@14" → "g++"，"clang" → "clang++"。
-/// @version 后缀直接忽略（与 Cizon1 行为一致）；完整路径原样保留，
-/// 因为路径本身可能含 @（如 /opt/gcc@14/bin/g++）。
+/// Normalize a spec alias: "gcc@14" → "g++", "clang" → "clang++".
+/// The @version suffix is ignored outright (same behavior as Cizon1); a full path is kept as-is,
+/// because the path itself may contain @ (e.g. /opt/gcc@14/bin/g++).
 pub fn resolve_spec(spec: &str) -> &str {
     if spec.contains('/') || spec.contains('\\') {
         return spec;
@@ -41,7 +41,7 @@ pub fn resolve_spec(spec: &str) -> &str {
     }
 }
 
-/// 探测一个编译器是否可用：`--version` 退出码 0 且有版本输出。
+/// Probe whether a compiler is usable: `--version` exits 0 and produces version output.
 fn probe(name: &str) -> Option<Cxx> {
     let out = Command::new(name)
         .arg("--version")
@@ -66,12 +66,12 @@ fn probe(name: &str) -> Option<Cxx> {
     })
 }
 
-/// 显式指定（`--compiler` / `[compiler].cpp`）优先，否则按优先级自动探测。
+/// An explicit choice (`--compiler` / `[compiler].cpp`) takes priority, otherwise auto-detect by preference.
 pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
     if let Some(spec) = explicit {
         let name = resolve_spec(spec);
         return probe(name).ok_or_else(|| {
-            format!("指定的编译器 {name} 在 PATH 中不可用。检查拼写，或去掉 --compiler 让 cizon2 自动探测。")
+            format!("The specified compiler {name} is not available in PATH. Check the spelling, or drop --compiler to let cizon2 auto-detect.")
         });
     }
     for name in PREFERENCE {
@@ -79,13 +79,13 @@ pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
             return Ok(cxx);
         }
     }
-    Err("未找到可用的 C++ 编译器（尝试过 g++、clang++）。\n请安装 MinGW-w64 或 LLVM 并加入 PATH，\
-         或在 cizon.toml 的 [compiler] cpp = \"...\" 指向编译器。"
+    Err("No usable C++ compiler found (tried g++, clang++).\nInstall MinGW-w64 or LLVM and add it to PATH, \
+         or point [compiler] cpp = \"...\" in cizon.toml at a compiler."
         .into())
 }
 
-/// 解析编译器可执行文件的路径：含路径分隔符的规格转成绝对路径，裸名按 PATH 查找。
-/// Windows 上显式路径可能省略 `.exe`（`Command` 会自动补），这里也要补上。
+/// Resolve the compiler executable path: a spec containing a path separator becomes absolute, a bare name is looked up in PATH.
+/// On Windows an explicit path may omit `.exe` (`Command` adds it automatically), so we add it here too.
 pub fn executable_path(name: &str) -> Option<PathBuf> {
     let path = Path::new(name);
     if path.components().count() > 1 {
@@ -119,8 +119,8 @@ pub fn executable_path(name: &str) -> Option<PathBuf> {
     None
 }
 
-/// 静态库归档工具：clang 优先 llvm-ar，其余优先 ar。
-/// 先找编译器同目录（--compiler 指向完整路径时 LLVM/MinGW 可能不在 PATH），再找 PATH。
+/// Static library archiver: clang prefers llvm-ar, otherwise ar.
+/// Look first in the compiler's own directory (when --compiler points to a full path, LLVM/MinGW may not be in PATH), then in PATH.
 pub fn archiver(cxx: &Cxx) -> Result<String, String> {
     let clang = cxx.name.to_ascii_lowercase().contains("clang");
     let names: &[&str] = if clang {
@@ -150,11 +150,11 @@ pub fn archiver(cxx: &Cxx) -> Result<String, String> {
             return Ok(candidate.to_string_lossy().into_owned());
         }
     }
-    Err("未找到静态库归档工具（ar / llvm-ar）。安装 binutils 或 LLVM，或把静态库交给 CMake。".into())
+    Err("No static library archiver found (ar / llvm-ar). Install binutils or LLVM, or hand the static library over to CMake.".into())
 }
 
-/// 生成 `-std=...`；未配置时沿用 Cizon1 模板默认 c++23。
-/// 接受 `c++17` / `gnu++17` 原样传递，也接受裸版本号 `17`。
+/// Generate `-std=...`; when unset, follow Cizon1's template default of c++23.
+/// Accepts `c++17` / `gnu++17` passed through as-is, and also a bare version number `17`.
 pub fn edition_flag(edition: Option<&str>) -> String {
     match edition {
         None => "-std=c++23".into(),
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(resolve_spec("gcc@14"), "g++");
         assert_eq!(resolve_spec("clang@18"), "clang++");
         assert_eq!(resolve_spec("clang++"), "clang++");
-        // 完整路径中的 @ 是路径的一部分，不能被当作版本后缀截断
+        // The @ in a full path is part of the path and must not be truncated as a version suffix
         assert_eq!(resolve_spec(r"C:\gcc@14\bin\g++.exe"), r"C:\gcc@14\bin\g++.exe");
         assert_eq!(resolve_spec("/opt/gcc@14/bin/g++"), "/opt/gcc@14/bin/g++");
     }
@@ -242,7 +242,7 @@ mod tests {
 
     #[test]
     fn preference_order_is_documented() {
-        // 改动优先级必须是有意决定，不能被测试自动跟随
+        // Changing the priority must be a deliberate decision, not silently followed by the test
         assert_eq!(PREFERENCE, &["g++", "clang++"]);
     }
 
@@ -250,7 +250,7 @@ mod tests {
     fn pick_follows_preference_order() {
         let expected = PREFERENCE.iter().find(|c| probe(c).is_some());
         let Some(expected) = expected else {
-            return; // 无编译器环境跳过
+            return; // skip when no compiler is available
         };
         assert_eq!(pick(None).unwrap().name, *expected);
     }
