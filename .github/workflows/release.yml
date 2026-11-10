@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and release (e.g. v0.6.0)"
+        description: "Existing tag to build and release (v0.6.0 or 0.6.0)"
         required: true
         type: string
 
@@ -18,14 +18,25 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 20
-    env:
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
+      - name: Normalize release tag
+        shell: pwsh
+        run: |
+          $tag = "${{ inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            $tag = "${{ github.ref_name }}"
+          }
+          if (-not $tag.StartsWith("v")) {
+            $tag = "v$tag"
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CHECKOUT_REF=refs/tags/$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ env.CHECKOUT_REF }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
