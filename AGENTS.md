@@ -8,7 +8,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.6.0）
+## 当前边界（v0.6.1）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -82,4 +82,5 @@
 8. v0.5 `shared_lib`：DLL + import lib，bin 链接多个 DLL，C ABI —— 已发布 v0.5.0
 9. v0.5.1 `shared_lib` 依赖对象传播修复 —— 已发布 v0.5.1
 10. v0.6 多 bin target + `run <bin>` —— v0.6.0
-11. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— v0.6.1
+12. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
