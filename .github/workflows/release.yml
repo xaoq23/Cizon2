@@ -5,18 +5,27 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release (e.g. v0.6.0)"
+        required: true
+        type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -29,12 +38,14 @@ jobs:
         run: |
           $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
           $version = $meta.packages[0].version
+          $tag = $env:RELEASE_TAG
 
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $tagVersion = $env:GITHUB_REF_NAME -replace "^v", ""
-            if ($tagVersion -ne $version) {
-              throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
-            }
+          if (-not $tag.StartsWith("v")) {
+            throw "Release tag must start with 'v', got '$tag'"
+          }
+          $tagVersion = $tag.Substring(1)
+          if ($tagVersion -ne $version) {
+            throw "Tag $tag does not match Cargo.toml version $version"
           }
 
           $asset = "cizon2-v$version-windows-x86_64.exe"
@@ -53,3 +64,18 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
           if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: startsWith(env.RELEASE_TAG, 'v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $asset = $env:ASSET
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $asset "$asset.sha256" --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $tag $asset "$asset.sha256" --title $tag --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY
+          }

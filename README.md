@@ -383,7 +383,7 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 ### Diagnostics and engineering
 
 - Config structure errors come from serde; messages such as `unknown field` are English (low-priority style issue)
-- No baseline CI; tests silently skip when the compiler/git is missing
+- CI builds tagged releases; tests are local and skip when the compiler/git is missing
 - `rustfmt`/`clippy` are not wired in yet
 
 ### Wait for real demand
@@ -417,6 +417,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows binary and uploads `cizon2-v<version>-windows-x86_64.exe` plus a SHA-256 file. Tests stay local; CI does not run them.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows binary, uploads `cizon2-v<version>-windows-x86_64.exe` plus a SHA-256 file, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.6.0`). Tests stay local; CI does not run them.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).

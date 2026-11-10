@@ -386,7 +386,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 ### 诊断与工程
 
 - 配置结构错误来自 serde，`unknown field` 等提示为英文（低优先级风格项）
-- 没有基础 CI；缺少编译器/git 时测试会静默跳过
+- CI 在 tag 上构建 release；测试在本地跑，缺少编译器/git 时会跳过
 - `rustfmt`/`clippy` 尚未接入
 
 ### 等真实需求再开
@@ -420,6 +420,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 二进制并上传 `cizon2-v<version>-windows-x86_64.exe` 与 SHA-256 文件。测试仍在本地跑，CI 不执行测试。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 二进制、上传 `cizon2-v<version>-windows-x86_64.exe` 与 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.6.0`）。测试仍在本地跑，CI 不执行测试。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。

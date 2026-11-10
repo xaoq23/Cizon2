@@ -58,6 +58,7 @@
 - `main` 只收可发布版本；功能与修复提交到 `dev`，可发布后合入 `main`。
 - 一个功能一个 commit；测试先行（模块单测 + 真实编译器/git 端到端）。
 - git commit 信息一律使用英文（保留 `feat:` / `fix:` / `docs:` 等类型前缀）。
+- CI 只在 `v*` tag 上构建并发布 release；测试仍在本地跑。
 - 源码注释、文档注释和用户面字符串一律使用英文；`README-zh.md` 保留中文文档。
 - `README.md` 是英文主文档，`README-zh.md` 是中文版；修改文档时两份同步。
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
@@ -66,7 +67,7 @@
 ## 已知待办（未排期）
 
 - VSCode 断点调试当前靠手工 `.vscode/launch.json` + `tasks.json`；未来优先按 `[project] vscode = true` 非破坏生成（不实现调试器，gdb 先行），详见 README「后续改进」
-- 候选工程改进：exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理、基础 CI
+- 候选工程改进：exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理
 - 详细清单与真实需求触发条件见 README「后续改进」；开工前按三道闸确认
 
 ## 路线
