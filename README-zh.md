@@ -411,4 +411,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 二进制并上传 `cizon2-v<version>-windows-x86_64.exe` 与 SHA-256 文件。测试仍在本地跑，CI 不执行测试。
+
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。

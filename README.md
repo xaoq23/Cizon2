@@ -408,4 +408,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows binary and uploads `cizon2-v<version>-windows-x86_64.exe` plus a SHA-256 file. Tests stay local; CI does not run them.
+
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).

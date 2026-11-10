@@ -1,0 +1,55 @@
+name: release-build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Name release asset
+        shell: pwsh
+        run: |
+          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $version = $meta.packages[0].version
+
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $tagVersion = $env:GITHUB_REF_NAME -replace "^v", ""
+            if ($tagVersion -ne $version) {
+              throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version"
+            }
+          }
+
+          $asset = "cizon2-v$version-windows-x86_64.exe"
+          Copy-Item target/release/cizon2.exe $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Set-Content "$asset.sha256" -Encoding ascii
+
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "ARTIFACT=cizon2-v$version-windows-x86_64" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+          if-no-files-found: error
