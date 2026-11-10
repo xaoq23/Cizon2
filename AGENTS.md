@@ -2,9 +2,15 @@
 
 ## 定位
 
-个人开发者的零配置 C++ 构建工具。使命：`cizon2 build && cizon2 run`，达到 cargo/uv 级的开箱即用。
+个人开发者的声明式、渐进式现代 C++ 构建工具。使命：`cizon2 build && cizon2 run`，达到 cargo/uv 级的开箱即用。
 
-不做 CMake 的替代品。CMake 的生态是二十年积累的结果；需要 target 图、install/export、代码生成或 MSVC 时，由 CMake 接手，cizon2 全身而退。
+### 设计哲学
+
+1. 面向中小型项目的声明式、渐进式构建工具：封装编译器差异与复杂参数，只暴露最简 CLI，降低认知负担。
+2. 开发边界取决于我对 C++ 的认知，绝不做认知以外的东西，除非有真实用户提出需求。
+3. 不做 CMake 的替代品。CMake 的生态是二十年积累的结果；需要 target 图、install/export、代码生成时，由 CMake 接手，cizon2 全身而退；不要试图用 TOML 模仿图灵完备的 DSL。
+4. 做现代 C++ 的布道者，全面面向新的现代 C++ 项目。
+5. 做 agent 友好的工具：文本声明、CLI 输出，尽量减少 AI 手写 CMakeLists 导致的构建失败。
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
@@ -76,11 +82,11 @@
 2. v0.2 `new` / `init` / `add` / `update`，git 依赖与锁生命周期 —— 已发布 v0.2.0
 3. v0.2.1 递归 `src/`、`include/` 自动 `-I`、配置键严格校验 —— 随 v0.3.0 发布
 4. v0.3 compile_commands.json（默认关闭）—— 已发布 v0.3.0
-5. v0.4 `[[target]]`：单 bin + 多静态库 —— v0.4.2
+5. v0.4 `[[target]]`：单 bin + 多静态库 —— 已发布 v0.4.2
 6. v0.4.3 `compile_commands` 开启时补 VS Code IntelliSense 配置 —— 已发布 v0.4.3
 7. v0.4.4 run 参数提示 + 源码注释/字符串全英文 —— 已发布 v0.4.4
 8. v0.5 `shared_lib`：DLL + import lib，bin 链接多个 DLL，C ABI —— 已发布 v0.5.0
 9. v0.5.1 `shared_lib` 依赖对象传播修复 —— 已发布 v0.5.1
-10. v0.6 多 bin target + `run <bin>` —— v0.6.0
+10. v0.6 多 bin target + `run <bin>` —— 已发布 v0.6.0
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
 12. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

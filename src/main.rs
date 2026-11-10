@@ -1,4 +1,4 @@
-//! cizon2 — zero-config C++ build & run.
+//! cizon2 — declarative C++ build & run.
 //!
 //! See AGENTS.md for scope: single crate, recursive src/ sources, g++/clang++; git deps since v0.2.
 //! Hand-written argument dispatch to avoid clap (dependency whitelist: serde, toml).
@@ -14,7 +14,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = env!("CARGO_PKG_NAME");
 
 const USAGE: &str = "\
-cizon2 — zero-config C++ build & run manager
+cizon2 — declarative C++ build & run manager
 
 Usage:
   cizon2 new <dir-name>           # create a new project

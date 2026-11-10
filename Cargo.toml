@@ -2,7 +2,7 @@
 name = "cizon2"
 version = "0.6.1"
 edition = "2021"
-description = "Zero-config C++ build & run for beginners"
+description = "Declarative C++ build and run for small projects"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
