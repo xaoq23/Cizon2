@@ -67,17 +67,36 @@ fn probe(name: &str) -> Option<Cxx> {
 }
 
 /// An explicit choice (`--compiler` / `[compiler].cpp`) takes priority, otherwise auto-detect by preference.
+#[cfg(test)]
 pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
+    pick_with_note(explicit).map(|(cxx, _)| cxx)
+}
+
+/// Like `pick`, but also reports when auto-detection had to skip a preferred compiler.
+pub fn pick_with_note(explicit: Option<&str>) -> Result<(Cxx, Option<String>), String> {
     if let Some(spec) = explicit {
         let name = resolve_spec(spec);
-        return probe(name).ok_or_else(|| {
-            format!("The specified compiler {name} is not available in PATH. Check the spelling, or drop --compiler to let cizon2 auto-detect.")
-        });
+        return probe(name)
+            .map(|cxx| (cxx, None))
+            .ok_or_else(|| {
+                format!("The specified compiler {name} is not available in PATH. Check the spelling, or drop --compiler to let cizon2 auto-detect.")
+            });
     }
+    let mut missing = Vec::new();
     for name in PREFERENCE {
         if let Some(cxx) = probe(name) {
-            return Ok(cxx);
+            let note = if missing.is_empty() {
+                None
+            } else {
+                Some(format!(
+                    "{} not found; using {} (compiler flavor and ABI may differ)",
+                    missing.join(", "),
+                    cxx.name
+                ))
+            };
+            return Ok((cxx, note));
         }
+        missing.push(*name);
     }
     Err("No usable C++ compiler found (tried g++, clang++).\nInstall MinGW-w64 or LLVM and add it to PATH, \
          or point [compiler] cpp = \"...\" in cizon.toml at a compiler."
@@ -201,6 +220,17 @@ mod tests {
             Some(exe.as_path())
         );
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn pick_with_note_reports_fallback_consistently() {
+        let (cxx, note) = pick_with_note(None).unwrap();
+        if cxx.name == PREFERENCE[0] {
+            assert!(note.is_none(), "unexpected fallback note: {note:?}");
+        } else {
+            let note = note.expect("a fallback should be explained");
+            assert!(note.contains("not found"), "got: {note}");
+        }
     }
 
     #[test]

@@ -141,7 +141,11 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
         return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
     let (dir, cfg) = load_config()?;
-    let cxx = compiler::pick(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
+    let (cxx, fallback_note) =
+        compiler::pick_with_note(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
+    if let Some(note) = fallback_note {
+        eprintln!("{note}");
+    }
     let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
     pipeline::build(&dir, &cfg, &plan).map(|_| 0)
 }

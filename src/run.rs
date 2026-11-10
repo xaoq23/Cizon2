@@ -18,7 +18,11 @@ pub fn run(
     bin: Option<&str>,
     app_args: &[String],
 ) -> Result<i32, String> {
-    let cxx = compiler::pick(cc.or(cfg.explicit_compiler()))?;
+    let (cxx, fallback_note) =
+        compiler::pick_with_note(cc.or(cfg.explicit_compiler()))?;
+    if let Some(note) = fallback_note {
+        eprintln!("{note}");
+    }
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
     let result = pipeline::build_bins(dir, cfg, &plan)?;
     let exe = match bin {
@@ -108,7 +112,11 @@ fn describe_exit_code(code: i32) -> Option<&'static str> {
             0xC0000094 => return Some("INTEGER_DIVIDE_BY_ZERO: division by zero"),
             0xC00000FD => return Some("STACK_OVERFLOW: stack overflow (possibly infinite recursion)"),
             0xC000001D => return Some("ILLEGAL_INSTRUCTION: illegal CPU instruction"),
-            0xC0000135 => return Some("DLL_NOT_FOUND: missing DLL (check PATH)"),
+            0xC0000135 => {
+                return Some(
+                    "DLL_NOT_FOUND: missing runtime DLL; add the compiler's bin directory to PATH or link with -static",
+                );
+            }
             0xC000013A => return Some("CONTROL_C_EXIT: terminated by Ctrl+C"),
             0xC0000142 => return Some("DLL_INIT_FAILED: dynamic library initialization failed"),
             _ => {}
@@ -175,6 +183,9 @@ mod tests {
     #[test]
     fn windows_crash_codes_named() {
         assert!(describe_exit_code(-1073741819).unwrap().contains("ACCESS_VIOLATION"));
+        let dll_not_found = describe_exit_code(0xC0000135u32 as i32).unwrap();
+        assert!(dll_not_found.contains("PATH"), "got: {dll_not_found}");
+        assert!(dll_not_found.contains("-static"), "got: {dll_not_found}");
     }
 
     #[cfg(unix)]
