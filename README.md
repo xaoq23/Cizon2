@@ -1,5 +1,9 @@
 # Cizon2
 
+<p align="center">
+<img width="300" height="300" alt="cizon loge" src="https://github.com/user-attachments/assets/9ea31b2b-7ae1-4137-aedd-919ae7f01917" />
+</p>
+
 [简体中文](README-zh.md) | English
 
 Zero-config C++ build and run: `cizon2 build`, `cizon2 run` — out of the box like cargo/uv, with no build script language to learn first.
