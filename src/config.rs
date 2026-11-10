@@ -144,8 +144,8 @@ fn validate_target_name(name: &str) -> Result<(), String> {
     validate_file_component(name, "target name")
 }
 
-/// Validate and resolve `[[target]]`: a bin without a name uses the project name; static and
-/// shared libraries must be named explicitly.
+/// Validate and resolve `[[target]]`: a single bin without a name uses the project name; with
+/// multiple bins every bin must be named explicitly; libraries must be named explicitly.
 fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
     let Some(targets) = &mut cfg.targets else {
         return Ok(());
@@ -161,11 +161,21 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         return Err("[project].sources and [[target]] cannot be used together: put the source files in the corresponding target.".into());
     }
 
+    let bin_count = targets.iter().filter(|t| t.kind == TargetKind::Bin).count();
+    if bin_count == 0 {
+        return Err("[[target]] must contain at least one kind = \"bin\".".into());
+    }
     for target in targets.iter_mut() {
         match target.kind {
             TargetKind::Bin => {
                 if target.name.is_none() {
-                    target.name = Some(project_name.to_string());
+                    if bin_count == 1 {
+                        target.name = Some(project_name.to_string());
+                    } else {
+                        return Err(
+                            "with multiple bin targets, every bin must provide name.".into()
+                        );
+                    }
                 }
             }
             TargetKind::StaticLib | TargetKind::SharedLib => {
@@ -180,14 +190,13 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
     let mut names = HashSet::new();
     let mut libs = HashSet::new();
     let mut shared = HashSet::new();
-    let mut bins = 0usize;
     for target in targets.iter() {
         let name = target.name.as_deref().expect("name resolved");
         if !names.insert(name.to_lowercase()) {
             return Err(format!("duplicate target name {name} (case-insensitive)."));
         }
         match target.kind {
-            TargetKind::Bin => bins += 1,
+            TargetKind::Bin => {}
             TargetKind::StaticLib => {
                 libs.insert(name.to_lowercase());
                 if !target.links.is_empty() {
@@ -211,11 +220,6 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                 return Err(format!("the sources of bin target {name} must not be empty."));
             }
         }
-    }
-    if bins != 1 {
-        return Err(format!(
-            "[[target]] must have exactly one kind = \"bin\" (currently {bins})."
-        ));
     }
     for target in targets.iter() {
         let name = target.name.as_deref().expect("name resolved");
@@ -593,6 +597,20 @@ mod tests {
     }
 
     #[test]
+    fn multiple_bins_can_link_different_libraries() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"foo\"]\n\n\
+             [[target]]\nname = \"bar\"\nkind = \"static_lib\"\nsources = [\"bar\"]\n\n\
+             [[target]]\nname = \"a\"\nkind = \"bin\"\nsources = [\"a\"]\nlinks = [\"foo\"]\n\n\
+             [[target]]\nname = \"b\"\nkind = \"bin\"\nsources = [\"b\"]\nlinks = [\"bar\"]\n",
+        ));
+        let targets = cfg.targets().expect("targets");
+        assert_eq!(targets[2].links, ["foo"]);
+        assert_eq!(targets[3].links, ["bar"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn shared_lib_links_only_static_libraries() {
         let dir = temp_dir("shared-links-shared");
         std::fs::write(
@@ -678,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn targets_require_exactly_one_bin() {
+    fn targets_require_at_least_one_bin_and_names() {
         let dir = temp_dir("no-bin");
         std::fs::write(
             dir.join("cizon.toml"),
@@ -686,7 +704,7 @@ mod tests {
         )
         .unwrap();
         let err = load(&dir).unwrap_err();
-        assert!(err.contains("exactly one"), "got: {err}");
+        assert!(err.contains("at least one"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("two-bin");
@@ -698,7 +716,20 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("exactly one"));
+        assert!(load(&dir).is_ok(), "multiple named bins must be accepted");
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("two-bin-unnamed");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"a\"\nkind = \"bin\"\n\n\
+                 [[target]]\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("every bin must provide name"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 

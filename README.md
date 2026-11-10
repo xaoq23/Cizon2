@@ -15,7 +15,8 @@ Current version: **v0.5.1**. Primarily targets Windows x86-64 (no Linux/macOS bu
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Modern C++ layout: sources are collected recursively, `include/` is added to `-I` automatically
 - v0.4: one executable target plus multiple static library targets; archives are built automatically and `links` controls archive/import-library order
-- v0.5: `shared_lib` targets build DLLs and import libraries; the bin can link multiple DLLs, and unchanged import libraries do not force a bin relink
+- v0.5: `shared_lib` targets build DLLs and import libraries; bins can link multiple DLLs, and unchanged import libraries do not force a relink
+- v0.6: multiple bin targets; `cizon2 run <bin>` selects one, while `build` builds all of them
 - Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
@@ -85,7 +86,7 @@ It does not run `git init`: version control is your decision. The generated `.gi
 | `cizon2 new <directory>` | Create a project skeleton |
 | `cizon2 init` | Initialize in the current directory (existing files are not overwritten) |
 | `cizon2 build [--release] [--compiler <spec>]` | Build |
-| `cizon2 run [--release] [--compiler <spec>] [-- <program args...>]` | Build, then run and forward arguments |
+| `cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]` | Build, then run the selected bin and forward arguments |
 | `cizon2 add <git-url> [--tag <tag>]` | Add a git dependency and write the lock file |
 | `cizon2 update <dependency>` | Align the lock with the intent in `cizon.toml` (upgrade or downgrade) |
 | `cizon2 help` / `cizon2 version` | Help / version |
@@ -158,9 +159,9 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
 
-### Library targets (v0.4 / v0.5)
+### Library and bin targets (v0.4 / v0.5 / v0.6)
 
-A project may carry static and shared library targets, but must have exactly one executable target:
+A project may carry static and shared library targets plus one or more executable targets:
 
 ```toml
 [[target]]
@@ -179,25 +180,32 @@ name = "app"
 kind = "bin"
 sources = ["src"]             # optional; defaults to scanning src/
 links = ["shape_dll", "shape"]  # static archives first, then shared import libraries
+
+[[target]]
+name = "worker"
+kind = "bin"
+sources = ["worker"]
+links = ["shape"]
 ```
 
 Rules:
 
 - Without `[[target]]`, the project stays a traditional single-executable project with unchanged semantics; the first build in 0.4.1 migrates the object layout (one full rebuild)
-- With `[[target]]`, exactly one `kind = "bin"` is required, and `[project].sources` can no longer be used
-- `static_lib` does not support `links`; `shared_lib` may link `static_lib` only; `bin` may link both, with static archives first, then import libraries
+- With `[[target]]`, at least one `kind = "bin"` is required, and `[project].sources` can no longer be used
+- A single bin may omit `name` and use `[project].name`; with multiple bins every bin must be named explicitly
+- `static_lib` does not support `links`; `shared_lib` may link `static_lib` only; each `bin` may link both, with static archives first, then import libraries
 - Shared libraries cannot link other shared libraries; transitive DLL graphs are a CMake job
-- `bin` may omit `name`; it then defaults to `[project].name` (or the directory name) and must satisfy the target naming rules. `static_lib` / `shared_lib` must have a `name`
 - Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
 - Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` (Windows only in v0.5)
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
 - Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
 - On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
-- `cizon2 run` always runs the single bin; an explicit `bin.name` determines the artifact name, otherwise the project name is used (plus `.exe` on Windows)
+- Every bin produces `build/<mode>-<compiler>/<name>.exe`; `cizon2 run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin
+- `run --all` is not supported: cizon2 does not supervise multiple processes. Use a shell/Python harness for IPC or multi-process tests
 - Target/project names are case-insensitive, must be unique, and cannot be `obj` / `lib` / `deps-obj` or start with `.`; a target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); same-named sources in different directories are allowed
-- Object paths mirror source paths: `obj/<project-relative-path>.o` for the bin, `lib/<name>/obj/<project-relative-path>.o` for static libraries, `.shared/<name>/obj/<project-relative-path>.o` for shared libraries, and `deps-obj/<dep>/` for dependency objects
+- Object paths mirror source paths: a single bin uses `obj/<project-relative-path>.o`; multiple bins use `obj/<bin>/<project-relative-path>.o`; static libraries use `lib/<name>/obj/...`, shared libraries `.shared/<name>/obj/...`, dependencies `deps-obj/<dep>/`
 - Same stem in the same directory (e.g. `util.cpp` + `util.cc`) is still an error; rename one
 - `new` / `init` only generate the traditional single-executable skeleton; target projects need manually created sources and `[[target]]` entries
 
@@ -336,7 +344,8 @@ Alternatives:
 
 ## Usage notes
 
-- Exactly one executable target per project; `cizon2 run` has no target selection
+- One or more executable targets per project; `cizon2 run <bin>` selects one, and an omitted name is only valid with exactly one bin
+- `run --all` is not supported; multi-process/IPC orchestration belongs in an external harness
 - Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library
 - Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
 - Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
@@ -387,9 +396,9 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 ## When to use CMake
 
-Cizon2 targets small-to-medium single-executable projects (optionally with static/shared library targets). Reach for CMake when you need:
+Cizon2 targets small-to-medium projects with one or more bins (optionally with static/shared library targets). Reach for CMake when you need:
 
-- Multiple executable targets, nested target graphs, transitive target dependencies, per-target flags/include
+- Nested target graphs, transitive target dependencies, per-target flags/include
 - install/export/find_package/packaging, DLL versioning/SONAME
 - Shared libraries depending on other shared libraries, direct C++ ABI distribution
 - Code generation (protobuf, Qt moc), custom build steps

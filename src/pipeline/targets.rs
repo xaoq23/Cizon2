@@ -5,25 +5,12 @@ use crate::compiler::{self, Cxx};
 use crate::config::{Config, TargetKind};
 
 use super::output::rel_display;
-use super::{LibTarget, LinkTarget, Plan, SharedTarget};
+use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
-    let (sources, libs, shared, links, out_name) = if let Some(targets) = cfg.targets() {
-        let bin = targets
-            .iter()
-            .find(|t| t.kind == TargetKind::Bin)
-            .expect("config validation guarantees exactly one bin");
-        let bin_name = bin.name.as_deref().expect("config resolves bin name");
-        let sources = collect_target_sources(
-            dir,
-            bin.sources.as_deref(),
-            &format!("bin target {bin_name}"),
-        )?;
-        if sources.is_empty() {
-            return Err(format!("bin target {bin_name} has no source file to compile."));
-        }
+    let (bins, libs, shared) = if let Some(targets) = cfg.targets() {
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
             let name = target.name.as_deref().expect("config resolves lib name");
@@ -69,21 +56,41 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 links: shared_links,
             });
         }
-        let links = bin
-            .links
-            .iter()
-            .map(|link| {
-                let lower = link.to_lowercase();
-                if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
-                    LinkTarget::Static(lib.name.clone())
-                } else if let Some(sh) = shared.iter().find(|sh| sh.name.to_lowercase() == lower) {
-                    LinkTarget::Shared(sh.name.clone())
-                } else {
-                    LinkTarget::Static(link.clone())
-                }
-            })
-            .collect();
-        (sources, libs, shared, links, exe_name(bin_name))
+        let mut bins = Vec::new();
+        for target in targets.iter().filter(|t| t.kind == TargetKind::Bin) {
+            let name = target.name.as_deref().expect("config resolves bin name");
+            let sources = collect_target_sources(
+                dir,
+                target.sources.as_deref(),
+                &format!("bin target {name}"),
+            )?;
+            if sources.is_empty() {
+                return Err(format!("bin target {name} has no source file to compile."));
+            }
+            let links = target
+                .links
+                .iter()
+                .map(|link| {
+                    let lower = link.to_lowercase();
+                    if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
+                        LinkTarget::Static(lib.name.clone())
+                    } else if let Some(sh) =
+                        shared.iter().find(|sh| sh.name.to_lowercase() == lower)
+                    {
+                        LinkTarget::Shared(sh.name.clone())
+                    } else {
+                        LinkTarget::Static(link.clone())
+                    }
+                })
+                .collect();
+            bins.push(BinTarget {
+                name: name.to_string(),
+                sources,
+                links,
+                out_name: exe_name(name),
+            });
+        }
+        (bins, libs, shared)
     } else {
         let explicit = cfg.explicit_sources();
         let sources = collect_sources(dir, explicit)?;
@@ -96,13 +103,14 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 ),
             });
         }
-        (
+        let name = cfg.name(dir);
+        let bins = vec![BinTarget {
+            out_name: exe_name(&name),
+            name,
             sources,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            exe_name(&cfg.name(dir)),
-        )
+            links: Vec::new(),
+        }];
+        (bins, Vec::new(), Vec::new())
     };
 
     let edition = compiler::edition_flag(cfg.edition());
@@ -131,15 +139,13 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 
     Ok(Plan {
         cxx,
-        sources,
+        bins,
         flags,
         link_flags,
         dep_base,
         dep_includes,
         libs,
         shared,
-        links,
-        out_name,
         mode: if release { "release" } else { "debug" },
     })
 }
@@ -399,6 +405,14 @@ pub(super) fn lib_obj_for(
 
 pub(super) fn shared_obj_dir(scope_dir: &Path, name: &str) -> PathBuf {
     scope_dir.join(".shared").join(name).join("obj")
+}
+
+pub(super) fn bin_obj_dir(scope_dir: &Path, name: &str, multi: bool) -> PathBuf {
+    if multi {
+        scope_dir.join("obj").join(name)
+    } else {
+        scope_dir.join("obj")
+    }
 }
 
 pub(super) fn shared_obj_for(

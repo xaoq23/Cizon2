@@ -158,15 +158,13 @@
         );
         let p = Plan {
             cxx: Cxx { name: "g++".into(), version: "test".into() },
-            sources: vec![],
+            bins: vec![],
             flags: vec![],
             link_flags: vec![],
             dep_base: vec!["-std=c++23".to_string()],
             dep_includes: includes,
             libs: vec![],
             shared: vec![],
-            links: vec![],
-            out_name: "t".into(),
             mode: "debug",
         };
         let flags = p.dep_flags_for("b");
@@ -1701,5 +1699,135 @@
         }
         build_project(&dir).unwrap();
         assert!(pdb.exists(), "no-op build must not delete the DLL PDB");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── v0.6: multiple bin targets ───────────────────────────────────
+
+    fn multi_bin_project(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        for sub in ["one", "two"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"one\"\nkind = \"bin\"\nsources = [\"one\"]\n\n\
+             [[target]]\nname = \"two\"\nkind = \"bin\"\nsources = [\"two\"]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("one/main.cpp"), "int main() { return 1; }\n").unwrap();
+        fs::write(dir.join("two/main.cpp"), "int main() { return 2; }\n").unwrap();
+        dir
+    }
+
+    fn build_bins_project(dir: &Path) -> BuildResult {
+        let cfg = crate::config::load(dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let plan = plan(dir, &cfg, cxx, false).unwrap();
+        build_bins(dir, &cfg, &plan).unwrap()
+    }
+
+    #[test]
+    fn multiple_bins_build_and_run_selected_bin() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = multi_bin_project("multi-bin");
+        let result = build_bins_project(&dir);
+        assert_eq!(result.bins.len(), 2);
+        let one = result.bins.iter().find(|(n, _)| n == "one").unwrap();
+        let two = result.bins.iter().find(|(n, _)| n == "two").unwrap();
+        assert_eq!(run_code(&one.1), 1);
+        assert_eq!(run_code(&two.1), 2);
+
+        let cfg = crate::config::load(&dir).unwrap();
+        assert_eq!(
+            crate::run::run(&dir, &cfg, false, None, Some("two"), &[]).unwrap(),
+            2
+        );
+        assert!(crate::run::run(&dir, &cfg, false, None, None, &[])
+            .unwrap_err()
+            .contains("multiple bin targets"));
+        assert!(crate::run::run(&dir, &cfg, false, None, Some("missing"), &[])
+            .unwrap_err()
+            .contains("unknown bin target"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn editing_one_bin_does_not_relink_the_other() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = multi_bin_project("multi-bin-incremental");
+        let result = build_bins_project(&dir);
+        let one = result.bins.iter().find(|(n, _)| n == "one").unwrap().1.clone();
+        let two = result.bins.iter().find(|(n, _)| n == "two").unwrap().1.clone();
+        let one_t = mtime(&one);
+        let two_t = mtime(&two);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        fs::write(dir.join("one/main.cpp"), "int main() { return 3; }\n").unwrap();
+        let result = build_bins_project(&dir);
+        let one_new = result.bins.iter().find(|(n, _)| n == "one").unwrap().1.clone();
+        let two_new = result.bins.iter().find(|(n, _)| n == "two").unwrap().1.clone();
+        assert_ne!(mtime(&one_new), one_t, "changed bin must relink");
+        assert_eq!(mtime(&two_new), two_t, "untouched bin must not relink");
+        assert_eq!(run_code(&one_new), 3);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn removing_bin_cleans_old_exe() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = multi_bin_project("multi-bin-cleanup");
+        let result = build_bins_project(&dir);
+        let scope = scope_of(&dir, &result.bins[0].1);
+        assert!(scope.join("two.exe").exists());
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"one\"\nkind = \"bin\"\nsources = [\"one\"]\n",
+        )
+        .unwrap();
+        let _ = build_bins_project(&dir);
+        assert!(scope.join("one.exe").exists());
+        assert!(!scope.join("two.exe").exists(), "removed bin exe must be cleaned");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn multiple_bins_link_shared_lib() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = temp_dir("multi-bin-shared");
+        for sub in ["a", "b", "dll"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"depdll\"\nkind = \"shared_lib\"\nsources = [\"dll\"]\n\n\
+             [[target]]\nname = \"a\"\nkind = \"bin\"\nsources = [\"a\"]\nlinks = [\"depdll\"]\n\n\
+             [[target]]\nname = \"b\"\nkind = \"bin\"\nsources = [\"b\"]\nlinks = [\"depdll\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("dll/api.cpp"),
+            "extern \"C\" __declspec(dllexport) int shared_value() { return 42; }\n",
+        )
+        .unwrap();
+        let main = "extern \"C\" int shared_value();\nint main() { return shared_value() == 42 ? 0 : 1; }\n";
+        fs::write(dir.join("a/main.cpp"), main).unwrap();
+        fs::write(dir.join("b/main.cpp"), main).unwrap();
+        let result = build_bins_project(&dir);
+        let scope = scope_of(&dir, &result.bins[0].1);
+        shared_dll(&scope, "depdll");
+        for (_, exe) in &result.bins {
+            assert_eq!(run_code(exe), 0);
+        }
         fs::remove_dir_all(dir).ok();
     }

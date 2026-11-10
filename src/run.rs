@@ -10,10 +10,45 @@ use crate::config::Config;
 use crate::pipeline;
 
 /// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
-pub fn run(dir: &std::path::Path, cfg: &Config, release: bool, cc: Option<&str>, app_args: &[String]) -> Result<i32, String> {
+pub fn run(
+    dir: &std::path::Path,
+    cfg: &Config,
+    release: bool,
+    cc: Option<&str>,
+    bin: Option<&str>,
+    app_args: &[String],
+) -> Result<i32, String> {
     let cxx = compiler::pick(cc.or(cfg.explicit_compiler()))?;
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
-    let exe = pipeline::build(dir, cfg, &plan)?;
+    let result = pipeline::build_bins(dir, cfg, &plan)?;
+    let exe = match bin {
+        Some(name) => result
+            .bins
+            .iter()
+            .find(|(bin_name, _)| bin_name.eq_ignore_ascii_case(name))
+            .map(|(_, path)| path.clone())
+            .ok_or_else(|| {
+                let available = result
+                    .bins
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("unknown bin target {name}. Available bins: {available}.")
+            })?,
+        None if result.bins.len() == 1 => result.bins[0].1.clone(),
+        None => {
+            let available = result
+                .bins
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "multiple bin targets; choose one: {available}. Usage: cizon2 run <bin-name> [-- <args>]."
+            ));
+        }
+    };
 
     eprintln!(
         "\x1b[36m     Running\x1b[0m {}",
@@ -125,7 +160,7 @@ mod tests {
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let args = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(run(&dir, &cfg, false, None, &args).unwrap(), 7);
+        assert_eq!(run(&dir, &cfg, false, None, None, &args).unwrap(), 7);
         fs::remove_dir_all(dir).ok();
     }
 

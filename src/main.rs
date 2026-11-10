@@ -22,7 +22,7 @@ Usage:
   cizon2 add <git-url> [--tag <tag>]  # add a git dependency (locked into cizon.lock)
   cizon2 update <dep-name>        # align the lock with cizon.toml intent (upgrade/downgrade)
   cizon2 build [--release] [--compiler <spec>]
-  cizon2 run [--release] [--compiler <spec>] [-- <program args...>]
+  cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]
   cizon2 help | version
 
 Only reads the [project], [dependencies], [compiler] and [[target]] sections of cizon.toml; \
@@ -68,7 +68,7 @@ struct Flags {
 }
 
 /// Parse flags up to `--`; everything after it is passed through.
-fn parse_flags<'a>(mut args: &'a [String], is_run: bool) -> Result<(Flags, &'a [String]), String> {
+fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
     let mut flags = Flags { release: false, cc: None };
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -85,29 +85,58 @@ fn parse_flags<'a>(mut args: &'a [String], is_run: bool) -> Result<(Flags, &'a [
                 args = &args[1..];
                 break;
             }
-            other => {
-                let mut msg = format!("Unknown flag {other}.\n\n{USAGE}");
-                if is_run {
-                    msg.push_str(
-                        "\n\nTo pass arguments to your program, use `cizon2 run -- <args>`; a PowerShell function wrapper may swallow a bare `--`, so call the exe directly or use Set-Alias.",
-                    );
-                }
-                return Err(msg);
-            }
+            other => return Err(format!("Unknown flag {other}.\n\n{USAGE}")),
         }
         args = &args[1..];
     }
     Ok((flags, args))
 }
 
-fn load_config() -> Result<(std::path::PathBuf, config::Config), String> {
-    let dir = std::env::current_dir().map_err(|e| format!("cannot read current directory: {e}"))?;
+/// Parse `run` flags, the optional bin name, and program args after `--`.
+fn parse_run_args<'a>(
+    mut args: &'a [String],
+) -> Result<(Flags, Option<String>, &'a [String]), String> {
+    let mut flags = Flags { release: false, cc: None };
+    let mut bin = None;
+    while let Some(first) = args.first() {
+        match first.as_str() {
+            "--release" => flags.release = true,
+            "--compiler" => match args.get(1) {
+                Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
+                    flags.cc = Some(spec.clone());
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
+            },
+            "--" => return Ok((flags, bin, &args[1..])),
+            other if !other.starts_with('-') => {
+                if bin.is_some() {
+                    return Err(format!(
+                        "run accepts at most one bin name, got both {} and {other}. Usage: cizon2 run <bin-name> [-- <args>].",
+                        bin.as_deref().unwrap_or("")
+                    ));
+                }
+                bin = Some(other.to_string());
+            }
+            other => {
+                return Err(format!(
+                    "Unknown flag {other}.\n\n{USAGE}\n\nTo pass arguments to your program, use `cizon2 run <bin-name> -- <args>`; a PowerShell function wrapper may swallow a bare `--`, so call the exe directly or use Set-Alias."
+                ));
+            }
+        }
+        args = &args[1..];
+    }
+    Ok((flags, bin, args))
+}
+
+fn load_config() -> Result<(std::path::PathBuf, config::Config), String> {    let dir = std::env::current_dir().map_err(|e| format!("cannot read current directory: {e}"))?;
     let cfg = config::load(&dir)?;
     Ok((dir, cfg))
 }
 
 fn build_cmd(args: &[String]) -> Result<i32, String> {
-    let (flags, rest) = parse_flags(args, false)?;
+    let (flags, rest) = parse_flags(args)?;
     if !rest.is_empty() {
         return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
@@ -118,9 +147,16 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
 }
 
 fn execute_run(args: &[String]) -> Result<i32, String> {
-    let (flags, app_args) = parse_flags(args, true)?;
+    let (flags, bin, app_args) = parse_run_args(args)?;
     let (dir, cfg) = load_config()?;
-    run::run(&dir, &cfg, flags.release, flags.cc.as_deref(), app_args)
+    run::run(
+        &dir,
+        &cfg,
+        flags.release,
+        flags.cc.as_deref(),
+        bin.as_deref(),
+        app_args,
+    )
 }
 
 fn top_err(result: Result<i32, String>) -> i32 {
@@ -150,7 +186,7 @@ mod tests {
     #[test]
     fn parse_flags_defaults_and_passthrough() {
         let input = args(&["--", "a", "b"]);
-        let (flags, rest) = parse_flags(&input, false).unwrap();
+        let (flags, rest) = parse_flags(&input).unwrap();
         assert!(!flags.release);
         assert!(flags.cc.is_none());
         assert_eq!(rest, &args(&["a", "b"]));
@@ -159,7 +195,7 @@ mod tests {
     #[test]
     fn parse_flags_accepts_release_and_compiler() {
         let input = args(&["--release", "--compiler", "clang++"]);
-        let (flags, rest) = parse_flags(&input, false).unwrap();
+        let (flags, rest) = parse_flags(&input).unwrap();
         assert!(flags.release);
         assert_eq!(flags.cc.as_deref(), Some("clang++"));
         assert!(rest.is_empty());
@@ -172,23 +208,44 @@ mod tests {
             args(&["--compiler", ""]),
             args(&["--compiler", "--release"]),
         ] {
-            let err = parse_flags(&input, false).unwrap_err();
+            let err = parse_flags(&input).unwrap_err();
             assert!(err.contains("--compiler"), "got: {err}");
         }
     }
 
     #[test]
     fn parse_flags_rejects_unknown_flag() {
-        let err = parse_flags(&args(&["--nope"]), false).unwrap_err();
+        let err = parse_flags(&args(&["--nope"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
         assert!(!err.contains("Set-Alias"), "build errors should not show the run hint: {err}");
     }
 
     #[test]
     fn run_unknown_flag_mentions_powershell_wrapper() {
-        let err = parse_flags(&args(&["--hello"]), true).unwrap_err();
+        let err = parse_run_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
-        assert!(err.contains("cizon2 run --"), "got: {err}");
+        assert!(err.contains("cizon2 run"), "got: {err}");
         assert!(err.contains("Set-Alias"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_run_args_selects_bin_and_passthrough() {
+        let input = args(&["server", "--", "a", "b"]);
+        let (flags, bin, rest) = parse_run_args(&input).unwrap();
+        assert!(!flags.release);
+        assert_eq!(bin.as_deref(), Some("server"));
+        assert_eq!(rest, &args(&["a", "b"]));
+
+        let input = args(&["--release", "server"]);
+        let (flags, bin, rest) = parse_run_args(&input).unwrap();
+        assert!(flags.release);
+        assert_eq!(bin.as_deref(), Some("server"));
+        assert!(rest.is_empty());
+    }
+
+    #[test]
+    fn parse_run_args_rejects_two_bins() {
+        let err = parse_run_args(&args(&["one", "two"])).unwrap_err();
+        assert!(err.contains("at most one bin name"), "got: {err}");
     }
 }

@@ -16,6 +16,7 @@
 - 现代 C++ 目录结构：递归收集源文件，`include/` 自动加入 `-I`
 - v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 控制归档/import lib 顺序
 - v0.5：`shared_lib` 生成 DLL 与 import lib；bin 可链接多个 DLL，import lib 未变时不重链 bin
+- v0.6：多个 bin target；`cizon2 run <bin>` 选择运行，`build` 构建全部
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
@@ -88,7 +89,7 @@ hello/
 | `cizon2 new <目录名>` | 创建项目骨架 |
 | `cizon2 init` | 在当前目录初始化（已有文件不覆盖） |
 | `cizon2 build [--release] [--compiler <spec>]` | 构建 |
-| `cizon2 run [--release] [--compiler <spec>] [-- <程序参数...>]` | 构建后运行并转发参数 |
+| `cizon2 run [--release] [--compiler <spec>] [<bin名>] [-- <程序参数...>]` | 构建后运行指定的 bin 并转发参数 |
 | `cizon2 add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
 | `cizon2 update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
 | `cizon2 help` / `cizon2 version` | 帮助 / 版本 |
@@ -161,9 +162,9 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 未知的配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
 
-### 库 target（v0.4 / v0.5）
+### 库与 bin target（v0.4 / v0.5 / v0.6）
 
-一个项目可以带静态库与共享库 target，但必须恰好有一个可执行 target：
+一个项目可以带静态库、共享库 target，以及一个或多个可执行 target：
 
 ```toml
 [[target]]
@@ -182,25 +183,32 @@ name = "app"
 kind = "bin"
 sources = ["src"]             # 可选；缺省扫描 src/
 links = ["shape_dll", "shape"]  # 先静态归档，再共享库 import lib
+
+[[target]]
+name = "worker"
+kind = "bin"
+sources = ["worker"]
+links = ["shape"]
 ```
 
 规则：
 
 - 不写 `[[target]]` 时保持传统单可执行项目，配置语义不变；0.4.1 首次构建会迁移对象布局（全量重编一次）
-- 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
-- `static_lib` 不支持 `links`；`shared_lib` 只能链接 `static_lib`；`bin` 可以混合链接，先静态归档，再 import lib
+- 写了 `[[target]]` 后至少有一个 `kind = "bin"`；`[project].sources` 不能再使用
+- 只有一个 bin 时 name 可省略并默认项目名；多个 bin 时每个都必须显式命名
+- `static_lib` 不支持 `links`；`shared_lib` 只能链接 `static_lib`；每个 `bin` 可以混合链接，先静态归档，再 import lib
 - 共享库不能链接其他共享库；DLL 之间的传递依赖交给 CMake
-- `bin` 的 `name` 可省略：省略时使用 `[project].name`（缺省为目录名），并需满足 target 命名规则；`static_lib` / `shared_lib` 的 `name` 必填
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - 共享库产物为 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`（v0.5 仅 Windows）
 - Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon2 显式传 import lib 参数
 - 导出使用显式 C ABI：`extern "C" __declspec(dllexport)`。cizon2 不自动导出符号、不生成绑定，也不保证 C++ ABI
 - MinGW 下 `shared_lib` 默认静态链接运行库，DLL 不依赖 `libstdc++`/`libgcc`/`libwinpthread`，Python `ctypes` 无需改 PATH。保持 C ABI 边界：DLL 与 exe 各有一套静态运行库时，不要跨边界传 C++ 对象或异常
-- `cizon2 run` 始终运行唯一的 bin；显式 `bin.name` 决定产物名，省略时等于项目名（Windows 加 `.exe`）
+- 每个 bin 产出 `build/<mode>-<compiler>/<name>.exe`；`cizon2 run <bin>` 会构建全部 bin 后运行指定项，只有项目恰好一个 bin 时才能省略名字
+- 不支持 `run --all`：cizon2 不做多进程监督；IPC/多进程测试请用 shell/Python harness
 - target/项目名大小写不敏感、不能重复，也不能是 `obj` / `lib` / `deps-obj` 或以 `.` 开头；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）；允许跨目录同名源文件
-- 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，静态库为 `lib/<name>/obj/<项目相对路径>.o`，共享库为 `.shared/<name>/obj/<项目相对路径>.o`，依赖对象在 `deps-obj/<dep>/`
+- 对象路径镜像源相对路径：单 bin 为 `obj/<项目相对路径>.o`；多 bin 为 `obj/<bin>/<项目相对路径>.o`；静态库为 `lib/<name>/obj/...`，共享库为 `.shared/<name>/obj/...`，依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
 - `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建源码并添加 `[[target]]`
 
@@ -339,7 +347,8 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ## 使用注意
 
-- 一个项目恰好一个可执行 target；`cizon2 run` 不提供 target 选择
+- 一个项目有一个或多个可执行 target；`cizon2 run <bin>` 选择运行，只有恰好一个 bin 时才能省略名字
+- 不支持 `run --all`；多进程/IPC 编排请放在外部 harness
 - 静态库产物是 `.a`（GNU 归档）；`shared_lib` 产出 DLL 与 import lib
 - 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
 - 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
@@ -390,9 +399,9 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ## 什么时候该用 CMake
 
-Cizon2 面向中小型单可执行项目（可带静态库/共享库 target）。出现以下需求时，请直接使用 CMake：
+Cizon2 面向中小型项目（一个或多个 bin，可带静态库/共享库 target）。出现以下需求时，请直接使用 CMake：
 
-- 多可执行 target、嵌套 target 图、库之间的传递依赖、per-target flags/include
+- 嵌套 target 图、库之间的传递依赖、per-target flags/include
 - install/export/find_package/打包发布、DLL 版本号/SONAME
 - 共享库依赖共享库、直接分发 C++ ABI
 - 代码生成（protobuf、Qt moc）、自定义构建步骤

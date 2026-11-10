@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use super::{Plan, SharedTarget};
+use super::{BinTarget, Plan, SharedTarget};
 
 /// Remove a directory (missing counts as success); failure must be reported, otherwise stale
 /// objects survive silently.
@@ -105,11 +105,12 @@ pub(super) fn shared_state_text(plan: &Plan) -> String {
 /// relink; import libraries carry their semantic fingerprint rather than mtime.
 pub(super) fn link_state_text(
     plan: &Plan,
+    bin: &BinTarget,
     objs: &[PathBuf],
     archives: &[PathBuf],
     imports: &[(PathBuf, String)],
 ) -> String {
-    let mut s = format!("exe: {}\n", plan.out_name);
+    let mut s = format!("exe: {}\n", bin.out_name);
     s.push_str("objects:\n");
     for obj in objs {
         s.push_str(&obj.display().to_string());
@@ -130,6 +131,59 @@ pub(super) fn link_state_text(
         s.push('\n');
     }
     s
+}
+
+pub(super) fn bins_state_text(plan: &Plan) -> String {
+    let mut s = String::from("bins:\n");
+    for bin in &plan.bins {
+        s.push_str(&format!("bin|{}|{}\n", bin.name, bin.out_name));
+    }
+    s
+}
+
+pub(super) fn read_bins_state(path: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            if parts.next()? != "bin" {
+                return None;
+            }
+            let name = parts.next()?.to_string();
+            let out_name = parts.next()?.to_string();
+            Some((name, out_name))
+        })
+        .collect()
+}
+
+pub(super) fn bin_link_state_path(scope_dir: &Path, name: &str, multi: bool) -> PathBuf {
+    if multi {
+        scope_dir.join(format!(".link-state-{name}"))
+    } else {
+        scope_dir.join(".link-state")
+    }
+}
+
+/// Remove binaries that disappeared from a multi-bin plan, plus their per-bin link state.
+pub(super) fn stale_multi_bin_paths(
+    scope_dir: &Path,
+    old_bins: &[(String, String)],
+    plan: &Plan,
+) -> Vec<PathBuf> {
+    let mut stale = Vec::new();
+    for (old_name, old_exe) in old_bins {
+        if plan.bins.iter().any(|bin| bin.name.eq_ignore_ascii_case(old_name)) {
+            continue;
+        }
+        let path = scope_dir.join(old_exe);
+        stale.push(path.clone());
+        stale.push(path.with_extension("pdb"));
+        stale.push(path.with_extension("ilk"));
+        stale.push(scope_dir.join(format!(".link-state-{old_name}")));
+    }
+    stale
 }
 
 /// State for one shared target: its objects, static archives built into it, and link flags.
@@ -191,7 +245,7 @@ pub(super) fn clear_shared_artifacts(scope_dir: &Path) -> Result<(), String> {
 /// Failure only warns: the old exe may still be running and should not block building the new artifact.
 /// Collect the old exe and Windows link-side artifacts to clean up after a bin rename; the actual
 /// removal is done only after the link succeeds.
-pub(super) fn stale_exe_paths(scope_dir: &Path, plan: &Plan) -> Vec<PathBuf> {
+pub(super) fn stale_exe_paths(scope_dir: &Path, out_name: &str) -> Vec<PathBuf> {
     let mut stale = Vec::new();
     let old = std::fs::read_to_string(scope_dir.join(".link-state"))
         .ok()
@@ -206,9 +260,9 @@ pub(super) fn stale_exe_paths(scope_dir: &Path, plan: &Plan) -> Vec<PathBuf> {
     if let Some(ref old) = old {
         // Windows file names are case-insensitive: app.exe and APP.exe are the same file, do not delete as a stale artifact.
         let same_name = if cfg!(windows) {
-            old.to_lowercase() == plan.out_name.to_lowercase()
+            old.to_lowercase() == out_name.to_lowercase()
         } else {
-            old.as_str() == plan.out_name.as_str()
+            old.as_str() == out_name
         };
         if !same_name {
             let path = scope_dir.join(old);
@@ -221,7 +275,7 @@ pub(super) fn stale_exe_paths(scope_dir: &Path, plan: &Plan) -> Vec<PathBuf> {
     // Old versions of .link-state have no exe line: on Windows collect other top-level artifacts by extension.
     #[cfg(windows)]
     if old.is_none() {
-        let current_stem = Path::new(&plan.out_name)
+        let current_stem = Path::new(out_name)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("")

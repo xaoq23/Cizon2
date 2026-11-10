@@ -11,11 +11,14 @@ pub(super) fn write_compile_db(
     plan: &Plan,
     dep_jobs: &[(String, PathBuf, PathBuf)],
 ) -> Result<(), String> {
-    let mut owned: Vec<(PathBuf, Vec<String>)> = plan
-        .sources
-        .iter()
-        .map(|s| (s.clone(), plan.flags.clone()))
-        .collect();
+    let mut owned: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    for bin in &plan.bins {
+        owned.extend(
+            bin.sources
+                .iter()
+                .map(|s| (s.clone(), plan.flags.clone())),
+        );
+    }
     for lib in &plan.libs {
         owned.extend(
             lib.sources
