@@ -356,11 +356,14 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     if !plan.shared.is_empty() {
         let flavor = flavor(&plan.cxx)?;
         for shared in &plan.shared {
-            let shared_objs: Vec<PathBuf> = shared
+            let mut shared_objs: Vec<PathBuf> = shared
                 .sources
                 .iter()
                 .map(|src| targets::shared_obj_for(dir, &scope_dir, &shared.name, src))
                 .collect::<Result<_, _>>()?;
+            // Dependencies are project-wide; their objects must be linked into every shared
+            // library that references them, just like the bin.
+            shared_objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
             let shared_archives: Vec<PathBuf> = shared
                 .links
                 .iter()

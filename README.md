@@ -225,6 +225,7 @@ cizon2 update fmt
 - `update` replaces the entire `deps/<name>` tree and refuses when the directory has uncommitted changes. To keep local commits, push them and update the `tag` first.
 - Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. For other layouts or libraries that need a build system, use CMake.
 - When `deps/<name>` has no `include/`, `add` and `build` print a layout warning; for non-standard layouts, use the library's own build system and wire it in via `link_flags`.
+- Dependency source objects are linked into the bin and every shared library; dependencies are project-wide, not per-target.
 - Any mismatch among the git/tag in `cizon.toml`/`cizon.lock`, the `deps/` HEAD, and the working tree is a loud error; a missing dependency directory is restored from the lock, never silently self-healed.
 
 ## Editors (clangd / VS Code)

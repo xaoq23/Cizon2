@@ -228,6 +228,7 @@ cizon2 update fmt
 - `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
 - 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
 - `deps/<name>` 缺少 `include/` 时，`add` 和 `build` 会给出布局警告；非标准布局请改用该库自己的构建系统，并通过 `link_flags` 接入。
+- 依赖源码对象会链接进 bin 与每个共享库；依赖是项目级的，不支持 per-target 依赖。
 - `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
 
 ## 编辑器（clangd / VS Code）

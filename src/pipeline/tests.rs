@@ -1431,6 +1431,41 @@
             .unwrap_or_else(|| panic!("import library not found in {}", dir.display()))
     }
 
+    fn have_git() -> bool {
+        Command::new("git").arg("--version").output().is_ok()
+    }
+
+    fn make_git_dep(origin: &Path) {
+        fs::create_dir_all(origin.join("include")).unwrap();
+        fs::create_dir_all(origin.join("src")).unwrap();
+        fs::write(origin.join("include/dep.h"), "#pragma once\nint dep_value();\n").unwrap();
+        fs::write(origin.join("src/dep.cpp"), "int dep_value() { return 42; }\n").unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .current_dir(origin)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?} failed"
+            );
+        };
+        run(&["init"]);
+        run(&["add", "-A"]);
+        run(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-m",
+            "init",
+            "--no-gpg-sign",
+        ]);
+        run(&["tag", "v1"]);
+    }
+
     #[test]
     fn shared_lib_builds_dll_import_lib_and_bin_links_it() {
         if !shared_supported() {
@@ -1443,6 +1478,49 @@
         shared_import_lib(&scope, "core_dll");
         assert_eq!(run_code(&exe), 0);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_lib_links_git_dependency_objects() {
+        if !shared_supported() || !have_git() {
+            return;
+        }
+        let dir = temp_dir("shared-dep");
+        let origin = temp_dir("shared-dep-origin");
+        make_git_dep(&origin);
+        let url = format!("file:///{}", origin.display().to_string().replace('\\', "/"));
+        for sub in ["src", "dll"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"depdll\"\nkind = \"shared_lib\"\nsources = [\"dll\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"depdll\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("dll/api.cpp"),
+            "#include \"dep.h\"\nextern \"C\" __declspec(dllexport) int shared_value() { return dep_value(); }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "extern \"C\" int shared_value();\nint main() { return shared_value() == 42 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        crate::deps::add_in(
+            &dir,
+            &[url, "--tag".into(), "v1".into()],
+        )
+        .expect("local file:// dependency should be cloned");
+
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        shared_dll(&scope, "depdll");
+        assert_eq!(run_code(&exe), 0, "DLL must resolve dependency objects at link time");
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(origin).ok();
     }
 
     #[test]
