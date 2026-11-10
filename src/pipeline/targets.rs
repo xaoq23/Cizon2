@@ -5,12 +5,12 @@ use crate::compiler::{self, Cxx};
 use crate::config::{Config, TargetKind};
 
 use super::output::rel_display;
-use super::{LibTarget, Plan};
+use super::{LibTarget, LinkTarget, Plan, SharedTarget};
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
-    let (sources, libs, links, out_name) = if let Some(targets) = cfg.targets() {
+    let (sources, libs, shared, links, out_name) = if let Some(targets) = cfg.targets() {
         let bin = targets
             .iter()
             .find(|t| t.kind == TargetKind::Bin)
@@ -40,17 +40,50 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 sources: lib_sources,
             });
         }
+        let mut shared = Vec::new();
+        for target in targets.iter().filter(|t| t.kind == TargetKind::SharedLib) {
+            let name = target.name.as_deref().expect("config resolves shared library name");
+            let shared_sources = collect_target_sources(
+                dir,
+                target.sources.as_deref(),
+                &format!("shared library target {name}"),
+            )?;
+            if shared_sources.is_empty() {
+                return Err(format!(
+                    "shared library target {name} has no source file to compile."
+                ));
+            }
+            let shared_links = target
+                .links
+                .iter()
+                .map(|link| {
+                    libs.iter()
+                        .find(|lib| lib.name.to_lowercase() == link.to_lowercase())
+                        .map(|lib| lib.name.clone())
+                        .unwrap_or_else(|| link.clone())
+                })
+                .collect();
+            shared.push(SharedTarget {
+                name: name.to_string(),
+                sources: shared_sources,
+                links: shared_links,
+            });
+        }
         let links = bin
             .links
             .iter()
             .map(|link| {
-                libs.iter()
-                    .find(|lib| lib.name.to_lowercase() == link.to_lowercase())
-                    .map(|lib| lib.name.clone())
-                    .unwrap_or_else(|| link.clone())
+                let lower = link.to_lowercase();
+                if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
+                    LinkTarget::Static(lib.name.clone())
+                } else if let Some(sh) = shared.iter().find(|sh| sh.name.to_lowercase() == lower) {
+                    LinkTarget::Shared(sh.name.clone())
+                } else {
+                    LinkTarget::Static(link.clone())
+                }
             })
             .collect();
-        (sources, libs, links, exe_name(bin_name))
+        (sources, libs, shared, links, exe_name(bin_name))
     } else {
         let explicit = cfg.explicit_sources();
         let sources = collect_sources(dir, explicit)?;
@@ -63,7 +96,13 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 ),
             });
         }
-        (sources, Vec::new(), Vec::new(), exe_name(&cfg.name(dir)))
+        (
+            sources,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            exe_name(&cfg.name(dir)),
+        )
     };
 
     let edition = compiler::edition_flag(cfg.edition());
@@ -98,6 +137,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         dep_base,
         dep_includes,
         libs,
+        shared,
         links,
         out_name,
         mode: if release { "release" } else { "debug" },
@@ -355,4 +395,19 @@ pub(super) fn lib_obj_for(
     let mut rel = project_relative(dir, src)?;
     rel.set_extension("o");
     Ok(lib_obj_dir(scope_dir, name).join(rel))
+}
+
+pub(super) fn shared_obj_dir(scope_dir: &Path, name: &str) -> PathBuf {
+    scope_dir.join(".shared").join(name).join("obj")
+}
+
+pub(super) fn shared_obj_for(
+    dir: &Path,
+    scope_dir: &Path,
+    name: &str,
+    src: &Path,
+) -> Result<PathBuf, String> {
+    let mut rel = project_relative(dir, src)?;
+    rel.set_extension("o");
+    Ok(shared_obj_dir(scope_dir, name).join(rel))
 }

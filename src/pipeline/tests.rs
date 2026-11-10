@@ -164,6 +164,7 @@
             dep_base: vec!["-std=c++23".to_string()],
             dep_includes: includes,
             libs: vec![],
+            shared: vec![],
             links: vec![],
             out_name: "t".into(),
             mode: "debug",
@@ -388,6 +389,10 @@
 
     fn have_compiler() -> bool {
         crate::compiler::pick(None).is_ok()
+    }
+
+    fn shared_supported() -> bool {
+        cfg!(windows) && have_compiler()
     }
 
     fn build_project(dir: &Path) -> Result<PathBuf, String> {
@@ -1372,5 +1377,251 @@
         fs::write(dir.join("cizon.toml"), config("src/main.cc")).unwrap();
         let exe = build_project(&dir).unwrap();
         assert_eq!(run_code(&exe), 1, "switching the source at the same object path must recompile via .d source verification");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── v0.5: shared libraries ───────────────────────────────────────
+
+    fn shared_project(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        for sub in ["src", "lib", "capi", "include"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"core_dll\"]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("include/core.h"), "#pragma once\nint core_add(int a, int b);\n").unwrap();
+        fs::write(dir.join("lib/core.cpp"), "int core_add(int a, int b) { return a + b; }\n").unwrap();
+        fs::write(
+            dir.join("capi/api.cpp"),
+            "#include \"core.h\"\nextern \"C\" __declspec(dllexport) int add(int a, int b) { return core_add(a, b); }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "extern \"C\" int add(int a, int b);\nint main() { return add(1, 2) == 3 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    fn shared_dll(scope: &Path, name: &str) -> PathBuf {
+        ["dll", "so", "dylib"]
+            .iter()
+            .map(|ext| scope.join(format!("{name}.{ext}")))
+            .find(|p| p.exists())
+            .unwrap_or_else(|| panic!("shared library artifact not found for {name}"))
+    }
+
+    fn shared_import_lib(scope: &Path, name: &str) -> PathBuf {
+        let dir = scope.join(".shared").join(name);
+        fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.is_file()
+                    && (p.extension().is_some_and(|e| e == "a" || e == "lib"))
+            })
+            .unwrap_or_else(|| panic!("import library not found in {}", dir.display()))
+    }
+
+    #[test]
+    fn shared_lib_builds_dll_import_lib_and_bin_links_it() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-build");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        shared_dll(&scope, "core_dll");
+        shared_import_lib(&scope, "core_dll");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_impl_change_does_not_relink_bin() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-norelink");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let dll = shared_dll(&scope, "core_dll");
+        let import_lib = shared_import_lib(&scope, "core_dll");
+        let app_t = mtime(&exe);
+        let dll_t = mtime(&dll);
+        let import_t = mtime(&import_lib);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let src = dir.join("capi/api.cpp");
+        let text = fs::read_to_string(&src).unwrap();
+        fs::write(&src, format!("{text}\n// implementation-only change\n")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(mtime(&exe), app_t, "import lib unchanged: bin must not relink");
+        assert_eq!(mtime(&import_lib), import_t, "import lib should be preserved");
+        assert_ne!(mtime(&dll), dll_t, "shared implementation change must relink the DLL");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_export_change_relinks_bin() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-export");
+        let exe = build_project(&dir).unwrap();
+        let app_t = mtime(&exe);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let src = dir.join("capi/api.cpp");
+        let text = fs::read_to_string(&src).unwrap();
+        fs::write(
+            &src,
+            format!("{text}\nextern \"C\" __declspec(dllexport) int sub(int a, int b) {{ return a - b; }}\n"),
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_ne!(mtime(&exe), app_t, "export change must relink the bin");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn missing_import_lib_is_regenerated() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-missing-implib");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let import_lib = shared_import_lib(&scope, "core_dll");
+        let app_t = mtime(&exe);
+        fs::remove_file(&import_lib).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert!(import_lib.exists(), "missing import lib must be regenerated");
+        assert_eq!(mtime(&exe), app_t, "regenerated import lib with the same exports must not relink the bin");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_dll_loads_from_python() {
+        if !shared_supported() {
+            return;
+        }
+        let Ok(out) = std::process::Command::new("python")
+            .arg("--version")
+            .output()
+        else {
+            return;
+        };
+        if !out.status.success() {
+            return;
+        }
+        let dir = shared_project("shared-python");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let dll = shared_dll(&scope, "core_dll");
+        let path = dll.to_string_lossy().replace('\\', "/");
+        let script = format!(
+            "import ctypes; lib = ctypes.CDLL(r'{path}'); raise SystemExit(0 if lib.add(4, 5) == 9 else 1)"
+        );
+        let status = std::process::Command::new("python")
+            .arg("-c")
+            .arg(script)
+            .status()
+            .unwrap();
+        assert!(status.success(), "Python ctypes must load and call the DLL");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn bin_links_multiple_shared_libs() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = temp_dir("shared-multi");
+        for sub in ["src", "one", "two"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"one\"\nkind = \"shared_lib\"\nsources = [\"one\"]\n\n\
+             [[target]]\nname = \"two\"\nkind = \"shared_lib\"\nsources = [\"two\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"one\", \"two\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("one/one.cpp"),
+            "extern \"C\" __declspec(dllexport) int one() { return 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("two/two.cpp"),
+            "extern \"C\" __declspec(dllexport) int two() { return 2; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "extern \"C\" int one();\nextern \"C\" int two();\nint main() { return one() + two() == 3 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        shared_dll(&scope, "one");
+        shared_dll(&scope, "two");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn removing_shared_target_cleans_artifacts() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-cleanup");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let dll = shared_dll(&scope, "core_dll");
+        assert!(scope.join(".shared").exists());
+
+        fs::write(dir.join("src/main.cpp"), "int main() { return 0; }\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert!(!dll.exists(), "removed shared target must delete its DLL");
+        assert!(!scope.join(".shared").exists(), "removed shared target must delete .shared");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dll_pdb_survives_no_op_build() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = shared_project("shared-pdb");
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let pdb = scope.join("core_dll.pdb");
+        if !pdb.exists() {
+            fs::remove_dir_all(dir).ok();
+            return;
+        }
+        build_project(&dir).unwrap();
+        assert!(pdb.exists(), "no-op build must not delete the DLL PDB");
         fs::remove_dir_all(dir).ok();
     }

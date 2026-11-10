@@ -45,20 +45,22 @@ pub struct Project {
 pub enum TargetKind {
     Bin,
     StaticLib,
+    SharedLib,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
-    /// Required for static_lib; optional for bin, defaulting to [project].name.
+    /// Required for static_lib/shared_lib; optional for bin, defaulting to [project].name.
     #[serde(default)]
     pub name: Option<String>,
     pub kind: TargetKind,
     /// A file or a directory; directories are scanned recursively. Defaults to src/ for bin,
-    /// required for static_lib.
+    /// required for static_lib/shared_lib.
     #[serde(default)]
     pub sources: Option<Vec<String>>,
-    /// Bin only: static library target names, linked in this order.
+    /// Bin: static/shared library target names, linked in this order within each artifact kind.
+    /// Shared library: static library target names, built into the DLL.
     #[serde(default)]
     pub links: Vec<String>,
 }
@@ -142,8 +144,8 @@ fn validate_target_name(name: &str) -> Result<(), String> {
     validate_file_component(name, "target name")
 }
 
-/// Validate and resolve `[[target]]`: a bin without a name uses the project name; a static
-/// library must be named explicitly.
+/// Validate and resolve `[[target]]`: a bin without a name uses the project name; static and
+/// shared libraries must be named explicitly.
 fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
     let Some(targets) = &mut cfg.targets else {
         return Ok(());
@@ -166,9 +168,9 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     target.name = Some(project_name.to_string());
                 }
             }
-            TargetKind::StaticLib => {
+            TargetKind::StaticLib | TargetKind::SharedLib => {
                 if target.name.is_none() {
-                    return Err("a static library target must provide name.".into());
+                    return Err("a library target must provide name.".into());
                 }
             }
         }
@@ -177,6 +179,7 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
 
     let mut names = HashSet::new();
     let mut libs = HashSet::new();
+    let mut shared = HashSet::new();
     let mut bins = 0usize;
     for target in targets.iter() {
         let name = target.name.as_deref().expect("name resolved");
@@ -189,11 +192,17 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                 libs.insert(name.to_lowercase());
                 if !target.links.is_empty() {
                     return Err(format!(
-                        "static library target {name} does not support links (v0.4 does not support a library depending on a library)."
+                        "static library target {name} does not support links; put implementation dependencies in the bin or a shared library."
                     ));
                 }
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err(format!("static library target {name} must provide sources."));
+                }
+            }
+            TargetKind::SharedLib => {
+                shared.insert(name.to_lowercase());
+                if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
+                    return Err(format!("shared library target {name} must provide sources."));
                 }
             }
         }
@@ -208,23 +217,46 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
             "[[target]] must have exactly one kind = \"bin\" (currently {bins})."
         ));
     }
-    let bin = targets
-        .iter()
-        .find(|t| t.kind == TargetKind::Bin)
-        .expect("bins == 1");
-    let bin_name = bin.name.as_deref().expect("name resolved");
-    let mut seen = HashSet::new();
-    for link in &bin.links {
-        let lower = link.to_lowercase();
-        if !libs.contains(&lower) {
-            return Err(format!(
-                "bin target {bin_name} links a nonexistent static library {link}."
-            ));
-        }
-        if !seen.insert(lower) {
-            return Err(format!(
-                "duplicate entry {link} in the links of bin target {bin_name}."
-            ));
+    for target in targets.iter() {
+        let name = target.name.as_deref().expect("name resolved");
+        let mut seen = HashSet::new();
+        match target.kind {
+            TargetKind::StaticLib => continue,
+            TargetKind::SharedLib => {
+                for link in &target.links {
+                    let lower = link.to_lowercase();
+                    if !libs.contains(&lower) {
+                        if shared.contains(&lower) {
+                            return Err(format!(
+                                "shared library target {name} cannot link shared library {link}."
+                            ));
+                        }
+                        return Err(format!(
+                            "shared library target {name} links a nonexistent static library {link}."
+                        ));
+                    }
+                    if !seen.insert(lower) {
+                        return Err(format!(
+                            "duplicate entry {link} in the links of shared library target {name}."
+                        ));
+                    }
+                }
+            }
+            TargetKind::Bin => {
+                for link in &target.links {
+                    let lower = link.to_lowercase();
+                    if !libs.contains(&lower) && !shared.contains(&lower) {
+                        return Err(format!(
+                            "bin target {name} links a nonexistent library {link}."
+                        ));
+                    }
+                    if !seen.insert(lower) {
+                        return Err(format!(
+                            "duplicate entry {link} in the links of bin target {name}."
+                        ));
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -544,6 +576,74 @@ mod tests {
 
     fn target_config(targets: &str) -> String {
         format!("[project]\nname = \"t\"\n\n{targets}")
+    }
+
+    #[test]
+    fn parse_shared_lib_target_and_bin_links() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"core_dll\", \"core\"]\n",
+        ));
+        let targets = cfg.targets().expect("targets");
+        assert_eq!(targets[1].kind, TargetKind::SharedLib);
+        assert_eq!(targets[1].links, ["core"]);
+        assert_eq!(targets[2].links, ["core_dll", "core"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_lib_links_only_static_libraries() {
+        let dir = temp_dir("shared-links-shared");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"other\"\nkind = \"shared_lib\"\nsources = [\"other\"]\n\n\
+                 [[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\nlinks = [\"other\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("cannot link shared library"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_lib_requires_name_and_sources() {
+        let dir = temp_dir("shared-no-name");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nkind = \"shared_lib\"\nsources = [\"capi\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("must provide name"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("shared-no-sources");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("must provide sources"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_named_shared_is_allowed() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"shared\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"shared\"]\n",
+        ));
+        assert!(cfg.targets().is_some());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

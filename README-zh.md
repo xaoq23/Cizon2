@@ -14,7 +14,8 @@
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 现代 C++ 目录结构：递归收集源文件，`include/` 自动加入 `-I`
-- v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 按顺序链接
+- v0.4：一个可执行 target + 多个静态库 target，静态库自动归档，`links` 控制归档/import lib 顺序
+- v0.5：`shared_lib` 生成 DLL 与 import lib；bin 可链接多个 DLL，import lib 未变时不重链 bin
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
@@ -110,7 +111,7 @@ hello/
 |---|---|
 | `fresh build` | 所有翻译单元都编译了（含首次构建、flags/编译器版本变化导致的整批重编） |
 | `incremental rebuild` | 只重编了一部分翻译单元 |
-| `relinked` | 没有翻译单元重编，仅重链或重建静态库归档 |
+| `relinked` | 没有翻译单元重编，仅重链（exe/DLL）或重建归档 |
 | `up to date` | 无需编译和链接 |
 
 ## 项目结构
@@ -136,7 +137,7 @@ project/
 - 不要在 `[compiler].flags` 里加 `-Ilib`：flags 是全局的，会把私有目录同时暴露给 bin
 - 公共头应自包含，不要依赖私有头或实现目录
 - 单 exe、没有外部消费者的项目可以把头放在 `src/` 旁边；header-only 库则全部放 `include/`
-- 将来 install/export 只发布 `include/` 与静态库，不发布 `lib/` 源码与私有头
+- 将来 install/export 只发布 `include/` 与库产物，不发布 `lib/` 源码与私有头
 
 ## cizon.toml
 
@@ -159,9 +160,9 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 未知的配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
 
-### 静态库 target（v0.4）
+### 库 target（v0.4 / v0.5）
 
-一个项目可以带多个静态库 target，但必须恰好有一个可执行 target：
+一个项目可以带静态库与共享库 target，但必须恰好有一个可执行 target：
 
 ```toml
 [[target]]
@@ -170,26 +171,48 @@ kind = "static_lib"
 sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
 
 [[target]]
+name = "shape_dll"
+kind = "shared_lib"
+sources = ["capi"]            # 必填；C ABI 包装层源码
+links = ["shape"]             # 打进 DLL 的静态库
+
+[[target]]
 name = "app"
 kind = "bin"
 sources = ["src"]             # 可选；缺省扫描 src/
-links = ["shape"]             # 按顺序链接静态库
+links = ["shape_dll", "shape"]  # 先静态归档，再共享库 import lib
 ```
 
 规则：
 
 - 不写 `[[target]]` 时保持传统单可执行项目，配置语义不变；0.4.1 首次构建会迁移对象布局（全量重编一次）
 - 写了 `[[target]]` 后必须恰好一个 `kind = "bin"`；`[project].sources` 不能再使用
-- 静态库暂不支持 `links`（v0.4 不做库依赖库）
-- `bin` 的 `name` 可省略：省略时使用 `[project].name`（缺省为目录名），并需满足 target 命名规则；`static_lib` 的 `name` 必填
+- `static_lib` 不支持 `links`；`shared_lib` 只能链接 `static_lib`；`bin` 可以混合链接，先静态归档，再 import lib
+- 共享库不能链接其他共享库；DLL 之间的传递依赖交给 CMake
+- `bin` 的 `name` 可省略：省略时使用 `[project].name`（缺省为目录名），并需满足 target 命名规则；`static_lib` / `shared_lib` 的 `name` 必填
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
-- 归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- 共享库产物为 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`（v0.5 仅 Windows）
+- Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon2 显式传 import lib 参数
+- 导出使用显式 C ABI：`extern "C" __declspec(dllexport)`。cizon2 不自动导出符号、不生成绑定，也不保证 C++ ABI
+- MinGW 下 `shared_lib` 默认静态链接运行库，DLL 不依赖 `libstdc++`/`libgcc`/`libwinpthread`，Python `ctypes` 无需改 PATH。保持 C ABI 边界：DLL 与 exe 各有一套静态运行库时，不要跨边界传 C++ 对象或异常
 - `cizon2 run` 始终运行唯一的 bin；显式 `bin.name` 决定产物名，省略时等于项目名（Windows 加 `.exe`）
-- target/项目名大小写不敏感、不能重复，也不能是 `obj` / `lib` / `deps-obj` 或以 `.` 开头
+- target/项目名大小写不敏感、不能重复，也不能是 `obj` / `lib` / `deps-obj` 或以 `.` 开头；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - sources 必须是项目内相对路径（不能是绝对路径或包含 `..`）；允许跨目录同名源文件
-- 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，库为 `lib/<name>/obj/<项目相对路径>.o`；依赖对象在 `deps-obj/<dep>/`
+- 对象路径镜像源相对路径：bin 为 `obj/<项目相对路径>.o`，静态库为 `lib/<name>/obj/<项目相对路径>.o`，共享库为 `.shared/<name>/obj/<项目相对路径>.o`，依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
-- `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建 `lib/` 并添加 `[[target]]`
+- `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建源码并添加 `[[target]]`
+
+### 从 Python 调用 DLL
+
+```python
+import ctypes
+
+lib = ctypes.CDLL("build/debug-g++/shape_dll.dll")
+print(lib.shape_area(3, 4))   # DLL 导出的 extern "C" 函数
+```
+
+Python 只需要 DLL；import lib 面向 C/C++ 消费者。Python 与 Rust `libloading` 都依赖 C ABI。Rust 若在链接期使用 import lib，需要匹配工具链：MinGW 用 `.dll.a`，MSVC 用 `.lib`。直接导出 C++ ABI 不在 v0.5 契约内；请用 C 包装或纯虚/opaque handle 接口。
 
 ## 依赖
 
@@ -279,6 +302,8 @@ compile_commands = true
 - 对象路径镜像源相对路径；布局升级后首次构建会自动清空旧对象并全量重编
 - 链接输入（对象清单、静态库归档、`link_flags`）变化：强制重链
 - 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
+- 共享库源变化：重链 DLL；import lib 指纹不变时不重链 bin；导出变化才重链 bin
+- 删除或重命名 shared target 会清理 DLL、import lib 与 `.shared` 对象
 - 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
 - 同一项目不支持并发构建：请勿同时在两个终端运行 `cizon2 build`
 
@@ -312,7 +337,9 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 ## 使用注意
 
 - 一个项目恰好一个可执行 target；`cizon2 run` 不提供 target 选择
-- 静态库产物是 `.a`（GNU 归档），不是 DLL/导入库；共享库暂不支持
+- 静态库产物是 `.a`（GNU 归档）；`shared_lib` 产出 DLL 与 import lib
+- 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
+- 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
 - `include/` 是唯一自动 `-I` 的目录；私有头不要放进去，也不要用全局 `-Ilib` 暴露
 - sources 必须是项目内相对路径；0.4.1 首次构建会迁移对象布局并全量重编一次
 - `[project].version` 当前仅作元数据，不参与编译或产物命名
@@ -352,7 +379,7 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ### 等真实需求再开
 
-- 共享库、多可执行 target、target 间传递依赖、per-target flags/include
+- 多可执行 target、target 间传递依赖、per-target flags/include
 - install/export、一次性 CMake 导出命令
 - MSVC、交叉编译、外部包管理
 - `[project].version` 的生成头/编译宏消费者
@@ -360,10 +387,11 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 
 ## 什么时候该用 CMake
 
-Cizon2 面向中小型单可执行项目（可带静态库 target）。出现以下需求时，请直接使用 CMake：
+Cizon2 面向中小型单可执行项目（可带静态库/共享库 target）。出现以下需求时，请直接使用 CMake：
 
-- 多个可执行 target、嵌套 target 图、库之间的传递依赖
-- 共享库（dll/so）、install / export / find_package / 打包发布
+- 多可执行 target、嵌套 target 图、库之间的传递依赖、per-target flags/include
+- install/export/find_package/打包发布、DLL 版本号/SONAME
+- 共享库依赖共享库、直接分发 C++ ABI
 - 代码生成（protobuf、Qt moc）、自定义构建步骤
 - MSVC、交叉编译、复杂工具链条件
 - vcpkg / Conan 等外部包管理

@@ -13,7 +13,7 @@
 | 在边界内 | 边界外 |
 |---|---|
 | `build` / `run` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
-| 中小型单可执行项目（可带多个静态库 `[[target]]`） | 多可执行 target / 共享库（待真实需求） |
+| 中小型单可执行项目（可带多个静态库/共享库 `[[target]]`） | 多可执行 target / 共享库依赖共享库 |
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | vcpkg / conda 等外部包管理 |
@@ -27,9 +27,10 @@
 - `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
-- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；恰好一个 bin，库不能链接库
+- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；恰好一个 bin，shared_lib 只能链接 static_lib，bin 可混合链接静态库与共享库
 - bin 的 name 可省略并默认项目名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
+- `shared_lib` 仅 Windows；导出必须使用 C ABI；DLL 与 exe 同目录，import lib 在 `.shared/<name>/`，内部目录保留给 cizon2
 
 ## 输出约定
 

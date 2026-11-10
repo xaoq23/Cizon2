@@ -23,6 +23,14 @@ pub(super) fn write_compile_db(
                 .map(|s| (s.clone(), plan.flags.clone())),
         );
     }
+    for shared in &plan.shared {
+        owned.extend(
+            shared
+                .sources
+                .iter()
+                .map(|s| (s.clone(), plan.flags.clone())),
+        );
+    }
     owned.extend(
         dep_jobs
             .iter()

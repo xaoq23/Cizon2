@@ -14,7 +14,8 @@ Current version: **v0.4.4**. Primarily targets Windows x86-64 (no Linux/macOS bu
 - Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Modern C++ layout: sources are collected recursively, `include/` is added to `-I` automatically
-- v0.4: one executable target plus multiple static library targets; archives are built automatically and `links` are linked in order
+- v0.4: one executable target plus multiple static library targets; archives are built automatically and `links` controls archive/import-library order
+- v0.5: `shared_lib` targets build DLLs and import libraries; the bin can link multiple DLLs, and unchanged import libraries do not force a bin relink
 - Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
@@ -107,7 +108,7 @@ When passing arguments to the program, call `cizon2` directly or use a PowerShel
 |---|---|
 | `fresh build` | Every translation unit was compiled (first build, or a full rebuild after flag/compiler-version changes) |
 | `incremental rebuild` | Only some translation units were recompiled |
-| `relinked` | No translation units were recompiled; only the link or a static archive was rebuilt |
+| `relinked` | No translation units were recompiled; only a link (exe/DLL) or an archive was rebuilt |
 | `up to date` | Nothing to compile or link |
 
 ## Project layout
@@ -133,7 +134,7 @@ project/
 - Do not add `-Ilib` to `[compiler].flags`: flags are global and would expose private directories to the bin as well
 - Public headers should be self-contained and must not depend on private headers or implementation directories
 - Single-executable projects without external consumers may keep headers next to `src/`; header-only libraries keep everything in `include/`
-- Future install/export will publish only `include/` and static libraries, never `lib/` sources or private headers
+- Future install/export will publish only `include/` and library artifacts, never `lib/` sources or private headers
 
 ## cizon.toml
 
@@ -156,9 +157,9 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
 
-### Static library targets (v0.4)
+### Library targets (v0.4 / v0.5)
 
-A project may carry multiple static library targets, but must have exactly one executable target:
+A project may carry static and shared library targets, but must have exactly one executable target:
 
 ```toml
 [[target]]
@@ -167,26 +168,48 @@ kind = "static_lib"
 sources = ["lib/shape.cpp"]   # required; file or directory (recursive)
 
 [[target]]
+name = "shape_dll"
+kind = "shared_lib"
+sources = ["capi"]            # required; the C ABI wrapper sources
+links = ["shape"]             # static libraries built into the DLL
+
+[[target]]
 name = "app"
 kind = "bin"
 sources = ["src"]             # optional; defaults to scanning src/
-links = ["shape"]             # static libraries, linked in order
+links = ["shape_dll", "shape"]  # static archives first, then shared import libraries
 ```
 
 Rules:
 
 - Without `[[target]]`, the project stays a traditional single-executable project with unchanged semantics; the first build in 0.4.1 migrates the object layout (one full rebuild)
 - With `[[target]]`, exactly one `kind = "bin"` is required, and `[project].sources` can no longer be used
-- Static libraries do not support `links` yet (no library-to-library dependencies in v0.4)
-- `bin` may omit `name`; it then defaults to `[project].name` (or the directory name) and must satisfy the target naming rules. `static_lib` must have a `name`
+- `static_lib` does not support `links`; `shared_lib` may link `static_lib` only; `bin` may link both, with static archives first, then import libraries
+- Shared libraries cannot link other shared libraries; transitive DLL graphs are a CMake job
+- `bin` may omit `name`; it then defaults to `[project].name` (or the directory name) and must satisfy the target naming rules. `static_lib` / `shared_lib` must have a `name`
 - Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
-- Archiving uses `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
+- A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` (Windows only in v0.5)
+- On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
+- Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
+- On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
 - `cizon2 run` always runs the single bin; an explicit `bin.name` determines the artifact name, otherwise the project name is used (plus `.exe` on Windows)
-- Target/project names are case-insensitive, must be unique, and cannot be `obj` / `lib` / `deps-obj` or start with `.`
+- Target/project names are case-insensitive, must be unique, and cannot be `obj` / `lib` / `deps-obj` or start with `.`; a target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); same-named sources in different directories are allowed
-- Object paths mirror source paths: `obj/<project-relative-path>.o` for the bin, `lib/<name>/obj/<project-relative-path>.o` for libraries, and `deps-obj/<dep>/` for dependency objects
+- Object paths mirror source paths: `obj/<project-relative-path>.o` for the bin, `lib/<name>/obj/<project-relative-path>.o` for static libraries, `.shared/<name>/obj/<project-relative-path>.o` for shared libraries, and `deps-obj/<dep>/` for dependency objects
 - Same stem in the same directory (e.g. `util.cpp` + `util.cc`) is still an error; rename one
-- `new` / `init` only generate the traditional single-executable skeleton; target projects need a manually created `lib/` and `[[target]]` entries
+- `new` / `init` only generate the traditional single-executable skeleton; target projects need manually created sources and `[[target]]` entries
+
+### Using a DLL from Python
+
+```python
+import ctypes
+
+lib = ctypes.CDLL("build/debug-g++/shape_dll.dll")
+print(lib.shape_area(3, 4))   # an extern "C" function exported by the DLL
+```
+
+Python only needs the DLL; the import library exists for C/C++ consumers. Python and Rust `libloading` callers both rely on the C ABI. Rust link-time consumers must match the import-library flavor: MinGW uses `.dll.a`, MSVC uses `.lib`. Direct C++ ABI export is not part of the v0.5 contract; use a C wrapper or a pure-virtual/opaque-handle interface.
 
 ## Dependencies
 
@@ -276,6 +299,8 @@ One-time `.vscode/tasks.json`:
 - Object paths mirror source paths; after a layout upgrade the first build clears old objects and does one full rebuild
 - Link inputs (object list, static archives, `link_flags`) change: forced relink
 - Static library sources change: only that archive is rebuilt, then relinked; changing only the bin does not rebuild archives
+- Shared library sources change: the DLL relinks; if the import library fingerprint is unchanged, the bin is not relinked. Export changes relink the bin
+- Removing or renaming a shared target cleans its DLL, import library, and `.shared` objects
 - Compiler version changes: the whole `build/<mode>-<compiler>/` scope is invalidated
 - Concurrent builds of the same project are unsupported: do not run `cizon2 build` in two terminals at once
 
@@ -309,7 +334,9 @@ Alternatives:
 ## Usage notes
 
 - Exactly one executable target per project; `cizon2 run` has no target selection
-- Static library artifacts are `.a` (GNU archives), not DLLs or import libraries; shared libraries are unsupported
+- Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library
+- Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
+- Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
 - `include/` is the only automatic `-I` directory; keep private headers out of it and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; the first 0.4.1 build migrates the object layout and does one full rebuild
 - `[project].version` is metadata only; it does not affect compilation or artifact names
@@ -349,7 +376,7 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 ### Wait for real demand
 
-- Shared libraries, multiple executable targets, transitive target dependencies, per-target flags/include
+- Multiple executable targets, transitive target dependencies, per-target flags/include
 - install/export, a one-shot CMake export command
 - MSVC, cross-compilation, external package managers
 - Consumers of a generated header/compile macro for `[project].version`
@@ -357,10 +384,11 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 ## When to use CMake
 
-Cizon2 targets small-to-medium single-executable projects (optionally with static library targets). Reach for CMake when you need:
+Cizon2 targets small-to-medium single-executable projects (optionally with static/shared library targets). Reach for CMake when you need:
 
-- Multiple executable targets, nested target graphs, transitive dependencies between libraries
-- Shared libraries (dll/so), install / export / find_package / packaging
+- Multiple executable targets, nested target graphs, transitive target dependencies, per-target flags/include
+- install/export/find_package/packaging, DLL versioning/SONAME
+- Shared libraries depending on other shared libraries, direct C++ ABI distribution
 - Code generation (protobuf, Qt moc), custom build steps
 - MSVC, cross-compilation, complex toolchain conditions
 - External package managers such as vcpkg / Conan

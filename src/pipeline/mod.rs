@@ -17,6 +17,7 @@ use crate::deps;
 
 mod compile;
 mod ide;
+mod implib;
 mod link;
 mod output;
 mod state;
@@ -27,6 +28,10 @@ pub(crate) use output::rel_display;
 
 use compile::*;
 use ide::*;
+use implib::{
+    adopt, dll_path, fingerprint, flavor, import_lib_arg, import_lib_path, temp_import_path,
+    ImportLibFlavor,
+};
 use link::*;
 use output::{step_fin, step_line, warning_section_text};
 use state::*;
@@ -38,6 +43,27 @@ use targets::{lib_obj_dir, lib_obj_for, obj_for};
 struct LibTarget {
     name: String,
     sources: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+struct SharedTarget {
+    name: String,
+    sources: Vec<PathBuf>,
+    /// Static libraries built into this DLL, in declaration order.
+    links: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum LinkTarget {
+    Static(String),
+    Shared(String),
+}
+
+#[derive(Debug)]
+struct SharedArtifact {
+    name: String,
+    import_lib: PathBuf,
+    fingerprint: String,
 }
 
 #[derive(Debug)]
@@ -56,8 +82,11 @@ pub struct Plan {
     dep_includes: BTreeMap<String, Vec<String>>,
     /// static library targets; built in configuration order
     libs: Vec<LibTarget>,
-    /// static library names the bin links, in declaration order
-    links: Vec<String>,
+    /// shared library targets; built in configuration order
+    shared: Vec<SharedTarget>,
+    /// bin link targets, in declaration order (static archives and import libraries are grouped
+    /// at link time)
+    links: Vec<LinkTarget>,
     out_name: String,
     /// "debug" / "release" — together with the compiler decides the artifact scope
     mode: &'static str,
@@ -111,6 +140,7 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         reset_dir(&obj_dir)?;
         reset_dir(&deps_obj_dir)?;
         clear_lib_artifacts(&scope_dir)?;
+        clear_shared_artifacts(&scope_dir)?;
     }
     // Changes to compile parameters touch no mtime; without proactive invalidation the old
     // behavior's .o files would be reused silently.
@@ -119,19 +149,25 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     let project_state = scope_dir.join(".project-state");
     let deps_state = scope_dir.join(".deps-state");
     let libs_state = scope_dir.join(".libs-state");
+    let shared_state = scope_dir.join(".shared-state");
     let wanted_project = project_state_text(plan);
     let wanted_deps = deps_state_text(plan);
     let wanted_libs = libs_state_text(plan);
+    let wanted_shared = shared_state_text(plan);
     if !state_current(&project_state, &wanted_project)? {
         clear_project_objects(&obj_dir)?;
-        // Project flags apply to library sources too
+        // Project flags apply to library and shared-library sources too
         clear_lib_artifacts(&scope_dir)?;
+        clear_shared_artifacts(&scope_dir)?;
     }
     if !state_current(&deps_state, &wanted_deps)? {
         clear_dep_objects(&deps_obj_dir)?;
     }
     if !state_current(&libs_state, &wanted_libs)? {
         clear_lib_artifacts(&scope_dir)?;
+    }
+    if !state_current(&shared_state, &wanted_shared)? {
+        clear_shared_artifacts(&scope_dir)?;
     }
     std::fs::create_dir_all(&obj_dir)
         .map_err(|e| format!("Cannot create {}: {e}", obj_dir.display()))?;
@@ -142,12 +178,19 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
         std::fs::create_dir_all(&lib_obj)
             .map_err(|e| format!("Cannot create {}: {e}", lib_obj.display()))?;
     }
+    for shared in &plan.shared {
+        let shared_obj = targets::shared_obj_dir(&scope_dir, &shared.name);
+        std::fs::create_dir_all(&shared_obj)
+            .map_err(|e| format!("Cannot create {}: {e}", shared_obj.display()))?;
+    }
     std::fs::write(&project_state, &wanted_project)
         .map_err(|e| format!("Failed to write {}: {e}", project_state.display()))?;
     std::fs::write(&deps_state, &wanted_deps)
         .map_err(|e| format!("Failed to write {}: {e}", deps_state.display()))?;
     std::fs::write(&libs_state, &wanted_libs)
         .map_err(|e| format!("Failed to write {}: {e}", libs_state.display()))?;
+    std::fs::write(&shared_state, &wanted_shared)
+        .map_err(|e| format!("Failed to write {}: {e}", shared_state.display()))?;
     std::fs::write(&layout_marker, layout)
         .map_err(|e| format!("Failed to write {}: {e}", layout_marker.display()))?;
     std::fs::write(&marker, &plan.cxx.version)
@@ -202,9 +245,22 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
             }
         }
     }
+    for shared in &plan.shared {
+        for src in &shared.sources {
+            let obj = targets::shared_obj_for(dir, &scope_dir, &shared.name, src)?;
+            if needs_recompile(src, &obj) {
+                jobs.push(Job {
+                    src: src.clone(),
+                    obj,
+                    flags: plan.flags.clone(),
+                });
+            }
+        }
+    }
     let total = plan.sources.len()
         + dep_jobs.len()
-        + plan.libs.iter().map(|l| l.sources.len()).sum::<usize>();
+        + plan.libs.iter().map(|l| l.sources.len()).sum::<usize>()
+        + plan.shared.iter().map(|s| s.sources.len()).sum::<usize>();
     let recompiled = jobs.len();
     if recompiled > 0 {
         let label = if recompiled == total { "Compiling" } else { "Rebuilding" };
@@ -293,11 +349,95 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
             archive_lib(&ar, archive, lib_objs)?;
         }
     }
-    let archives: Vec<PathBuf> = plan
-        .links
-        .iter()
-        .map(|name| archive_path(&scope_dir, name))
-        .collect();
+    // 3.5) Link shared libraries. The import library is generated explicitly; identical export
+    // surfaces keep the old import library so the bin does not relink needlessly.
+    let mut shared_artifacts: Vec<SharedArtifact> = Vec::new();
+    let mut shared_rebuilt = false;
+    if !plan.shared.is_empty() {
+        let flavor = flavor(&plan.cxx)?;
+        for shared in &plan.shared {
+            let shared_objs: Vec<PathBuf> = shared
+                .sources
+                .iter()
+                .map(|src| targets::shared_obj_for(dir, &scope_dir, &shared.name, src))
+                .collect::<Result<_, _>>()?;
+            let shared_archives: Vec<PathBuf> = shared
+                .links
+                .iter()
+                .map(|name| archive_path(&scope_dir, name))
+                .collect();
+            let dll = dll_path(&scope_dir, &shared.name);
+            let import_lib = import_lib_path(&scope_dir, &shared.name, flavor);
+            let state_path = shared_link_state_path(&scope_dir, &shared.name);
+            let wanted_state =
+                shared_link_state_text(plan, shared, &shared_objs, &shared_archives);
+            let inputs_stale =
+                archive_stale(&dll, &shared_objs) || archive_stale(&dll, &shared_archives);
+            let mut current = std::fs::read_to_string(&state_path)
+                .map_or(false, |t| t == wanted_state)
+                && dll.exists()
+                && import_lib.exists()
+                && !inputs_stale;
+            let mut import_fp = String::from("none");
+            if current {
+                match fingerprint(&import_lib) {
+                    Ok(fp) => import_fp = fp,
+                    Err(_) => current = false,
+                }
+            }
+            if !current {
+                let tmp_import = temp_import_path(&import_lib);
+                let import_arg = import_lib_arg(&tmp_import, flavor);
+                step_line("Linking", &rel_display(dir, &dll));
+                let link_result = link_shared(
+                    &plan.cxx.name,
+                    &shared_objs,
+                    &shared_archives,
+                    &dll,
+                    &plan.flags,
+                    &plan.link_flags,
+                    &import_arg,
+                    matches!(flavor, ImportLibFlavor::Gnu),
+                );
+                if let Err(e) = link_result {
+                    let _ = std::fs::remove_file(&tmp_import);
+                    return Err(format!(
+                        "Shared library link failed: {}\n{}",
+                        rel_display(dir, &dll),
+                        relativize_diagnostics(dir, &e)
+                    ));
+                }
+                import_fp = adopt(&tmp_import, &import_lib)?;
+                std::fs::write(&state_path, &wanted_state)
+                    .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
+                shared_rebuilt = true;
+            }
+            shared_artifacts.push(SharedArtifact {
+                name: shared.name.clone(),
+                import_lib,
+                fingerprint: import_fp,
+            });
+        }
+    }
+
+    let mut static_archives: Vec<PathBuf> = Vec::new();
+    let mut import_archives: Vec<PathBuf> = Vec::new();
+    let mut imports: Vec<(PathBuf, String)> = Vec::new();
+    for link in &plan.links {
+        match link {
+            LinkTarget::Static(name) => static_archives.push(archive_path(&scope_dir, name)),
+            LinkTarget::Shared(name) => {
+                let artifact = shared_artifacts
+                    .iter()
+                    .find(|a| a.name.eq_ignore_ascii_case(name))
+                    .expect("plan validation guarantees a built shared target");
+                import_archives.push(artifact.import_lib.clone());
+                imports.push((artifact.import_lib.clone(), artifact.fingerprint.clone()));
+            }
+        }
+    }
+    let mut archives = static_archives.clone();
+    archives.extend(import_archives);
 
     // 4) Link (skip when nothing recompiled, link inputs and parameters unchanged and the artifact is fresh)
     let exe = scope_dir.join(&plan.out_name);
@@ -310,19 +450,20 @@ pub fn build(dir: &Path, cfg: &Config, plan: &Plan) -> Result<PathBuf, String> {
     // Shrinking the object set (deleting a source) produces no mtime change; force a relink via
     // this state.
     let link_state = scope_dir.join(".link-state");
-    let wanted_link = link_state_text(plan, &objs, &archives);
+    let wanted_link = link_state_text(plan, &objs, &archives, &imports);
     let link_current = std::fs::read_to_string(&link_state)
         .map_or(false, |t| t == wanted_link);
-    if recompiled == 0
-        && !libs_rebuilt
-        && link_current
-        && exe_is_fresh(&exe, &objs, &archives)
-    {
+    let did_work = recompiled > 0 || libs_rebuilt || shared_rebuilt;
+    if link_current && exe_is_fresh(&exe, &objs, &static_archives) {
         remove_artifacts(&stale_exes);
-        step_line(
-            "Finished",
-            &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
-        );
+        if did_work {
+            step_fin(started, recompiled, total);
+        } else {
+            step_line(
+                "Finished",
+                &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
+            );
+        }
         return Ok(exe);
     }
     step_line("Linking", &rel_display(dir, &exe));

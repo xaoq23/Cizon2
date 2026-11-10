@@ -52,6 +52,49 @@ pub(super) fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<
     replace_file(&tmp, archive)
 }
 
+pub(super) fn link_shared(
+    cxx: &str,
+    objs: &[PathBuf],
+    archives: &[PathBuf],
+    out: &Path,
+    flags: &[String],
+    link_flags: &[String],
+    import_arg: &str,
+    static_runtime: bool,
+) -> Result<(), String> {
+    let mut cmd = Command::new(cxx);
+    cmd.arg("-shared");
+    for obj in objs {
+        cmd.arg(obj);
+    }
+    for archive in archives {
+        cmd.arg(archive);
+    }
+    cmd.arg("-o").arg(out);
+    for f in flags {
+        cmd.arg(f);
+    }
+    if static_runtime {
+        cmd.arg("-static");
+    }
+    cmd.arg(import_arg);
+    for f in link_flags {
+        cmd.arg(f);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("Failed to start linker {cxx}: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return Err(stderr.to_string());
+    }
+    if !stderr.trim().is_empty() {
+        let mut err = std::io::stderr();
+        let _ = err.write_all(stderr.as_bytes());
+    }
+    Ok(())
+}
+
 pub(super) fn link(
     cxx: &str,
     objs: &[PathBuf],
