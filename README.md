@@ -533,6 +533,14 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 - v1 is validated on float_test with g++/MinGW + gdb; tests cover configuration content, scope/paths, non-overwrite behavior, and a clear error when gdb is missing—without actually starting a debugger
 - Terminal-only `cizon2 run --debug` cannot provide VS Code breakpoints and is not a substitute
 
+### Test targets (v0.7 design)
+
+- `kind = "test"` shares the bin compile/link path, but `build` / `run` ignore test targets; only `cizon test` builds and runs them
+- Framework-agnostic: the only contract is exit code 0; `cizon test [name...] -- <args>` filters targets and forwards arguments, replaying child output on failure
+- No auto-discovery, framework adapters, or dependency downloads; gtest / Catch2 v3 use explicit `system_links`, while doctest / Catch2 v2 are header-only
+- CTest labels / fixtures / parallel / timeout are deferred until real demand
+- Design first: dogfood on a real project and pass the three gates before implementation
+
 ### Reliability
 
 - The linker writes the exe directly, and lock/`cizon.toml` writes are not power-loss atomic; temporary-file replacement could be added

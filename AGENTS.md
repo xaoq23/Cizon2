@@ -89,4 +89,5 @@
 9. v0.5.1 `shared_lib` 依赖对象传播修复 —— 已发布 v0.5.1
 10. v0.6 多 bin target + `run <bin>` —— 已发布 v0.6.0
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
-12. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+12. v0.7 `kind = "test"` + `cizon test` —— 设计先行，未实现：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `system_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖。先用真实项目 dogfood，通过三道闸后开工。
+13. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

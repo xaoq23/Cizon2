@@ -529,6 +529,14 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
 - 终端内 `cizon2 run --debug` 不能提供 VSCode 断点，不作为替代方案
 
+### 测试 target（v0.7 设计）
+
+- `kind = "test"` 与 bin 共用编译/链接链路，但 `build` / `run` 默认忽略 test target；只有 `cizon test` 构建并运行它们
+- 框架无关：唯一契约是进程退出码 0；`cizon test [name...] -- <args>` 支持按 target 筛选与参数透传，失败时转发子进程输出
+- 不做自动发现、框架适配或依赖下载；gtest / Catch2 v3 通过显式 `system_links` 接入，doctest / Catch2 v2 走 header-only
+- CTest 的 labels / fixtures / parallel / timeout 等先不做，等真实需求
+- 设计先于实现：用真实项目 dogfood 并通过三道闸后再开工
+
 ### 可靠性
 
 - 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
