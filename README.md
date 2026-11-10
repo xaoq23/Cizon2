@@ -1,7 +1,7 @@
 # Cizon2
 
 <p align="center">
-<img width="300" height="300" alt="cizon loge" src="https://github.com/user-attachments/assets/9ea31b2b-7ae1-4137-aedd-919ae7f01917" />
+<img width="250" height="250" alt="cizon loge" src="https://github.com/user-attachments/assets/9ea31b2b-7ae1-4137-aedd-919ae7f01917" />
 </p>
 
 [简体中文](README-zh.md) | English
