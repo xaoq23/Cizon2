@@ -4,7 +4,7 @@
 
 Zero-config C++ build and run: `cizon2 build`, `cizon2 run` — out of the box like cargo/uv, with no build script language to learn first.
 
-Current version: **v0.4.4**. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
+Current version: **v0.5.0**. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
 
 > **Status:** personally maintained and still under active development. Do not use it for real projects yet.
 

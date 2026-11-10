@@ -4,7 +4,7 @@
 
 零配置的 C++ 构建与运行工具：`cizon2 build`、`cizon2 run`，像 cargo/uv 一样开箱即用，不用先学一套构建脚本语言。
 
-当前版本：**v0.4.4**。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
+当前版本：**v0.5.0**。主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
 
 > **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
 
