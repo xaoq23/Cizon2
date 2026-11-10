@@ -57,6 +57,7 @@ cizon2 version
 
 - 不要用 `setx PATH "%PATH%;..."`：它会把系统 PATH 并进用户 PATH，且超长时会被截断。
 - `g++` / `clang++` 也必须在 PATH 中；cizon2 在构建时探测编译器。
+- MSYS2 UCRT64：把 `<MSYS2>\ucrt64\bin`（例如 `C:\Users\<user>\msys2\ucrt64\bin`）加入 PATH，并安装 `mingw-w64-ucrt-x86_64-gcc`。
 - Git Bash 会继承 Windows 的 PATH，同样适用。
 
 ## 快速开始
@@ -283,7 +284,7 @@ compile_commands = true
       "environment": [],
       "externalConsole": false,
       "MIMode": "gdb",
-      "miDebuggerPath": "C:/Users/<user>/MinGW/mingw64/bin/gdb.exe",
+      "miDebuggerPath": "C:/Users/<user>/msys2/ucrt64/bin/gdb.exe",
       "preLaunchTask": "cizon2: build"
     }
   ]
@@ -293,6 +294,7 @@ compile_commands = true
 - `program` 的 `hello.exe` 换成 bin target 名（省略 name 时为项目名）；`debug-g++` 换成实际的 `<mode>-<compiler>` 作用域
 - `miDebuggerPath` 指向本机 gdb；`cizon2` 不在 PATH 时把 task 的 `command` 改成完整路径
 - g++/MinGW 用 `cppdbg + gdb`；clang++（MSVC target）需要 cpptools 的 `cppvsdbg` 或 LLDB 扩展，配置方式不同
+- MSYS2 UCRT64 下用 `pacman -S mingw-w64-ucrt-x86_64-gdb` 安装 gdb
 - 用 `--release` 的产物调试体验较差；断点调试请使用默认 debug
 
 ## 增量与沙盒

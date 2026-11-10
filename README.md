@@ -54,6 +54,7 @@ cizon2 version
 
 - Do not use `setx PATH "%PATH%;..."`: it folds the system PATH into the user PATH and truncates long values.
 - `g++` / `clang++` must be on PATH as well; cizon2 probes the compiler at build time.
+- MSYS2 UCRT64: add `<MSYS2>\ucrt64\bin` (for example `C:\Users\<user>\msys2\ucrt64\bin`) to PATH and install `mingw-w64-ucrt-x86_64-gcc`.
 - Git Bash inherits the Windows PATH, so the same setting applies there.
 
 ## Quick start
@@ -280,7 +281,7 @@ One-time `.vscode/tasks.json`:
       "environment": [],
       "externalConsole": false,
       "MIMode": "gdb",
-      "miDebuggerPath": "C:/Users/<user>/MinGW/mingw64/bin/gdb.exe",
+      "miDebuggerPath": "C:/Users/<user>/msys2/ucrt64/bin/gdb.exe",
       "preLaunchTask": "cizon2: build"
     }
   ]
@@ -290,6 +291,7 @@ One-time `.vscode/tasks.json`:
 - Replace `hello.exe` in `program` with the bin target name (the project name when `name` is omitted); replace `debug-g++` with the actual `<mode>-<compiler>` scope
 - Point `miDebuggerPath` at your local gdb; if `cizon2` is not on PATH, set the task `command` to its full path
 - g++/MinGW uses `cppdbg + gdb`; clang++ (MSVC target) needs cpptools' `cppvsdbg` or the LLDB extension, configured differently
+- On MSYS2 UCRT64, install gdb with `pacman -S mingw-w64-ucrt-x86_64-gdb`
 - `--release` artifacts are poor debugging targets; use the default debug build for breakpoints
 
 ## Incremental builds and sandbox
