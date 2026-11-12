@@ -138,6 +138,19 @@ pub fn executable_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// PATH for child processes (`run` / `test`): the compiler's own bin directory comes first so its
+/// runtime DLLs (libstdc++ / libgcc / libwinpthread) win over older copies elsewhere on PATH
+/// (notably Git for Windows' bundled MinGW). None when the compiler path cannot be resolved.
+pub fn child_path(name: &str) -> Option<std::ffi::OsString> {
+    let exe = executable_path(name)?;
+    let bin = exe.parent()?.to_path_buf();
+    let mut paths: Vec<PathBuf> = vec![bin];
+    if let Some(current) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&current));
+    }
+    std::env::join_paths(paths).ok()
+}
+
 /// Static library archiver: clang prefers llvm-ar, otherwise ar.
 /// Look first in the compiler's own directory (when --compiler points to a full path, LLVM/MinGW may not be in PATH), then in PATH.
 pub fn archiver(cxx: &Cxx) -> Result<String, String> {
@@ -283,5 +296,16 @@ mod tests {
             return; // skip when no compiler is available
         };
         assert_eq!(pick(None).unwrap().name, *expected);
+    }
+
+    #[test]
+    fn child_path_puts_compiler_bin_first() {
+        let Some(exe) = executable_path("g++").or_else(|| executable_path("clang++")) else {
+            return; // skip when no compiler is available
+        };
+        let name = exe.to_string_lossy().into_owned();
+        let path = child_path(&name).expect("child PATH must be constructible");
+        let first = std::env::split_paths(&path).next().unwrap();
+        assert_eq!(first, exe.parent().unwrap());
     }
 }

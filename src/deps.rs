@@ -79,7 +79,6 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     }
 
     println!("\x1b[32m      Added\x1b[0m {name} → deps/{name} (locked commit {commit})");
-    println!("\x1b[32m      Next\x1b[0m cizon2 build");
     Ok(0)
 }
 
@@ -91,14 +90,23 @@ fn remove_dep_dir(path: &Path) -> bool {
     }
 }
 
-/// Dependency layout hint: a non-standard layout does not block the build, but clearly
-/// tells the user why headers might not be found.
+/// Dependency layout hint, shown at acquisition time (add/update). A non-standard layout does not
+/// block the build; this tells the user whether the dep is usable as-is (header-only) or must be
+/// built externally and linked through extern_links.
 fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
     if dep_dir.join("include").is_dir() {
         return None;
     }
+    let has_sources = flat_sources(&dep_dir.join("src"))
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if !has_sources {
+        return Some(format!(
+            "Note: deps/{name} has no include/ and no flat src/*.cpp, so cizon2 compiles nothing from it. If it is header-only (e.g. doctest), its headers may already be reachable through the automatic -Ideps/{name} include path — just write a test target. If it must be compiled (e.g. googletest, Catch2), build/install it with its own build system and link it through a test target's extern_links (e.g. extern_links = [\"gtest_main\", \"gtest\"])."
+        ));
+    }
     Some(format!(
-        "Warning: deps/{name} is missing include/, which does not match the cizon2 dependency layout (include/ + flat src/*.cpp). If this library uses another build system, build it with that system and wire it in through link_flags."
+        "Warning: deps/{name} is missing include/, which does not match the cizon2 dependency layout (include/ + flat src/*.cpp). Build it with its own build system; compiled test libraries belong in a test target's extern_links, header-only frameworks can be vendored under include/."
     ))
 }
 
@@ -436,89 +444,12 @@ pub fn prepare(
     if map.is_empty() {
         return Ok(vec![]);
     }
-    let lock_path = dir.join(CIZON_LOCK);
-    let lock_text = match std::fs::read_to_string(&lock_path) {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(format!(
-                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon2 update <dependency-name> to rebuild the lock from cizon.toml."
-            ));
-        }
-        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
-    };
-    let lock: toml::Table = lock_text
-        .parse()
-        .map_err(|e| format!("{CIZON_LOCK} failed to parse: {e}"))?;
+    let lock = read_lock(dir)?;
 
     let mut jobs = Vec::new();
     for (name, info) in map {
-        let entry = lock
-            .get(name)
-            .and_then(|v| v.as_table())
-            .ok_or_else(|| {
-                format!("no lock for {name} in {CIZON_LOCK}. Run cizon2 update {name} to create the lock.")
-            })?;
-        if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
-            return Err(format!(
-                "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon2 update {name} to align."
-            ));
-        }
-        if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
-            return Err(format!(
-                "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon2 update {name} to align."
-            ));
-        }
-        let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {
-            return Err(format!(
-                "{name} in {CIZON_LOCK} is missing a commit. Run cizon2 update {name} to rebuild the lock."
-            ));
-        };
-        if !is_commit_hash(commit) {
-            return Err(format!(
-                "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon2 update {name} to rebuild the lock."
-            ));
-        }
-        let commit = commit.to_ascii_lowercase();
-
+        restore_dep(dir, name, info, &lock)?;
         let dep_dir = dir.join("deps").join(name);
-        if dep_dir.exists() {
-            let head = git_cmd(
-                dir,
-                &[
-                    "-C".into(),
-                    format!("deps/{name}"),
-                    "rev-parse".into(),
-                    "HEAD".into(),
-                ],
-            )?;
-            if head != commit {
-                return Err(format!(
-                    "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). If a local commit must be kept, push to the remote and update cizon.toml's tag first; otherwise run cizon2 update {name} to align, or delete the directory and let build restore from the lock."
-                ));
-            }
-            let status = git_cmd(
-                dir,
-                &[
-                    "-C".into(),
-                    format!("deps/{name}"),
-                    "status".into(),
-                    "--porcelain".into(),
-                ],
-            )?;
-            if !status.is_empty() {
-                return Err(format!(
-                    "deps/{name} has uncommitted changes, the lock no longer represents the actual code. Commit and push to the remote, update cizon.toml's tag, then run update; or delete the directory and let build restore from the lock."
-                ));
-            }
-        } else {
-            clone_pinned(dir, &info.git, info.tag.as_deref(), &commit, name)?;
-            eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
-        }
-
-        if let Some(warning) = layout_warning(&dep_dir, name) {
-            eprintln!("{warning}");
-        }
-
         let src_dir = dep_dir.join("src");
         let dep_obj_dir = obj_dir.join(name);
         std::fs::create_dir_all(&dep_obj_dir)
@@ -547,6 +478,111 @@ pub fn prepare(
 
 fn is_commit_hash(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// `cizon2 sync`: restore/verify every dependency checkout from cizon.lock without compiling or
+/// changing cizon.toml intent. A fresh clone of the project materializes its deps from the lock.
+pub fn sync(dir: &Path, cfg: &config::Config) -> Result<usize, String> {
+    let Some(map) = cfg.dependencies() else {
+        return Ok(0);
+    };
+    if map.is_empty() {
+        return Ok(0);
+    }
+    let lock = read_lock(dir)?;
+    for (name, info) in map {
+        restore_dep(dir, name, info, &lock)?;
+    }
+    Ok(map.len())
+}
+
+fn read_lock(dir: &Path) -> Result<toml::Table, String> {
+    let lock_path = dir.join(CIZON_LOCK);
+    let lock_text = match std::fs::read_to_string(&lock_path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!(
+                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon2 update <dependency-name> to rebuild the lock from cizon.toml."
+            ));
+        }
+        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
+    };
+    lock_text
+        .parse()
+        .map_err(|e| format!("{CIZON_LOCK} failed to parse: {e}"))
+}
+
+/// Restore/verify one dependency checkout against the lock (no compilation): validate the lock
+/// entry, ensure the checkout sits at the pinned commit, and refuse a dirty or mismatched tree.
+fn restore_dep(
+    dir: &Path,
+    name: &str,
+    info: &config::DepInfo,
+    lock: &toml::Table,
+) -> Result<(), String> {
+    let entry = lock
+        .get(name)
+        .and_then(|v| v.as_table())
+        .ok_or_else(|| {
+            format!("no lock for {name} in {CIZON_LOCK}. Run cizon2 update {name} to create the lock.")
+        })?;
+    if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
+        return Err(format!(
+            "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon2 update {name} to align."
+        ));
+    }
+    if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
+        return Err(format!(
+            "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon2 update {name} to align."
+        ));
+    }
+    let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {
+        return Err(format!(
+            "{name} in {CIZON_LOCK} is missing a commit. Run cizon2 update {name} to rebuild the lock."
+        ));
+    };
+    if !is_commit_hash(commit) {
+        return Err(format!(
+            "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon2 update {name} to rebuild the lock."
+        ));
+    }
+    let commit = commit.to_ascii_lowercase();
+
+    let dep_dir = dir.join("deps").join(name);
+    if dep_dir.exists() {
+        let head = git_cmd(
+            dir,
+            &[
+                "-C".into(),
+                format!("deps/{name}"),
+                "rev-parse".into(),
+                "HEAD".into(),
+            ],
+        )?;
+        if head != commit {
+            return Err(format!(
+                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). If a local commit must be kept, push to the remote and update cizon.toml's tag first; otherwise run cizon2 update {name} to align, or delete the directory and let sync restore from the lock."
+            ));
+        }
+        let status = git_cmd(
+            dir,
+            &[
+                "-C".into(),
+                format!("deps/{name}"),
+                "status".into(),
+                "--porcelain".into(),
+            ],
+        )?;
+        if !status.is_empty() {
+            return Err(format!(
+                "deps/{name} has uncommitted changes, the lock no longer represents the actual code. Commit and push to the remote, update cizon.toml's tag, then run update; or delete the directory and let sync restore from the lock."
+            ));
+        }
+    } else {
+        clone_pinned(dir, &info.git, info.tag.as_deref(), &commit, name)?;
+        eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+    }
+    Ok(())
 }
 
 /// Restore by tag (shallow clone + commit verification) or by bare commit (full clone +
@@ -812,6 +848,35 @@ mod tests {
     }
 
     #[test]
+    fn sync_restores_missing_dep_from_lock_without_building() {
+        if !has_git() {
+            return;
+        }
+        let origin = temp("sync-origin");
+        let proj = temp("sync-proj");
+        make_origin(&origin, false);
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::write(proj.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        add_in(&proj, &add_args(&origin)).unwrap();
+        let name = origin.file_name().unwrap().to_string_lossy().into_owned();
+        let dep_dir = proj.join("deps").join(&name);
+        assert!(dep_dir.exists());
+
+        // Remove the checkout; sync must restore it from the lock without compiling anything.
+        fs::remove_dir_all(&dep_dir).unwrap();
+        let cfg = config::load(&proj).unwrap();
+        assert_eq!(sync(&proj, &cfg).unwrap(), 1);
+        assert!(dep_dir.join("include/dep.h").exists());
+        assert!(!proj.join("build").exists(), "sync must not build");
+        // A second sync just verifies the restored checkout.
+        assert_eq!(sync(&proj, &cfg).unwrap(), 1);
+
+        fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
     fn git_verb_skips_options() {
         assert_eq!(
             git_verb(&["-C".into(), "deps/x".into(), "rev-parse".into(), "HEAD".into()]),
@@ -893,11 +958,19 @@ mod tests {
     }
 
     #[test]
-    fn layout_warning_checks_include_dir() {
+    fn layout_warning_distinguishes_header_only_and_compiled() {
         let dir = temp("layout-warning");
         fs::create_dir_all(&dir).unwrap();
-        let warning = layout_warning(&dir, "dep").expect("missing include should warn");
-        assert!(warning.contains("include/"), "got: {warning}");
+        // No include/ and no flat sources: header-only-or-external note, not a hard layout error.
+        let note = layout_warning(&dir, "dep").expect("should hint");
+        assert!(note.contains("header-only"), "got: {note}");
+        assert!(note.contains("extern_links"), "got: {note}");
+        // Flat sources present but no include/: genuine layout warning.
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/a.cpp"), "int a;").unwrap();
+        let warning = layout_warning(&dir, "dep").expect("should warn");
+        assert!(warning.contains("missing include/"), "got: {warning}");
+        // include/ present: no hint.
         fs::create_dir_all(dir.join("include")).unwrap();
         assert!(layout_warning(&dir, "dep").is_none());
         fs::remove_dir_all(dir).ok();

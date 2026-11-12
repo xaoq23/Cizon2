@@ -102,6 +102,7 @@ pub(super) fn link(
     exe: &Path,
     flags: &[String],
     link_flags: &[String],
+    extra: &[String],
 ) -> Result<(), String> {
     let mut cmd = Command::new(cxx);
     for obj in objs {
@@ -115,6 +116,9 @@ pub(super) fn link(
         cmd.arg(f);
     }
     for f in link_flags {
+        cmd.arg(f);
+    }
+    for f in extra {
         cmd.arg(f);
     }
     let out = cmd

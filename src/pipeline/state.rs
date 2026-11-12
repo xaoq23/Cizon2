@@ -52,6 +52,24 @@ pub(super) fn project_state_text(plan: &Plan) -> String {
         s.push_str(f);
         s.push('\n');
     }
+    // Per-target prefixes change compile search paths; record them so any prefix change
+    // invalidates project objects (coarse but correct — prefixes rarely change).
+    s.push_str("prefixes:\n");
+    for bin in plan.bins.iter().chain(plan.tests.iter()) {
+        if let Some(p) = &bin.prefix {
+            s.push_str(&format!("{} {}\n", bin.name, p.display()));
+        }
+    }
+    for lib in &plan.libs {
+        if let Some(p) = &lib.prefix {
+            s.push_str(&format!("{} {}\n", lib.name, p.display()));
+        }
+    }
+    for shared in &plan.shared {
+        if let Some(p) = &shared.prefix {
+            s.push_str(&format!("{} {}\n", shared.name, p.display()));
+        }
+    }
     s
 }
 
@@ -101,8 +119,8 @@ pub(super) fn shared_state_text(plan: &Plan) -> String {
     s
 }
 
-/// Link state: exe name, objects, archives, import libraries, link flags. Any change requires a
-/// relink; import libraries carry their semantic fingerprint rather than mtime.
+/// Link state: exe name, objects, archives, import libraries, external libraries, link flags. Any
+/// change requires a relink; import libraries carry their semantic fingerprint rather than mtime.
 pub(super) fn link_state_text(
     plan: &Plan,
     bin: &BinTarget,
@@ -125,6 +143,16 @@ pub(super) fn link_state_text(
     for (path, fingerprint) in imports {
         s.push_str(&format!("{} {fingerprint}\n", path.display()));
     }
+    if !bin.extern_links.is_empty() {
+        s.push_str("extern-libs:\n");
+        for link in &bin.extern_links {
+            s.push_str(link);
+            s.push('\n');
+        }
+    }
+    if let Some(p) = &bin.prefix {
+        s.push_str(&format!("prefix: {}\n", p.display()));
+    }
     s.push_str("link-flags:\n");
     for f in &plan.link_flags {
         s.push_str(f);
@@ -133,22 +161,24 @@ pub(super) fn link_state_text(
     s
 }
 
-pub(super) fn bins_state_text(plan: &Plan) -> String {
-    let mut s = String::from("bins:\n");
-    for bin in &plan.bins {
-        s.push_str(&format!("bin|{}|{}\n", bin.name, bin.out_name));
+/// Executable target list state: label is `bin` or `test`; when the list changes, stale exes and
+/// per-target link states must disappear.
+pub(super) fn execs_state_text(label: &str, execs: &[BinTarget]) -> String {
+    let mut s = format!("{label}s:\n");
+    for t in execs {
+        s.push_str(&format!("{label}|{}|{}\n", t.name, t.out_name));
     }
     s
 }
 
-pub(super) fn read_bins_state(path: &Path) -> Vec<(String, String)> {
+pub(super) fn read_execs_state(path: &Path, label: &str) -> Vec<(String, String)> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
     text.lines()
         .filter_map(|line| {
             let mut parts = line.splitn(3, '|');
-            if parts.next()? != "bin" {
+            if parts.next()? != label {
                 return None;
             }
             let name = parts.next()?.to_string();
@@ -166,15 +196,20 @@ pub(super) fn bin_link_state_path(scope_dir: &Path, name: &str, multi: bool) -> 
     }
 }
 
-/// Remove binaries that disappeared from a multi-bin plan, plus their per-bin link state.
-pub(super) fn stale_multi_bin_paths(
+/// Test targets are always explicitly named; their link states never share the single-bin file.
+pub(super) fn test_link_state_path(scope_dir: &Path, name: &str) -> PathBuf {
+    scope_dir.join(format!(".link-state-{name}"))
+}
+
+/// Remove executables that disappeared from the target list, plus their per-target link state.
+pub(super) fn stale_exec_paths(
     scope_dir: &Path,
-    old_bins: &[(String, String)],
-    plan: &Plan,
+    old_execs: &[(String, String)],
+    execs: &[BinTarget],
 ) -> Vec<PathBuf> {
     let mut stale = Vec::new();
-    for (old_name, old_exe) in old_bins {
-        if plan.bins.iter().any(|bin| bin.name.eq_ignore_ascii_case(old_name)) {
+    for (old_name, old_exe) in old_execs {
+        if execs.iter().any(|t| t.name.eq_ignore_ascii_case(old_name)) {
             continue;
         }
         let path = scope_dir.join(old_exe);
@@ -203,6 +238,9 @@ pub(super) fn shared_link_state_text(
     for archive in archives {
         s.push_str(&archive.display().to_string());
         s.push('\n');
+    }
+    if let Some(p) = &shared.prefix {
+        s.push_str(&format!("prefix: {}\n", p.display()));
     }
     s.push_str("link-flags:\n");
     for f in &plan.link_flags {

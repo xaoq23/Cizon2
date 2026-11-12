@@ -46,6 +46,9 @@ pub enum TargetKind {
     Bin,
     StaticLib,
     SharedLib,
+    /// Built and run only by `cizon test`; `build` / `run` ignore it. The pass contract is the
+    /// process exit code (0 = pass) — no framework parsing.
+    Test,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,14 +64,31 @@ pub struct Target {
     pub sources: Option<Vec<String>>,
     /// Bin: static/shared library target names, linked in this order within each artifact kind.
     /// Shared library: static library target names, built into the DLL.
+    /// Test: same as bin.
     #[serde(default)]
     pub links: Vec<String>,
+    /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
+    /// link time. cizon2 neither downloads nor locates them; headers must already be on the
+    /// compiler's default include path (non-default prefixes go through [compiler] flags).
+    #[serde(default)]
+    pub extern_links: Vec<String>,
+    /// Optional installed-package prefix (project-relative directory). cizon2 expands it to
+    /// `-I<prefix>/include` for this target's sources and `-L<prefix>/lib` at link time, so
+    /// consuming an installed library never requires hand-written search-path flags.
+    #[serde(default)]
+    pub prefix: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerSection {
     pub cpp: Option<String>,
+    /// Convenience switch: expand to `-Wall -Wextra -Wpedantic` for project sources (not deps).
+    #[serde(default)]
+    pub strict: bool,
+    /// Convenience switch: append `-Werror` (warnings become errors) for project sources.
+    #[serde(default)]
+    pub werror: bool,
     #[serde(default)]
     pub flags: Vec<String>,
     #[serde(default)]
@@ -144,6 +164,23 @@ fn validate_target_name(name: &str) -> Result<(), String> {
     validate_file_component(name, "target name")
 }
 
+/// A extern_links entry is appended to the link command verbatim as `-l<name>`, so it must not be
+/// able to smuggle flags or path pieces into that command line.
+fn validate_system_link_name(name: &str) -> Result<(), String> {
+    let ok = !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "extern_links entry {name:?} is invalid: it is appended to the link command as -l<name>, so only letters, digits and . - _ + are allowed (no leading dash, no whitespace, no path separators)."
+        ))
+    }
+}
+
 /// Validate and resolve `[[target]]`: a single bin without a name uses the project name; with
 /// multiple bins every bin must be named explicitly; libraries must be named explicitly.
 fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
@@ -161,9 +198,17 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         return Err("[project].sources and [[target]] cannot be used together: put the source files in the corresponding target.".into());
     }
 
+    // Tests are executable targets too: a test-only project is valid (build still builds its
+    // libraries; only the test command produces an exe), so the "at least one" rule counts both.
     let bin_count = targets.iter().filter(|t| t.kind == TargetKind::Bin).count();
-    if bin_count == 0 {
-        return Err("[[target]] must contain at least one kind = \"bin\".".into());
+    let exe_count = targets
+        .iter()
+        .filter(|t| matches!(t.kind, TargetKind::Bin | TargetKind::Test))
+        .count();
+    if exe_count == 0 {
+        return Err(
+            "[[target]] must contain at least one kind = \"bin\" or kind = \"test\".".into(),
+        );
     }
     for target in targets.iter_mut() {
         match target.kind {
@@ -183,6 +228,11 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     return Err("a library target must provide name.".into());
                 }
             }
+            TargetKind::Test => {
+                if target.name.is_none() {
+                    return Err("a test target must provide name.".into());
+                }
+            }
         }
         validate_target_name(target.name.as_deref().expect("name resolved"))?;
     }
@@ -194,6 +244,17 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         let name = target.name.as_deref().expect("name resolved");
         if !names.insert(name.to_lowercase()) {
             return Err(format!("duplicate target name {name} (case-insensitive)."));
+        }
+        if target.kind != TargetKind::Test && !target.extern_links.is_empty() {
+            return Err(format!(
+                "only test targets can declare extern_links; target {name} cannot (it is a {kind} target).",
+                kind = match target.kind {
+                    TargetKind::Bin => "bin",
+                    TargetKind::StaticLib => "static_lib",
+                    TargetKind::SharedLib => "shared_lib",
+                    TargetKind::Test => "test",
+                }
+            ));
         }
         match target.kind {
             TargetKind::Bin => {}
@@ -214,10 +275,31 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     return Err(format!("shared library target {name} must provide sources."));
                 }
             }
+            TargetKind::Test => {
+                if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
+                    return Err(format!("test target {name} must provide sources."));
+                }
+                let mut seen_system = HashSet::new();
+                for link in &target.extern_links {
+                    validate_system_link_name(link)?;
+                    if !seen_system.insert(link.to_lowercase()) {
+                        return Err(format!(
+                            "duplicate entry {link} in the extern_links of test target {name}."
+                        ));
+                    }
+                }
+            }
         }
         if let Some(sources) = &target.sources {
-            if target.kind == TargetKind::Bin && sources.is_empty() {
-                return Err(format!("the sources of bin target {name} must not be empty."));
+            if matches!(target.kind, TargetKind::Bin | TargetKind::Test) && sources.is_empty() {
+                return Err(format!(
+                    "the sources of {kind} target {name} must not be empty.",
+                    kind = if target.kind == TargetKind::Bin {
+                        "bin"
+                    } else {
+                        "test"
+                    }
+                ));
             }
         }
     }
@@ -246,17 +328,18 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     }
                 }
             }
-            TargetKind::Bin => {
+            TargetKind::Bin | TargetKind::Test => {
+                let kind = if target.kind == TargetKind::Bin { "bin" } else { "test" };
                 for link in &target.links {
                     let lower = link.to_lowercase();
                     if !libs.contains(&lower) && !shared.contains(&lower) {
                         return Err(format!(
-                            "bin target {name} links a nonexistent library {link}."
+                            "{kind} target {name} links a nonexistent library {link}."
                         ));
                     }
                     if !seen.insert(lower) {
                         return Err(format!(
-                            "duplicate entry {link} in the links of bin target {name}."
+                            "duplicate entry {link} in the links of {kind} target {name}."
                         ));
                     }
                 }
@@ -378,6 +461,14 @@ impl Config {
 
     pub fn link_flags(&self) -> &[String] {
         self.compiler.as_ref().map(|c| c.link_flags.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn strict(&self) -> bool {
+        self.compiler.as_ref().map(|c| c.strict).unwrap_or(false)
+    }
+
+    pub fn werror(&self) -> bool {
+        self.compiler.as_ref().map(|c| c.werror).unwrap_or(false)
     }
 
     pub fn explicit_compiler(&self) -> Option<&str> {
@@ -873,6 +964,152 @@ mod tests {
         )
         .unwrap();
         assert!(load(&dir).unwrap_err().contains("duplicate"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parse_test_target_with_extern_links() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"calc_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"core\"]\nextern_links = [\"gtest\", \"gtest_main\"]\n",
+        ));
+        let targets = cfg.targets().unwrap();
+        assert_eq!(targets[1].kind, TargetKind::Test);
+        assert_eq!(targets[1].links, ["core"]);
+        assert_eq!(targets[1].extern_links, ["gtest", "gtest_main"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parse_strict_werror_and_prefix() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"t\"\n\n[compiler]\nstrict = true\nwerror = true\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"third_party/pkg\"\n",
+        );
+        assert!(cfg.strict());
+        assert!(cfg.werror());
+        assert_eq!(
+            cfg.targets().unwrap()[0].prefix.as_deref(),
+            Some("third_party/pkg")
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_only_project_is_allowed() {
+        // Test targets are executable targets: a test-only project parses fine (build still
+        // builds libraries; the test command produces and runs the exe).
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        ));
+        let targets = cfg.targets().unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].kind, TargetKind::Test);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_target_requires_name_and_sources() {
+        let dir = temp_dir("test-no-name");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nkind = \"test\"\nsources = [\"tests\"]\n"),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("a test target must provide name"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("test-no-sources");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nname = \"t_test\"\nkind = \"test\"\n"),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("must provide sources"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_target_links_are_validated_like_bin() {
+        let dir = temp_dir("test-bad-links");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"missing\"]\n",
+            ),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("test target"), "got: {err}");
+        assert!(err.contains("nonexistent"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn extern_links_rejected_outside_test_targets() {
+        for targets in [
+            "[[target]]\nname = \"app\"\nkind = \"bin\"\nextern_links = [\"gtest\"]\n",
+            "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\nextern_links = [\"gtest\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            "[[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\nextern_links = [\"gtest\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+        ] {
+            let dir = temp_dir("system-non-test");
+            std::fs::write(dir.join("cizon.toml"), target_config(targets)).unwrap();
+            let err = load(&dir).unwrap_err();
+            assert!(
+                err.contains("only test targets can declare extern_links"),
+                "targets={targets} got: {err}"
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn extern_links_rejects_flag_and_path_smuggling() {
+        for bad in ["", "-lm", "g test", "a/b", "a\\b", "gtest;rm"] {
+            let dir = temp_dir("system-bad-name");
+            std::fs::write(
+                dir.join("cizon.toml"),
+                target_config(&format!(
+                    "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [{bad:?}]\n"
+                )),
+            )
+            .unwrap();
+            let err = load(&dir).unwrap_err();
+            assert!(
+                err.contains("extern_links entry"),
+                "bad={bad:?} got: {err}"
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+
+        // Legitimate names must pass: dots, dashes, underscores and plus signs are common in
+        // real external library names.
+        let dir = temp_dir("system-good-name");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"gtest_main\", \"Catch2\", \"libstdc++\"]\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).is_ok());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn extern_links_rejects_duplicates() {
+        let dir = temp_dir("system-dup");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"gtest\", \"GTEST\"]\n",
+            ),
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("duplicate"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 

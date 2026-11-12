@@ -1,6 +1,6 @@
 [package]
 name = "cizon2"
-version = "0.6.1"
+version = "0.7.1"
 edition = "2021"
 description = "Declarative C++ build and run for small projects"
 

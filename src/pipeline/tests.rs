@@ -159,7 +159,9 @@
         let p = Plan {
             cxx: Cxx { name: "g++".into(), version: "test".into() },
             bins: vec![],
+            tests: vec![],
             flags: vec![],
+            test_flags: vec![],
             link_flags: vec![],
             dep_base: vec!["-std=c++23".to_string()],
             dep_includes: includes,
@@ -1735,9 +1737,9 @@
         }
         let dir = multi_bin_project("multi-bin");
         let result = build_bins_project(&dir);
-        assert_eq!(result.bins.len(), 2);
-        let one = result.bins.iter().find(|(n, _)| n == "one").unwrap();
-        let two = result.bins.iter().find(|(n, _)| n == "two").unwrap();
+        assert_eq!(result.execs.len(), 2);
+        let one = result.execs.iter().find(|(n, _)| n == "one").unwrap();
+        let two = result.execs.iter().find(|(n, _)| n == "two").unwrap();
         assert_eq!(run_code(&one.1), 1);
         assert_eq!(run_code(&two.1), 2);
 
@@ -1762,15 +1764,15 @@
         }
         let dir = multi_bin_project("multi-bin-incremental");
         let result = build_bins_project(&dir);
-        let one = result.bins.iter().find(|(n, _)| n == "one").unwrap().1.clone();
-        let two = result.bins.iter().find(|(n, _)| n == "two").unwrap().1.clone();
+        let one = result.execs.iter().find(|(n, _)| n == "one").unwrap().1.clone();
+        let two = result.execs.iter().find(|(n, _)| n == "two").unwrap().1.clone();
         let one_t = mtime(&one);
         let two_t = mtime(&two);
         std::thread::sleep(std::time::Duration::from_millis(50));
         fs::write(dir.join("one/main.cpp"), "int main() { return 3; }\n").unwrap();
         let result = build_bins_project(&dir);
-        let one_new = result.bins.iter().find(|(n, _)| n == "one").unwrap().1.clone();
-        let two_new = result.bins.iter().find(|(n, _)| n == "two").unwrap().1.clone();
+        let one_new = result.execs.iter().find(|(n, _)| n == "one").unwrap().1.clone();
+        let two_new = result.execs.iter().find(|(n, _)| n == "two").unwrap().1.clone();
         assert_ne!(mtime(&one_new), one_t, "changed bin must relink");
         assert_eq!(mtime(&two_new), two_t, "untouched bin must not relink");
         assert_eq!(run_code(&one_new), 3);
@@ -1784,7 +1786,7 @@
         }
         let dir = multi_bin_project("multi-bin-cleanup");
         let result = build_bins_project(&dir);
-        let scope = scope_of(&dir, &result.bins[0].1);
+        let scope = scope_of(&dir, &result.execs[0].1);
         assert!(scope.join("two.exe").exists());
         fs::write(
             dir.join("cizon.toml"),
@@ -1824,10 +1826,211 @@
         fs::write(dir.join("a/main.cpp"), main).unwrap();
         fs::write(dir.join("b/main.cpp"), main).unwrap();
         let result = build_bins_project(&dir);
-        let scope = scope_of(&dir, &result.bins[0].1);
+        let scope = scope_of(&dir, &result.execs[0].1);
         shared_dll(&scope, "depdll");
-        for (_, exe) in &result.bins {
+        for (_, exe) in &result.execs {
             assert_eq!(run_code(exe), 0);
         }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn missing_extern_lib_hint_names_the_library_and_install_path() {
+        let stderr = "C:/msys64/ucrt64/bin/../lib/gcc/x86_64-w64-mingw32/14.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: cannot find -lgtest: No such file or directory";
+        let links = vec!["gtest".to_string(), "gtest_main".to_string()];
+        let hint = super::missing_extern_lib_hint(stderr, &links).unwrap();
+        assert!(hint.contains("-lgtest"), "got: {hint}");
+        assert!(hint.contains("system package manager"), "got: {hint}");
+        assert!(super::missing_extern_lib_hint("undefined reference to `foo'", &links).is_none());
+        assert!(super::missing_extern_lib_hint(stderr, &["other".to_string()]).is_none());
+        // Some MinGW linkers print only the collect2 summary; the guidance must survive.
+        let hint =
+            super::missing_extern_lib_hint("collect2.exe: error: ld returned 5 exit status", &links)
+                .unwrap();
+        assert!(hint.contains("gtest, gtest_main"), "got: {hint}");
+    }
+
+    #[test]
+    fn extern_links_test_target_builds_and_runs() {
+        if !have_compiler() {
+            return;
+        }
+        // -lm ships with every g++/clang++ toolchain, so this exercises the extern_links path
+        // without requiring a pre-installed test framework.
+        let dir = temp_dir("system-link-e2e");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(
+            dir.join("tests/math_test.cpp"),
+            "#include <cmath>\nint main(){ return std::pow(2.0, 10.0) == 1024.0 ? 0 : 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let plan = plan(&dir, &cfg, cxx, false).unwrap();
+        let result = super::build_tests(&dir, &cfg, &plan, &[]).unwrap();
+        assert_eq!(result.execs.len(), 1);
+        assert_eq!(run_code(&result.execs[0].1), 0, "extern_links -lm must link and run");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn extern_links_change_forces_relink() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("system-relink");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/main.cpp"), "int main(){return 0;}").unwrap();
+        let toml_path = dir.join("cizon.toml");
+        fs::write(
+            &toml_path,
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let first_plan = plan(&dir, &cfg, cxx.clone(), false).unwrap();
+        let result = super::build_tests(&dir, &cfg, &first_plan, &[]).unwrap();
+        let exe = result.execs[0].1.clone();
+        let exe_t = mtime(&exe);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // A changed external library set must change the link fingerprint and force a relink.
+        fs::write(
+            &toml_path,
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\", \"stdc++\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let second_plan = plan(&dir, &cfg, cxx, false).unwrap();
+        super::build_tests(&dir, &cfg, &second_plan, &[]).unwrap();
+        assert_ne!(mtime(&exe), exe_t, "a extern_links change must relink");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_targets_never_compile_with_ndebug() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("test-ndebug");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(
+            dir.join("tests/assert_test.cpp"),
+            "#include <cassert>\nint main(){ assert(false); return 0; }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [compiler]\nflags = [\"-DNDEBUG\"]\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        assert!(
+            p.flags.iter().any(|f| f == "-DNDEBUG"),
+            "user flags must still reach normal targets"
+        );
+        assert!(
+            !p.test_flags.iter().any(|f| f.contains("NDEBUG")),
+            "test sources must never see -DNDEBUG: {:?}",
+            p.test_flags
+        );
+        let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
+        assert_ne!(
+            run_code(&result.execs[0].1),
+            0,
+            "assert(false) must stay live in a test target"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn strict_switch_expands_warning_flags_for_project_only() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("strict");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[compiler]\nstrict = true\nwerror = true\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        for f in ["-Wall", "-Wextra", "-Wpedantic", "-Werror"] {
+            assert!(p.flags.iter().any(|x| x == f), "missing {f}: {:?}", p.flags);
+        }
+        assert!(
+            !p.dep_base.iter().any(|x| x.starts_with("-W")),
+            "dependency sources must not inherit strict/werror: {:?}",
+            p.dep_base
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn prefix_provides_include_path_transparently() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("prefix");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::create_dir_all(dir.join("pkg/include")).unwrap();
+        fs::write(
+            dir.join("pkg/include/mylib.h"),
+            "#pragma once\ninline int answer(){return 42;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("tests/t.cpp"),
+            "#include <mylib.h>\nint main(){return answer()==42?0:1;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"pkg\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
+        assert_eq!(run_code(&result.execs[0].1), 0, "prefix include path must resolve");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn prefix_must_be_an_existing_directory() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("prefix-missing");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/t.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"nope\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("prefix"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }

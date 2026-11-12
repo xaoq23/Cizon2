@@ -14,15 +14,18 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.6.1）
+## 当前边界（v0.7.1）
 
 | 在边界内 | 边界外 |
 |---|---|
-| `build` / `run` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
-| 中小型单项目（多个 bin + 静态库/共享库 `[[target]]`） | 嵌套 target 图 / install-export / 共享库依赖共享库 |
+| `build` / `run` / `test` / `sync` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
+| 中小型单项目（多个 bin/test + 静态库/共享库 `[[target]]`） | 嵌套 target 图 / install-export / 共享库依赖共享库 |
+| `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
+| test target 的 `extern_links`（仅 `-l<name>`）+ per-target `prefix`（推导 `-I`/`-L`） | vcpkg / Conan / conda / CMake provision |
+| `[compiler] strict`/`werror` 警告开关；`help <command>` 详细帮助 | 完整 per-target flags/include 作用域 |
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
-| mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | vcpkg / conda 等外部包管理 |
+| mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | 交叉编译 / 复杂工具链 |
 | compile_commands.json + VS Code IntelliSense 配置（默认关闭，`[project].compile_commands` 开启） | 自定义错误格式化器 |
 | 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | 与 CMake 全功能对齐 |
 
@@ -33,8 +36,11 @@
 - `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
-- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 bin；多个 bin 必须各自命名；shared_lib 只能链接 static_lib，bin 可混合链接静态库与共享库
+- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 bin 或 test target；多个 bin 必须各自命名；test 必须显式命名且提供 sources；shared_lib 只能链接 static_lib，bin/test 可混合链接静态库与共享库
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
+- test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `test-obj/<name>/`，`build` / `run` 不构建 test target
+- `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
+- 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
 - `shared_lib` 仅 Windows；导出必须使用 C ABI；DLL 与 exe 同目录，import lib 在 `.shared/<name>/`，内部目录保留给 cizon2
 
@@ -44,6 +50,9 @@
 - 构建/运行状态写 stderr，程序 stdout 保持纯净
 - 警告按源文件分组：金色上下分隔线 + 黄色 `Warning` 头
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
+- `cizon test` 的测试进程输出统一转发到 stderr；cizon2 汇总 `passed/failed/total`，任一失败退出 1
+- `run` / `test` 子进程 PATH 前置编译器 bin 目录，规避旧运行库 DLL 遮蔽；退出码表覆盖 `0xC0000139`（入口点缺失）
+- 依赖布局提示仅在 `add` / `update` 打印一次（区分 header-only 与需编译库）；bin/test target 的 sources 重叠会警告
 
 ## 非目标（重开需明确讨论）
 
@@ -89,5 +98,5 @@
 9. v0.5.1 `shared_lib` 依赖对象传播修复 —— 已发布 v0.5.1
 10. v0.6 多 bin target + `run <bin>` —— 已发布 v0.6.0
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
-12. v0.7 `kind = "test"` + `cizon test` —— 设计先行，未实现：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `system_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖。先用真实项目 dogfood，通过三道闸后开工。
+12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

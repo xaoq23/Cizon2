@@ -10,7 +10,7 @@ use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
-    let (bins, libs, shared) = if let Some(targets) = cfg.targets() {
+    let (bins, tests, libs, shared) = if let Some(targets) = cfg.targets() {
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
             let name = target.name.as_deref().expect("config resolves lib name");
@@ -25,6 +25,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             libs.push(LibTarget {
                 name: name.to_string(),
                 sources: lib_sources,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("static library target {name}"))?,
             });
         }
         let mut shared = Vec::new();
@@ -54,6 +55,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 name: name.to_string(),
                 sources: shared_sources,
                 links: shared_links,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("shared library target {name}"))?,
             });
         }
         let mut bins = Vec::new();
@@ -67,30 +69,38 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             if sources.is_empty() {
                 return Err(format!("bin target {name} has no source file to compile."));
             }
-            let links = target
-                .links
-                .iter()
-                .map(|link| {
-                    let lower = link.to_lowercase();
-                    if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
-                        LinkTarget::Static(lib.name.clone())
-                    } else if let Some(sh) =
-                        shared.iter().find(|sh| sh.name.to_lowercase() == lower)
-                    {
-                        LinkTarget::Shared(sh.name.clone())
-                    } else {
-                        LinkTarget::Static(link.clone())
-                    }
-                })
-                .collect();
+            let links = resolve_exec_links(target.links.as_slice(), &libs, &shared);
             bins.push(BinTarget {
                 name: name.to_string(),
                 sources,
                 links,
                 out_name: exe_name(name),
+                extern_links: Vec::new(),
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("bin target {name}"))?,
             });
         }
-        (bins, libs, shared)
+        let mut tests = Vec::new();
+        for target in targets.iter().filter(|t| t.kind == TargetKind::Test) {
+            let name = target.name.as_deref().expect("config resolves test name");
+            let sources = collect_target_sources(
+                dir,
+                target.sources.as_deref(),
+                &format!("test target {name}"),
+            )?;
+            if sources.is_empty() {
+                return Err(format!("test target {name} has no source file to compile."));
+            }
+            let links = resolve_exec_links(target.links.as_slice(), &libs, &shared);
+            tests.push(BinTarget {
+                name: name.to_string(),
+                sources,
+                links,
+                out_name: exe_name(name),
+                extern_links: target.extern_links.clone(),
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("test target {name}"))?,
+            });
+        }
+        (bins, tests, libs, shared)
     } else {
         let explicit = cfg.explicit_sources();
         let sources = collect_sources(dir, explicit)?;
@@ -109,13 +119,23 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             name,
             sources,
             links: Vec::new(),
+            extern_links: Vec::new(),
+            prefix: None,
         }];
-        (bins, Vec::new(), Vec::new())
+        (bins, Vec::new(), Vec::new(), Vec::new())
     };
 
     let edition = compiler::edition_flag(cfg.edition());
     let optimization = if release { "-O2" } else { "-g" };
     let mut flags = vec![edition.clone(), optimization.into()];
+    // Convenience warning switches expand to fixed flag bundles; user flags come after so they
+    // can still override (e.g. -Wno-...). These apply to project sources only, never deps.
+    if cfg.strict() {
+        flags.extend(["-Wall", "-Wextra", "-Wpedantic"].map(String::from));
+    }
+    if cfg.werror() {
+        flags.push("-Werror".into());
+    }
     flags.extend(cfg.flags().iter().cloned());
     // Public header directory: modern-layout include/ is added with -I automatically; when the
     // directory is missing the compiler safely ignores it
@@ -136,11 +156,22 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     let dep_base = vec![edition, optimization.into()];
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
+    let test_flags = without_ndebug(&flags);
+
+    for (src, names) in overlapping_exec_sources(&bins, &tests) {
+        eprintln!(
+            "Warning: source {} is compiled into multiple executable targets ({}). Recursive sources can pull in another target's files; multiple main() definitions will fail to link. Use explicit file paths or separate directories.",
+            rel_display(dir, &src),
+            names.join(", ")
+        );
+    }
 
     Ok(Plan {
         cxx,
         bins,
+        tests,
         flags,
+        test_flags,
         link_flags,
         dep_base,
         dep_includes,
@@ -148,6 +179,86 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         shared,
         mode: if release { "release" } else { "debug" },
     })
+}
+
+/// Remove every `-DNDEBUG` spelling from test-source flags. Tests must not silently compile out
+/// their own asserts: the exit-code contract is only meaningful while `assert` is live.
+fn without_ndebug(flags: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(flags.len());
+    let mut i = 0;
+    while i < flags.len() {
+        let flag = &flags[i];
+        if flag == "-D"
+            && flags
+                .get(i + 1)
+                .is_some_and(|v| v == "NDEBUG" || v.starts_with("NDEBUG="))
+        {
+            i += 2;
+            continue;
+        }
+        if flag == "-DNDEBUG" || flag.starts_with("-DNDEBUG=") {
+            i += 1;
+            continue;
+        }
+        out.push(flag.clone());
+        i += 1;
+    }
+    out
+}
+
+/// Resolve an optional installed-package prefix to an absolute directory inside the project.
+/// cizon2 later expands it to -I<prefix>/include (compile) and -L<prefix>/lib (link) for the
+/// owning target, so consuming an installed library needs no hand-written search-path flags.
+fn resolve_prefix(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let path = resolve_source_path(dir, raw, &format!("{owner} prefix"))?;
+    if !path.is_dir() {
+        return Err(format!(
+            "{owner} prefix {} is not a directory. Install the package there first (e.g. cmake --install), or remove the prefix.",
+            rel_display(dir, &path)
+        ));
+    }
+    ensure_dir_inside(dir, &path, &format!("{owner} prefix"))?;
+    Ok(Some(path))
+}
+
+/// Source files compiled into more than one executable target (bin/test). Recursive `sources`
+/// directories can silently overlap; multiple main() definitions then fail to link.
+pub(super) fn overlapping_exec_sources(
+    bins: &[BinTarget],
+    tests: &[BinTarget],
+) -> Vec<(PathBuf, Vec<String>)> {
+    let mut map: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    for target in bins.iter().chain(tests.iter()) {
+        for src in &target.sources {
+            map.entry(src.clone()).or_default().push(target.name.clone());
+        }
+    }
+    map.into_iter().filter(|(_, names)| names.len() > 1).collect()
+}
+
+/// Resolve bin/test `links` entries against the planned libraries (bin and test targets link the
+/// same artifact kinds: static archives and shared import libraries).
+fn resolve_exec_links(
+    links: &[String],
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+) -> Vec<LinkTarget> {
+    links
+        .iter()
+        .map(|link| {
+            let lower = link.to_lowercase();
+            if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
+                LinkTarget::Static(lib.name.clone())
+            } else if let Some(sh) = shared.iter().find(|sh| sh.name.to_lowercase() == lower) {
+                LinkTarget::Shared(sh.name.clone())
+            } else {
+                LinkTarget::Static(link.clone())
+            }
+        })
+        .collect()
 }
 
 pub(super) fn exe_name(name: &str) -> String {
@@ -415,6 +526,20 @@ pub(super) fn bin_obj_dir(scope_dir: &Path, name: &str, multi: bool) -> PathBuf 
     }
 }
 
+/// Test objects live in their own tree so `build`/`run` (obj/) and `cizon test` (test-obj/)
+/// never invalidate each other's artifacts, even in a single-bin project where obj/ mirrors
+/// src/ paths directly.
+pub(super) fn test_obj_dir(scope_dir: &Path, name: &str) -> PathBuf {
+    scope_dir.join("test-obj").join(name)
+}
+
+pub(super) fn exec_obj_dir(scope_dir: &Path, name: &str, multi: bool, set: super::ExecSet) -> PathBuf {
+    match set {
+        super::ExecSet::Bins => bin_obj_dir(scope_dir, name, multi),
+        super::ExecSet::Tests => test_obj_dir(scope_dir, name),
+    }
+}
+
 pub(super) fn shared_obj_for(
     dir: &Path,
     scope_dir: &Path,
@@ -424,4 +549,50 @@ pub(super) fn shared_obj_for(
     let mut rel = project_relative(dir, src)?;
     rel.set_extension("o");
     Ok(shared_obj_dir(scope_dir, name).join(rel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_ndebug;
+
+    #[test]
+    fn test_flags_strip_every_ndebug_spelling() {
+        let flags = vec![
+            "-std=c++23".to_string(),
+            "-DNDEBUG".to_string(),
+            "-D".to_string(),
+            "NDEBUG".to_string(),
+            "-D".to_string(),
+            "NDEBUG=1".to_string(),
+            "-DNDEBUG=1".to_string(),
+            "-Wall".to_string(),
+        ];
+        assert_eq!(without_ndebug(&flags), ["-std=c++23", "-Wall"]);
+        // NDEBUG is case-sensitive; unrelated defines survive.
+        let flags = vec!["-D".to_string(), "DEBUG".to_string()];
+        assert_eq!(without_ndebug(&flags), flags);
+    }
+
+    #[test]
+    fn overlapping_exec_sources_flags_shared_files() {
+        use super::{overlapping_exec_sources, BinTarget};
+        use std::path::PathBuf;
+        let mk = |name: &str, src: &str| BinTarget {
+            name: name.to_string(),
+            sources: vec![PathBuf::from(src)],
+            links: vec![],
+            out_name: format!("{name}.exe"),
+            extern_links: vec![],
+            prefix: None,
+        };
+        let bins = vec![mk("app", "src/main.cpp")];
+        let tests = vec![mk("t1", "tests/a.cpp"), mk("t2", "tests/a.cpp")];
+        let overlaps = overlapping_exec_sources(&bins, &tests);
+        assert_eq!(overlaps.len(), 1);
+        assert_eq!(overlaps[0].0, PathBuf::from("tests/a.cpp"));
+        assert_eq!(overlaps[0].1, vec!["t1".to_string(), "t2".to_string()]);
+        // Disjoint sources produce no warning.
+        let tests2 = vec![mk("t1", "tests/a.cpp"), mk("t2", "tests/b.cpp")];
+        assert!(overlapping_exec_sources(&bins, &tests2).is_empty());
+    }
 }

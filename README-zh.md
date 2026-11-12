@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.6.1**。目前主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
+当前版本：**v0.7.1**。新增 test target、per-target `prefix`、`strict`/`werror`、`sync` 与更完善的 help。目前主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
 
 > **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
 
@@ -18,7 +18,8 @@
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`
 - 多个 bin、静态库、共享库 target；`links` 控制归档与 import lib 的顺序
 - `shared_lib` 生成 DLL 与 import lib；import lib 未变时不重链 bin
-- `cizon2 run <bin>` 选择运行目标，`build` 构建全部 target
+- `cizon2 run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
+- v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
 - git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
@@ -44,13 +45,13 @@ cargo install --path .
 
 ### 2. 从 GitHub Release 下载
 
-在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载 `cizon2-v0.6.1-windows-x86_64.exe` 与同名 `.sha256` 文件，不需要 Rust 工具链。移动到一个固定目录后，把该目录加入 PATH（见下一节）。
+在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载 `cizon2-v0.7.1-windows-x86_64.exe` 与同名 `.sha256` 文件，不需要 Rust 工具链。移动到一个固定目录后，把该目录加入 PATH（见下一节）。
 
 PowerShell 校验下载：
 
 ```powershell
-Get-FileHash .\cizon2-v0.6.1-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon2-v0.6.1-windows-x86_64.exe.sha256
+Get-FileHash .\cizon2-v0.7.1-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon2-v0.7.1-windows-x86_64.exe.sha256
 ```
 
 两个 SHA-256 值应完全一致。
@@ -106,11 +107,13 @@ hello/
 |---|---|
 | `cizon2 new <路径>` | 创建项目骨架 |
 | `cizon2 init` | 在当前目录初始化（已有文件不覆盖） |
-| `cizon2 build [--release] [--compiler <spec>]` | 构建全部 target |
-| `cizon2 run [--release] [--compiler <spec>] [<bin名>] [-- <程序参数...>]` | 构建全部 target 后运行指定 bin，并转发参数 |
+| `cizon2 build [--release] [--compiler <spec>]` | 构建全部 bin 与库 target（不构建 test） |
+| `cizon2 run [--release] [--compiler <spec>] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
+| `cizon2 test [--release] [--compiler <spec>] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
 | `cizon2 add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
 | `cizon2 update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
-| `cizon2 help` / `cizon2 version` | 帮助 / 版本 |
+| `cizon2 sync` | 从 `cizon.lock` 恢复/校验依赖（不构建） |
+| `cizon2 help [<命令>]` / `cizon2 version` | 总览或单命令详细帮助 / 版本 |
 
 ### `cizon2 new <路径>`
 
@@ -126,7 +129,7 @@ hello/
 
 ### `cizon2 build`
 
-构建配置中规划出的全部 bin、静态库与共享库，只编译过期对象。
+构建配置中规划出的全部 bin、静态库与共享库，只编译过期对象；test target 不参与 `build`。test-only 项目也能正常执行 `build`（构建其库，不产出 exe，不报错）。
 
 | 选项 | 作用 |
 |---|---|
@@ -146,7 +149,7 @@ cizon2 build --compiler clang++
 
 ### `cizon2 run`
 
-先构建全部 target，再运行选中的 bin。bin 名大小写不敏感。
+构建全部 bin 及其依赖，再运行选中的 bin；test target 不参与。bin 名大小写不敏感。
 
 ```bash
 cizon2 run                        # 项目只有一个 bin 时可省略名字
@@ -162,6 +165,25 @@ cizon2 run worker -- --port 8080  # -- 之后的参数原样传给程序
 
 给程序传参时请直接调用 `cizon2.exe`，或使用 PowerShell 别名（`Set-Alias cizon C:\path\to\cizon2.exe`）。PowerShell 函数包装可能在参数进入 cizon2 前吞掉裸 `--`。
 
+### `cizon2 test`
+
+构建选中的 test target（无过滤则全部），按声明顺序逐个运行。通过契约只有一条：**进程退出码 0 = 通过**；不解析 gtest/Catch2/doctest 的输出，也不做用例发现。
+
+```bash
+cizon2 test                              # 运行全部 test target
+cizon2 test calc_test codec_test         # 只运行指定 target，名字大小写不敏感
+cizon2 test calc_test -- --gtest_filter=Add*  # -- 后参数透传给每个选中的测试进程
+```
+
+- 与 `build` / `run` 一样接受 `--release` 与 `--compiler <spec>`；构建阶段只处理 test target 及其 `links` 依赖，`build` / `run` 不会构建或运行 test target
+- 任一 test 非 0 或崩溃即整体失败；cizon2 继续跑完其余 test，最后汇总 `passed/failed/total`
+- 子进程 stdout/stderr 都原样转发到 stderr（cizon2 的 stdout 保持为空）；`Running`、`Passed` / `Failed` 与汇总也写 stderr
+- 没有 test target 时打印 `no test targets` 并返回 0；显式指定不存在的 test 名则报错
+- test target 的源码永不定义 `-DNDEBUG`，避免 `assert` 测试被优化掉后静默变绿
+- 测试进程的工作目录是项目根；退出码翻译复用 `run` 的崩溃诊断（`ACCESS_VIOLATION`、`DLL_NOT_FOUND` 等）
+- 第一版不并行、不设超时、不生成报告文件；labels/fixtures 等 CTest 属性等真实需求再做
+- 测试框架的获取不归 cizon2 管：已编译框架用 test target 的 `extern_links`，header-only 框架直接 vendor
+
 ### `cizon2 add <git-url> [--tag <tag>]`
 
 浅克隆依赖到 `deps/<名字>`，向 `cizon.toml` 的 `[dependencies]` 追加条目，并写入 `cizon.lock`。依赖名取 URL 最后一段并去掉 `.git`，只允许字母、数字、`-` 和 `_`。
@@ -169,7 +191,7 @@ cizon2 run worker -- --port 8080  # -- 之后的参数原样传给程序
 - `--tag` 可选；省略时克隆远端默认分支
 - 依赖名已存在于 `[dependencies]`，或 `deps/<名字>` 已存在但不受管理时，拒绝执行
 - 克隆或写文件失败会回滚 `cizon.toml`、`cizon.lock` 与 `deps/<名字>`
-- 依赖缺少 `include/` 时打印布局警告，但不会阻止添加
+- 依赖缺少 `include/` 时打印一次性布局提示（不阻止添加）：header-only 库（如 doctest）可能已可通过自动 `-Ideps/<name>` 直接使用；需编译的库（如 googletest/Catch2）指路系统包管理器 + test target 的 `extern_links`
 
 ```bash
 cizon2 add https://github.com/fmtlib/fmt --tag 11.0.2
@@ -189,9 +211,19 @@ cizon2 add https://github.com/fmtlib/fmt --tag 11.0.2
 cizon2 update fmt
 ```
 
+### `cizon2 sync`
+
+从 `cizon.lock` 恢复/校验所有依赖 checkout，不构建、不改 `cizon.toml`。克隆项目后用它把依赖落地（锁是唯一真相）。需要 git，不需要编译器。
+
+```bash
+git clone <项目> && cd <项目>
+cizon2 sync
+cizon2 build
+```
+
 ### `cizon2 help` / `cizon2 version`
 
-打印用法或版本。也可使用 `--help` / `-h` 与 `--version` / `-V`。
+`cizon2 help` 打印总览；`cizon2 help <命令>`（或 `cizon2 <命令> --help` / `-h`）打印该命令的详细帮助。`cizon2 version` 打印版本；别名 `--version`、`-V`、`-v`。
 
 ## 构建输出
 
@@ -199,6 +231,7 @@ cizon2 update fmt
 - 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
 - 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
 - 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon2 run > out.txt` 只包含程序输出
+- `cizon test` 逐项打印 `Running` / `Passed` / `Failed`，最后输出 `test result: ok` 或 `FAILED`；任一 test 失败时命令退出 1，全部通过退出 0
 - 开启 `compile_commands` 且 VS Code 配置缺失时，会输出一次 `Writing .vscode/c_cpp_properties.json`（stderr）并生成该文件
 - `Finished` 的状态：
 
@@ -220,6 +253,7 @@ project/
 ├── src/                # 未显式配置 sources 的 bin 默认扫描目录
 ├── lib/                # 静态库源码示例目录；不是自动收集目录
 │   └── detail/         # 私有头示例
+├── tests/              # test target 的源码示例目录（需在 target 中声明）
 ├── deps/               # git 依赖，自动忽略
 └── build/              # 构建产物
 ```
@@ -288,11 +322,14 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | 键 | 必填 | 缺省 | 说明 |
 |---|---|---|---|
 | `cpp` | 否 | 自动探测 | `g++` → `clang++` |
+| `strict` | 否 | `false` | 展开为 `-Wall -Wextra -Wpedantic`（仅项目源码） |
+| `werror` | 否 | `false` | 追加 `-Werror`（警告即错误，仅项目源码） |
 | `flags` | 否 | 空 | 追加到项目源码的编译命令 |
 | `link_flags` | 否 | 空 | 追加到 bin 与共享库的链接命令 |
 
 - `cpp` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略。显式指定的编译器不可用时报错，不会回退；未指定时 g++ 缺失会回退到 clang++ 并打印提示。
-- `flags` 作用于所有 project target 的源码，是全局的，没有 per-target flags；不要用 `-Ilib` 把私有目录暴露给所有 target。依赖源码按 `edition`、优化级与依赖 include 编译，不继承 `flags`。
+- `strict` 与 `werror` 是警告策略的便利开关：`strict = true` 等价于 `-Wall -Wextra -Wpedantic`，`werror = true` 追加 `-Werror`。只作用于项目源码（不含依赖），用户 `flags` 在其后、仍可覆盖（如 `-Wno-...`）。优先用它们，而不是手抄同样的 `-W` flag。
+- `flags` 作用于所有 project target 的源码，是全局的，没有 per-target flags；不要用 `-Ilib` 把私有目录暴露给所有 target——安装包请用 target 的 `prefix`。依赖源码按 `edition`、优化级与依赖 include 编译，不继承 `flags`。
 - `link_flags` 只追加到 bin 和共享库的链接命令；静态库只归档、不链接。例如 GCC 下 `std::print` 需要 `-lstdc++exp`。
 
 ### `[dependencies]`
@@ -308,7 +345,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 ### `[[target]]`：库与 bin
 
-一个项目可以带静态库、共享库 target，以及一个或多个可执行 target：
+一个项目可以带静态库、共享库 target，以及一个或多个 bin / test target：
 
 ```toml
 [[target]]
@@ -333,25 +370,41 @@ name = "worker"
 kind = "bin"
 sources = ["worker"]
 links = ["shape"]
+
+[[target]]
+name = "shape_test"
+kind = "test"
+sources = ["tests"]
+links = ["shape"]                       # 只链接项目内库
+prefix = "deps/.install/googletest"     # 已安装包根目录；cizon2 由此推导 -I/-L
+extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序映射为 -l
 ```
 
-每个 target 支持四个键：
+每个 target 支持六个键：
 
 | 键 | 必填 | 说明 |
 |---|---|---|
-| `name` | 视情况 | 单个 bin 可省略，默认项目名；库和多个 bin 必须显式命名 |
-| `kind` | 是 | `bin` / `static_lib` / `shared_lib` |
-| `sources` | 视情况 | bin 可省略并扫描 `src/`；库必填且不能为空 |
-| `links` | 否 | bin 链接的库，或共享库打包的静态库 |
+| `name` | 视情况 | 单个 bin 可省略，默认项目名；库、test 和多个 bin 必须显式命名 |
+| `kind` | 是 | `bin` / `static_lib` / `shared_lib` / `test` |
+| `sources` | 视情况 | bin 可省略并扫描 `src/`；库和 test 必填且不能为空 |
+| `links` | 否 | bin/test 链接的项目内库，或共享库打包的静态库 |
+| `prefix` | 否 | 已安装包根目录；cizon2 为该 target 展开 `-I<prefix>/include`（编译）与 `-L<prefix>/lib`（链接） |
+| `extern_links` | 否 | 仅 test target：外部库名，链接时映射为 `-l<name>` |
 
 规则：
 
 - 不写 `[[target]]` 时就是传统的单可执行项目，源码来自 `[project].sources` 或 `src/`
-- 写了 `[[target]]` 后至少有一个 `kind = "bin"`；`[project].sources` 不能再使用
-- 只有一个 bin 时 `name` 可省略并默认项目名；多个 bin 时每个都必须显式命名
+- 写了 `[[target]]` 后至少有一个 `kind = "bin"` 或 `kind = "test"`；`[project].sources` 不能再使用
+- 只有一个 bin 时 `name` 可省略并默认项目名；多个 bin 时每个都必须显式命名；test 必须显式命名
+- test target 与 bin 共用编译/链接链路，但只由 `cizon test` 构建和执行；`build` / `run` 忽略它。test-only 项目可以正常 `build`（构建库，不产出 exe）
+- test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；默认 debug 的 `-g` 让 assert 消息可读，`cizon test --release` 使用 `-O2` 但同样不加 NDEBUG
+- `extern_links` 只允许 test target；cizon2 不探测、不下载、不锁版本；`-l<name>` 解析失败会给出安装提示
+- `extern_links` 按声明顺序追加；静态库依赖方在前（gtest_main 依赖 gtest，因此写 `["gtest_main", "gtest"]`）
+- `prefix` 声明已安装包根目录（项目内相对路径，必须存在）；cizon2 只为该 target 推导 `-I<prefix>/include` 与 `-L<prefix>/lib`，消费已安装库无需手写搜索路径 flag。它假设标准 `include/` + `lib/` 布局。外部构建/安装产物放在 `deps/.build/<name>` / `deps/.install/<name>`，不要铺在项目根
+- test target 的产物为 `build/<mode>-<compiler>/<name>.exe`，对象在 `test-obj/<name>/`，与 bin 的 `obj/` 完全隔离
 - target 名大小写不敏感且不能重复，还必须满足文件名校验：不能是 `obj` / `lib` / `deps-obj`、不能以 `.` 开头、不能使用 Windows 设备名等；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - `sources` 必须是项目内相对路径（不能是绝对路径或包含 `..`）；文件或目录均可，目录递归扫描；允许跨目录同名源文件
-- `static_lib` 不支持 `links`；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
+- `static_lib` 不支持 `links`；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
 - `links` 必须引用配置中已存在的 target，重复条目会报错；共享库不能链接其他共享库，DLL 之间的传递依赖交给 CMake
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
@@ -364,6 +417,16 @@ links = ["shape"]
 - 对象路径镜像源相对路径：单 bin 为 `obj/<项目相对路径>.o`；多 bin 为 `obj/<bin>/<项目相对路径>.o`；静态库为 `lib/<name>/obj/...`，共享库为 `.shared/<name>/obj/...`，依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
 - `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建源码并添加 `[[target]]`
+
+### 测试框架接入
+
+`cizon test` 不认识框架，只按进程退出码判断。常见接入方式：
+
+- **gtest（系统包）**：`pacman -S mingw-w64-ucrt-x86_64-gtest`，test target 写 `extern_links = ["gtest_main", "gtest"]`；UCRT64 的 sysroot 已包含头文件。
+- **doctest / Catch2 v2（header-only）**：把单头文件放进 `include/`（例如 `include/doctest/doctest.h`），在测试源中定义 `DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN` 或 `CATCH_CONFIG_MAIN`，不需要 `extern_links`。
+- **Catch2 v3（编译库）**：系统安装后写 `extern_links = ["Catch2Main", "Catch2"]`；没有系统包时用 CMake 构建，cizon2 不负责下载或构建框架。
+
+库名顺序按依赖方在前；静态库链接顺序敏感，gtest 必须写成 `gtest_main` 在前。
 
 ### 从 Python 调用 DLL
 
@@ -388,8 +451,9 @@ cizon2 update fmt
 - 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon2 update <名字>`。
 - `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
 - 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
-- `deps/<name>` 缺少 `include/` 时，`add` 和 `build` 会给出布局警告；非标准布局请改用该库自己的构建系统，并通过 `link_flags` 接入。
+- `deps/<name>` 缺少 `include/` 时，`add`/`update` 会给出一次性布局提示（`build`/`test` 不再重复刷屏）：header-only 库可能已可用，需编译的库改用系统包管理器 + `extern_links`，或 vendor header-only 框架。
 - 依赖源码对象会链接进 bin 与每个共享库；依赖是项目级的，不支持 per-target 依赖。
+- 外部依赖若需自行 cmake 构建/安装，构建树与安装产物放在 `deps/.build/<name>`、`deps/.install/<name>`，不要散落在项目根；项目根只保留源码目录 + `deps/` + `build/`。
 - `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
 
 ## 编辑器（clangd / VS Code）
@@ -464,7 +528,9 @@ compile_commands = true
 - 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
 - 项目源码的编译参数（edition、优化级、`[compiler].flags`、依赖 include 集合）变化：项目对象失效并重编；依赖源码只跟随 edition、优化级与依赖 include，不继承 `[compiler].flags`
 - 对象路径镜像源相对路径；旧版本对象布局会在首次构建时被识别并全量重编一次
-- 链接输入（对象清单、静态库归档、`link_flags`）变化：强制重链
+- test target 的对象在 `test-obj/<name>/`，链接状态独立；`cizon test <name>` 只构建选中的 test，不影响其他 test 的产物
+- test 源码使用剔除 `-DNDEBUG` 后的编译参数；`extern_links` 变化会改变链接指纹并触发重链
+- 链接输入（对象清单、静态库归档、`extern_links`、`link_flags`）变化：强制重链
 - 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
 - 共享库源变化：重链 DLL；import lib 指纹不变时不重链 bin；导出变化才重链 bin
 - 删除或重命名 shared target 会清理 DLL、import lib 与 `.shared` 对象
@@ -498,9 +564,17 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - 改用 clang++（MSVC 目标，使用 MSVC STL）：不需要额外库；若 clang++ 仍使用 libstdc++，同样需要 `-lstdc++exp`
 - 不使用 `<print>`，改用 `std::format` + `std::cout`
 
+### 运行时 DLL 版本冲突（Windows）
+
+症状：exe 启动即退出 `0xC0000135`（缺 DLL）或 `0xC0000139`（DLL 入口点缺失）。后者通常是 PATH 中较旧的 `libstdc++-6.dll` / `libgcc_s_seh-1.dll`（例如 Git for Windows 自带的 MinGW）遮蔽了编译器自带的运行库，gtest 等引用新符号的库会在启动时失败。
+
+cizon2 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH 最前，主动规避这种遮蔽。若仍出现（例如直接双击 exe），把编译器 bin 目录放到 PATH 前面，或用 `-static` 链接。
+
 ## 使用注意
 
-- 一个项目有一个或多个可执行 target；`cizon2 run <bin>` 选择运行，只有恰好一个 bin 时才能省略名字
+- 项目至少有一个 bin 或 test target；`cizon2 run <bin>` 只运行 bin，只有恰好一个 bin 时才能省略名字
+- `cizon2 test` 只构建并运行 test target；全部退出 0 时命令返回 0，否则返回 1；没有 test target 时返回 0 并打印 `no test targets`
+- test target 永不定义 `-DNDEBUG`；测试框架由用户提供，外部库通过 `extern_links` 显式接入
 - 不支持 `run --all`；多进程/IPC 编排请放在外部 harness
 - 静态库产物是 `.a`（GNU 归档）；`shared_lib` 产出 DLL 与 import lib
 - 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
@@ -512,8 +586,10 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - 关闭 `compile_commands` 不会删除已有的 `compile_commands.json` 或 `.vscode/c_cpp_properties.json`，不再需要时手动删除
 - 配置段或已知段内的未知键会直接报错，不会静默忽略
 - 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
+- 多个 bin/test target 的 sources 重叠（递归目录常见）会打印警告；多个 `main` 会链接失败，请用显式文件或独立目录
+- `run`/`test` 启动子进程时自动把编译器 bin 目录置于 PATH 最前，避免旧运行库 DLL 遮蔽（见故障排查）
 
-## 后续改进（未排期）
+## 后续改进（未排期与待发布）
 
 以下问题已识别，但尚未承诺实现；按真实需求与 AGENTS.md 的闸门推进。
 
@@ -529,13 +605,13 @@ cizon2 会把 `link_flags` 追加到链接命令末尾，加上后 `std::print` 
 - v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
 - 终端内 `cizon2 run --debug` 不能提供 VSCode 断点，不作为替代方案
 
-### 测试 target（v0.7 设计）
+### 测试 target（v0.7.1，已发布）
 
-- `kind = "test"` 与 bin 共用编译/链接链路，但 `build` / `run` 默认忽略 test target；只有 `cizon test` 构建并运行它们
-- 框架无关：唯一契约是进程退出码 0；`cizon test [name...] -- <args>` 支持按 target 筛选与参数透传，失败时转发子进程输出
-- 不做自动发现、框架适配或依赖下载；gtest / Catch2 v3 通过显式 `system_links` 接入，doctest / Catch2 v2 走 header-only
-- CTest 的 labels / fixtures / parallel / timeout 等先不做，等真实需求
-- 设计先于实现：用真实项目 dogfood 并通过三道闸后再开工
+- 已实现：`kind = "test"` + `cizon test`；`build` / `run` 忽略 test；退出码 0 即通过；test 源码剔除 `-DNDEBUG`
+- `extern_links` 仅 test target 可用，只做 `-l<name>` 映射；不探测、不下载、不锁版本
+- v0.7.1 透明化与便利项：per-target `prefix`（推导 `-I`/`-L`）、`[compiler] strict`/`werror`、`sync`、`help <command>`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断
+- 已在真实项目 dogfood（gtest、doctest、Catch2、原生断言）
+- CTest 的 labels / fixtures / parallel / timeout / 报告文件等按真实需求再做
 
 ### 可靠性
 

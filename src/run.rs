@@ -23,27 +23,34 @@ pub fn run(
     if let Some(note) = fallback_note {
         eprintln!("{note}");
     }
+    let compiler_name = cxx.name.clone();
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
     let result = pipeline::build_bins(dir, cfg, &plan)?;
     let exe = match bin {
         Some(name) => result
-            .bins
+            .execs
             .iter()
             .find(|(bin_name, _)| bin_name.eq_ignore_ascii_case(name))
             .map(|(_, path)| path.clone())
             .ok_or_else(|| {
                 let available = result
-                    .bins
+                    .execs
                     .iter()
                     .map(|(name, _)| name.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("unknown bin target {name}. Available bins: {available}.")
             })?,
-        None if result.bins.len() == 1 => result.bins[0].1.clone(),
+        None if result.execs.len() == 1 => result.execs[0].1.clone(),
+        None if result.execs.is_empty() => {
+            return Err(
+                "no bin target to run. `cizon2 run` only runs kind = \"bin\" targets; use `cizon2 test` for kind = \"test\"."
+                    .into(),
+            );
+        }
         None => {
             let available = result
-                .bins
+                .execs
                 .iter()
                 .map(|(name, _)| name.as_str())
                 .collect::<Vec<_>>()
@@ -59,8 +66,14 @@ pub fn run(
         pipeline::rel_display(dir, &exe)
     );
     eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
-    let mut child = std::process::Command::new(&exe)
-        .args(app_args)
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(app_args);
+    // Put the compiler's runtime DLLs first so an older libstdc++ elsewhere on PATH (e.g. Git's
+    // bundled MinGW) cannot shadow them and break the child at startup.
+    if let Some(path) = compiler::child_path(&compiler_name) {
+        cmd.env("PATH", path);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot start {}: {e}", pipeline::rel_display(dir, &exe)))?;
     let status = child
@@ -86,7 +99,7 @@ pub fn run(
 }
 
 /// Exit code: on Windows take the NTSTATUS directly; on Unix, when killed by a signal, convert to 128 + signal.
-fn exit_code(status: std::process::ExitStatus) -> i32 {
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -99,7 +112,7 @@ fn exit_code(status: std::process::ExitStatus) -> i32 {
 
 /// Exit code → plain language. Windows NTSTATUS exception codes + POSIX signal convention (ported from Cizon1).
 #[allow(clippy::manual_map)]
-fn describe_exit_code(code: i32) -> Option<&'static str> {
+pub(crate) fn describe_exit_code(code: i32) -> Option<&'static str> {
     // Windows NTSTATUS (usually negative in unsigned form)
     if cfg!(windows) {
         match code as u32 {
@@ -115,6 +128,11 @@ fn describe_exit_code(code: i32) -> Option<&'static str> {
             0xC0000135 => {
                 return Some(
                     "DLL_NOT_FOUND: missing runtime DLL; add the compiler's bin directory to PATH or link with -static",
+                );
+            }
+            0xC0000139 => {
+                return Some(
+                    "ENTRYPOINT_NOT_FOUND: a runtime DLL was found but lacks a required symbol; an older libstdc++/libgcc earlier in PATH (e.g. Git's bundled MinGW) is shadowing the compiler's runtime. Put the compiler's bin directory first in PATH, or link with -static",
                 );
             }
             0xC000013A => return Some("CONTROL_C_EXIT: terminated by Ctrl+C"),
@@ -186,6 +204,9 @@ mod tests {
         let dll_not_found = describe_exit_code(0xC0000135u32 as i32).unwrap();
         assert!(dll_not_found.contains("PATH"), "got: {dll_not_found}");
         assert!(dll_not_found.contains("-static"), "got: {dll_not_found}");
+        let entrypoint = describe_exit_code(0xC0000139u32 as i32).unwrap();
+        assert!(entrypoint.contains("ENTRYPOINT_NOT_FOUND"), "got: {entrypoint}");
+        assert!(entrypoint.contains("PATH"), "got: {entrypoint}");
     }
 
     #[cfg(unix)]
@@ -193,6 +214,33 @@ mod tests {
     fn posix_signals_named() {
         // Semantic check: 139 = 128 + 11 (SIGSEGV)
         assert!(describe_exit_code(139).unwrap().contains("SIGSEGV"));
+    }
+
+    #[test]
+    fn run_rejects_a_test_only_project() {
+        if crate::compiler::pick(None).is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "cizon2-run-test-only-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let err = run(&dir, &cfg, false, None, None, &[]).unwrap_err();
+        assert!(err.contains("no bin target"), "got: {err}");
+        assert!(err.contains("cizon2 test"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

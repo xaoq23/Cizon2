@@ -13,26 +13,22 @@ pub(super) fn write_compile_db(
 ) -> Result<(), String> {
     let mut owned: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for bin in &plan.bins {
-        owned.extend(
-            bin.sources
-                .iter()
-                .map(|s| (s.clone(), plan.flags.clone())),
-        );
+        let flags = super::compile_flags_with_prefix(&plan.flags, &bin.prefix);
+        owned.extend(bin.sources.iter().map(|s| (s.clone(), flags.clone())));
+    }
+    // Test sources use their own flags (NDEBUG stripped) so IntelliSense matches what
+    // `cizon test` compiles even though `build` never compiles them.
+    for test in &plan.tests {
+        let flags = super::compile_flags_with_prefix(&plan.test_flags, &test.prefix);
+        owned.extend(test.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     for lib in &plan.libs {
-        owned.extend(
-            lib.sources
-                .iter()
-                .map(|s| (s.clone(), plan.flags.clone())),
-        );
+        let flags = super::compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        owned.extend(lib.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     for shared in &plan.shared {
-        owned.extend(
-            shared
-                .sources
-                .iter()
-                .map(|s| (s.clone(), plan.flags.clone())),
-        );
+        let flags = super::compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        owned.extend(shared.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     owned.extend(
         dep_jobs
