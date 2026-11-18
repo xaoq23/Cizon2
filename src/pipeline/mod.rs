@@ -116,6 +116,12 @@ pub struct Plan {
     shared: Vec<SharedTarget>,
     /// "debug" / "release" — together with the compiler decides the artifact scope
     mode: &'static str,
+    /// Cross-compilation target triple, if any (from `--target` or `[compiler] target`).
+    target: Option<String>,
+    /// Sysroot from [compiler], if any.
+    sysroot: Option<String>,
+    /// True when the produced binaries are for Windows (MSVC, or a windows/mingw triple).
+    windows_target: bool,
 }
 
 impl Plan {
@@ -201,7 +207,17 @@ fn build_execs(
     };
     let started = Instant::now();
     let build_dir = dir.join("build");
-    let scope = format!("{}-{}", plan.mode, scope_label(&plan.cxx.name));
+    // Cross builds get their own scope: build/debug-g++-aarch64-linux-gnu/ never collides
+    // with a host build in build/debug-g++/, and switching back needs no clean.
+    let scope = match &plan.target {
+        Some(t) => format!(
+            "{}-{}-{}",
+            plan.mode,
+            scope_label(&plan.cxx.name),
+            scope_label(t)
+        ),
+        None => format!("{}-{}", plan.mode, scope_label(&plan.cxx.name)),
+    };
     let scope_dir = build_dir.join(&scope);
     let marker = scope_dir.join(".compiler-version");
     let marker_state = match std::fs::read_to_string(&marker) {

@@ -18,6 +18,7 @@ pub fn test(
     cfg: &Config,
     release: bool,
     cc: Option<&str>,
+    target: Option<&str>,
     names: &[String],
     app_args: &[String],
 ) -> Result<i32, String> {
@@ -38,12 +39,12 @@ pub fn test(
         ));
     }
     // Validate the filter against the planned tests up front: a typo must fail before building.
-    let (cxx, fallback_note) = compiler::pick_with_note(cc.or(cfg.explicit_compiler()))?;
+    let (cxx, fallback_note) = compiler::pick_with_note(cc.or(cfg.explicit_compiler()), target)?;
     if let Some(note) = fallback_note {
         eprintln!("{note}");
     }
     let compiler_name = cxx.name.clone();
-    let plan = pipeline::plan(dir, cfg, cxx, release)?;
+    let plan = pipeline::plan(dir, cfg, cxx, release, target)?;
     let test_names = plan.test_names();
     for name in names {
         if !test_names.iter().any(|t| t.eq_ignore_ascii_case(name)) {
@@ -175,35 +176,35 @@ mod tests {
 
     #[test]
     fn test_command_passes_and_fails_by_exit_code() {
-        if compiler::pick(None).is_err() {
+        if compiler::pick(None, None).is_err() {
             return;
         }
         let dir = write_project("pass", true);
         let cfg = crate::config::load(&dir).unwrap();
-        assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
+        assert_eq!(test(&dir, &cfg, false, None, None, &[], &[]).unwrap(), 0);
         fs::remove_dir_all(dir).ok();
 
         let dir = write_project("fail", false);
         let cfg = crate::config::load(&dir).unwrap();
-        let code = test(&dir, &cfg, false, None, &[], &[]).unwrap();
+        let code = test(&dir, &cfg, false, None, None, &[], &[]).unwrap();
         assert_eq!(code, 1, "a failing test target must exit non-zero");
         fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn test_command_filters_and_rejects_unknown_names() {
-        if compiler::pick(None).is_err() {
+        if compiler::pick(None, None).is_err() {
             return;
         }
         let dir = write_project("filter", true);
         let cfg = crate::config::load(&dir).unwrap();
         // Exact filter still works
         assert_eq!(
-            test(&dir, &cfg, false, None, &["calc_test".to_string()], &[]).unwrap(),
+            test(&dir, &cfg, false, None, None, &["calc_test".to_string()], &[]).unwrap(),
             0
         );
         // Unknown name fails before building
-        let err = test(&dir, &cfg, false, None, &["nope".to_string()], &[]).unwrap_err();
+        let err = test(&dir, &cfg, false, None, None, &["nope".to_string()], &[]).unwrap_err();
         assert!(err.contains("unknown test target"), "got: {err}");
         assert!(err.contains("calc_test"), "available tests listed: {err}");
         fs::remove_dir_all(dir).ok();
@@ -211,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_command_forwards_args_to_the_test_process() {
-        if compiler::pick(None).is_err() {
+        if compiler::pick(None, None).is_err() {
             return;
         }
         let dir = temp_dir("args");
@@ -229,11 +230,11 @@ mod tests {
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         assert_eq!(
-            test(&dir, &cfg, false, None, &[], &["x".to_string()]).unwrap(),
+            test(&dir, &cfg, false, None, None, &[], &["x".to_string()]).unwrap(),
             0
         );
         assert_eq!(
-            test(&dir, &cfg, false, None, &[], &["y".to_string()]).unwrap(),
+            test(&dir, &cfg, false, None, None, &[], &["y".to_string()]).unwrap(),
             1
         );
         fs::remove_dir_all(dir).ok();
@@ -241,7 +242,7 @@ mod tests {
 
     #[test]
     fn filtering_one_test_keeps_the_other_test_artifact() {
-        if compiler::pick(None).is_err() {
+        if compiler::pick(None, None).is_err() {
             return;
         }
         let dir = temp_dir("filter-state");
@@ -256,8 +257,8 @@ mod tests {
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = compiler::pick(None).unwrap();
-        let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = compiler::pick(None, None).unwrap();
+        let plan = pipeline::plan(&dir, &cfg, cxx, false, None).unwrap();
         let all = pipeline::build_tests(&dir, &cfg, &plan, &[]).unwrap();
         let b_exe = all
             .execs
@@ -286,21 +287,21 @@ mod tests {
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         // No tests is not a failure (CTest/cargo-like); explicitly selecting one is.
-        assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
-        let err = test(&dir, &cfg, false, None, &["nope".to_string()], &[]).unwrap_err();
+        assert_eq!(test(&dir, &cfg, false, None, None, &[], &[]).unwrap(), 0);
+        let err = test(&dir, &cfg, false, None, None, &["nope".to_string()], &[]).unwrap_err();
         assert!(err.contains("no kind = \"test\" target"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn build_ignores_test_targets_and_test_only_project_build_fails_loudly() {
-        if compiler::pick(None).is_err() {
+        if compiler::pick(None, None).is_err() {
             return;
         }
         let dir = write_project("ignore", true);
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = compiler::pick(None).unwrap();
-        let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = compiler::pick(None, None).unwrap();
+        let plan = pipeline::plan(&dir, &cfg, cxx, false, None).unwrap();
         // build must produce exactly the bin, not the test exe
         let result = pipeline::build_bins(&dir, &cfg, &plan).unwrap();
         assert_eq!(result.execs.len(), 1, "build ignores test targets");
@@ -316,7 +317,7 @@ mod tests {
         let scope = result.execs[0].1.parent().unwrap().to_path_buf();
         assert!(!scope.join("test-obj").join("calc_test").exists());
         // `cizon test` then builds and runs it
-        assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
+        assert_eq!(test(&dir, &cfg, false, None, None, &[], &[]).unwrap(), 0);
         assert!(scope.join("test-obj").join("calc_test").exists());
         fs::remove_dir_all(dir).ok();
 
@@ -331,14 +332,14 @@ mod tests {
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = compiler::pick(None).unwrap();
-        let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = compiler::pick(None, None).unwrap();
+        let plan = pipeline::plan(&dir, &cfg, cxx, false, None).unwrap();
         let built = pipeline::build_bins(&dir, &cfg, &plan).unwrap();
         assert!(
             built.execs.is_empty(),
             "test-only build must succeed without producing a bin"
         );
-        assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
+        assert_eq!(test(&dir, &cfg, false, None, None, &[], &[]).unwrap(), 0);
         fs::remove_dir_all(dir).ok();
     }
 }

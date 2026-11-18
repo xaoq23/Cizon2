@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn project_flag_change_does_not_rebuild_dependencies() {
-        if !has_git() || crate::compiler::pick(None).is_err() {
+        if !has_git() || crate::compiler::pick(None, None).is_err() {
             return;
         }
         let origin = temp("flag-origin");
@@ -823,8 +823,8 @@ mod tests {
         add_in(&proj, &add_args(&origin)).unwrap();
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         let cfg = config::load(&proj).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false, None).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
 
         let dep_obj = find_obj(&proj, Some(&name), "dep");
@@ -840,7 +840,7 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false, None).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert_eq!(mtime(&dep_obj), dep_t, "a user flags change should not recompile dependency sources");
         assert_ne!(mtime(&main_obj), main_t, "project sources should recompile with the new flags");
@@ -898,7 +898,7 @@ mod tests {
 
     #[test]
     fn dep_sources_use_their_own_headers() {
-        if !has_git() || crate::compiler::pick(None).is_err() {
+        if !has_git() || crate::compiler::pick(None, None).is_err() {
             return;
         }
         let origin_a = temp("inc-a");
@@ -917,8 +917,8 @@ mod tests {
         add_in(&proj, &add_args(&origin_b)).unwrap();
 
         let cfg = config::load(&proj).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false, None).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert!(
             Command::new(&exe).status().unwrap().success(),
@@ -1361,7 +1361,7 @@ mod tests {
         if !has_git() {
             return;
         }
-        if crate::compiler::pick(None).is_err() {
+        if crate::compiler::pick(None, None).is_err() {
             return; // skip when no compiler is available (same skip strategy as pick_finds...)
         }
         let origin = temp("e2e-origin");
@@ -1379,9 +1379,9 @@ mod tests {
         add_in(&proj, &args).unwrap();
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         let c0 = git_cmd(&origin, &["rev-parse".into(), "HEAD".into()]).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
         let cfg = config::load(&proj).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false, None).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert!(exe.is_file(), "the first build should produce an exe");
         assert!(
@@ -1396,14 +1396,14 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false, None).unwrap();
         let err = crate::pipeline::build(&proj, &cfg, &plan).unwrap_err();
         assert!(err.contains("uncommitted changes"), "got: {err}");
 
         // key contract: deps/ deleted → build automatically restores from the lock and recompiles
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let cfg = config::load(&proj).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false, None).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert_eq!(
             git_cmd(
@@ -1420,7 +1420,7 @@ mod tests {
 
     #[test]
     fn dependency_named_src_does_not_collide_with_project_src() {
-        if !has_git() || crate::compiler::pick(None).is_err() {
+        if !has_git() || crate::compiler::pick(None, None).is_err() {
             return;
         }
         let origin_parent = temp("dep-src-parent");
@@ -1437,8 +1437,8 @@ mod tests {
         add_in(&proj, &add_args(&origin)).unwrap();
 
         let cfg = config::load(&proj).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false, None).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert!(Command::new(&exe).status().unwrap().success());
         assert!(find_obj(&proj, Some("src"), "dep").is_file());

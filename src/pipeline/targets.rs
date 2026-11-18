@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::compiler::Cxx;
+use crate::compiler::{CompilerFamily, Cxx};
 use crate::config::{Config, TargetKind};
 
 use super::output::rel_display;
@@ -9,11 +9,23 @@ use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
-pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
+pub fn plan(
+    dir: &Path,
+    cfg: &Config,
+    cxx: Cxx,
+    release: bool,
+    target: Option<&str>,
+) -> Result<Plan, String> {
     // Compiler-driven file rules: MSVC objects are .obj with JSON dep files and .exe outputs;
-    // GCC/Clang use .o with .d depfiles.
+    // GCC/Clang use .o with .d depfiles. Cross-compilation extends `windows_target` with the
+    // target triple (see [compiler] target).
     let obj_ext = cxx.obj_ext();
     let dep_ext = cxx.dep_ext();
+    let windows_target = cxx.family().is_msvc()
+        || target.is_some_and(|t| {
+            let l = t.to_lowercase();
+            l.contains("windows") || l.contains("mingw")
+        });
     let (bins, tests, libs, shared) = if let Some(targets) = cfg.targets() {
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
@@ -84,8 +96,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 name: name.to_string(),
                 sources,
                 links,
-                out_name: exe_name(name),
                 extern_links: Vec::new(),
+                out_name: exe_name(name, windows_target),
                 prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("bin target {name}"))?,
             });
         }
@@ -107,7 +119,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 name: name.to_string(),
                 sources,
                 links,
-                out_name: exe_name(name),
+                out_name: exe_name(name, windows_target),
                 extern_links: target.extern_links.clone(),
                 prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("test target {name}"))?,
             });
@@ -127,7 +139,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         }
         let name = cfg.name(dir);
         let bins = vec![BinTarget {
-            out_name: exe_name(&name),
+            out_name: exe_name(&name, windows_target),
             name,
             sources,
             links: Vec::new(),
@@ -140,6 +152,19 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     let edition = cxx.edition_flag(cfg.edition());
     let mut flags = vec![edition.clone()];
     flags.extend(cxx.opt_flags(release));
+    // Cross-compilation: clang takes --target=<triple> (GCC uses the prefixed binary and
+    // needs no flag); a sysroot applies to both families. These go into flags and dep_base
+    // alike so dependency sources and the linker see the same target.
+    let mut cross_args: Vec<String> = Vec::new();
+    if let Some(t) = target {
+        if cxx.family() == CompilerFamily::Clang {
+            cross_args.push(format!("--target={t}"));
+        }
+    }
+    if let Some(sysroot) = cfg.sysroot() {
+        cross_args.push(format!("--sysroot={sysroot}"));
+    }
+    flags.extend(cross_args.iter().cloned());
     // Convenience warning switches expand to fixed flag bundles; user flags come after so they
     // can still override (e.g. -Wno-...). These apply to project sources only, never deps.
     if cfg.strict() {
@@ -171,6 +196,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     // dependencies). Kept as one flag per entry: MSVC debug expands to two (/Od /Z7).
     let mut dep_base = vec![edition];
     dep_base.extend(cxx.opt_flags(release));
+    dep_base.extend(cross_args);
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);
@@ -195,6 +221,9 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         libs,
         shared,
         mode: if release { "release" } else { "debug" },
+        target: target.map(str::to_string),
+        sysroot: cfg.sysroot().map(str::to_string),
+        windows_target,
     })
 }
 
@@ -282,8 +311,8 @@ fn resolve_exec_links(
         .collect()
 }
 
-pub(super) fn exe_name(name: &str) -> String {
-    if cfg!(target_os = "windows") {
+pub(super) fn exe_name(name: &str, windows_target: bool) -> String {
+    if windows_target {
         format!("{name}.exe")
     } else {
         name.to_string()

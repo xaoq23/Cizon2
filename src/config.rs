@@ -83,6 +83,15 @@ pub struct Target {
 #[serde(deny_unknown_fields)]
 pub struct CompilerSection {
     pub cpp: Option<String>,
+    /// Cross-compilation target triple (e.g. "aarch64-linux-gnu"): the compiler is probed
+    /// as `<triple>-g++` / `<triple>-clang++` (clang also accepts plain clang++ with
+    /// `--target=<triple>`), and build artifacts live in `build/<mode>-<compiler>-<triple>/`.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Optional sysroot passed as `--sysroot=<path>` to the compiler (and to CMake-built
+    /// dependencies as `-DCMAKE_SYSROOT`).
+    #[serde(default)]
+    pub sysroot: Option<String>,
     /// Convenience switch: expand to `-Wall -Wextra -Wpedantic` for project sources (not deps).
     #[serde(default)]
     pub strict: bool,
@@ -410,6 +419,40 @@ pub fn load(dir: &Path) -> Result<Config, String> {
             return Err("[project].version must not contain control characters.".into());
         }
     }
+    if let Some(target) = cfg.compiler.as_ref().and_then(|c| c.target.as_deref()) {
+        let ok = !target.is_empty()
+            && target.contains('-')
+            && target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !ok {
+            return Err(format!(
+                "[compiler].target {target:?} is invalid: expected a target triple such as 'aarch64-linux-gnu' (letters, digits, - _ . only, at least one dash)."
+            ));
+        }
+    }
+    if let Some(sysroot) = cfg.compiler.as_ref().and_then(|c| c.sysroot.as_deref()) {
+        if sysroot.trim().is_empty() {
+            return Err("[compiler].sysroot must not be empty.".into());
+        }
+    }
+    if let Some(target) = cfg.compiler.as_ref().and_then(|c| c.target.as_deref()) {
+        let ok = !target.is_empty()
+            && target.contains('-')
+            && target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !ok {
+            return Err(format!(
+                "[compiler].target {target:?} is invalid: expected a target triple such as \"aarch64-linux-gnu\" (letters, digits, - _ . only, at least one dash)."
+            ));
+        }
+    }
+    if let Some(sysroot) = cfg.compiler.as_ref().and_then(|c| c.sysroot.as_deref()) {
+        if sysroot.trim().is_empty() {
+            return Err("[compiler].sysroot must not be empty.".into());
+        }
+    }
     if let Some(deps) = &cfg.dependencies {
         for name in deps.keys() {
             if !is_valid_dep_name(name) {
@@ -473,6 +516,16 @@ impl Config {
 
     pub fn explicit_compiler(&self) -> Option<&str> {
         self.compiler.as_ref().and_then(|c| c.cpp.as_deref())
+    }
+
+    /// Cross-compilation target triple from [compiler], if any.
+    pub fn target(&self) -> Option<&str> {
+        self.compiler.as_ref().and_then(|c| c.target.as_deref())
+    }
+
+    /// Sysroot from [compiler], if any.
+    pub fn sysroot(&self) -> Option<&str> {
+        self.compiler.as_ref().and_then(|c| c.sysroot.as_deref())
     }
 
     /// The declared git dependencies ([dependencies]); BTreeMap keeps the iteration order stable.
@@ -550,6 +603,29 @@ mod tests {
         let (dir, cfg) = write_config("[project]\n");
         let fallback = Path::new(&dir);
         assert_eq!(cfg.name(fallback), dir.file_name().unwrap().to_string_lossy());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compiler_target_and_sysroot_parse() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"a\"\n\n[compiler]\ntarget = \"aarch64-linux-gnu\"\nsysroot = \"/opt/sysroot\"\n",
+        );
+        assert_eq!(cfg.target(), Some("aarch64-linux-gnu"));
+        assert_eq!(cfg.sysroot(), Some("/opt/sysroot"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn compiler_target_must_look_like_a_triple() {
+        let dir = temp_dir("bad-triple");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[compiler]\ntarget = \"not a triple\"\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("aarch64-linux-gnu"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 

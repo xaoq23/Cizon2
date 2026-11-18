@@ -269,12 +269,72 @@ fn probe_vswhere() -> Option<Cxx> {
 
 /// An explicit choice (`--compiler` / `[compiler].cpp`) takes priority, otherwise auto-detect by preference.
 #[cfg(test)]
-pub fn pick(explicit: Option<&str>) -> Result<Cxx, String> {
-    pick_with_note(explicit).map(|(cxx, _)| cxx)
+pub fn pick(explicit: Option<&str>, target: Option<&str>) -> Result<Cxx, String> {
+    pick_with_note(explicit, target).map(|(cxx, _)| cxx)
 }
 
 /// Like `pick`, but also reports when auto-detection had to skip a preferred compiler.
-pub fn pick_with_note(explicit: Option<&str>) -> Result<(Cxx, Option<String>), String> {
+///
+/// With a cross-compilation `target`, a bare compiler name is prefixed with the triple
+/// (`aarch64-linux-gnu-g++`); a full path is used as-is. Plain clang++ is also accepted
+/// because plan() passes `--target=<triple>` to it.
+pub fn pick_with_note(
+    explicit: Option<&str>,
+    target: Option<&str>,
+) -> Result<(Cxx, Option<String>), String> {
+    if let Some(triple) = target {
+        if let Some(spec) = explicit {
+            let name = resolve_spec(spec);
+            if spec.contains('/') || spec.contains('\\') {
+                return probe(name)
+                    .map(|cxx| (cxx, None))
+                    .ok_or_else(|| {
+                        format!("The specified compiler {name} is not available. Check the spelling, or drop --compiler to let cizon2 auto-detect.")
+                    });
+            }
+            let prefixed = format!("{triple}-{name}");
+            if let Some(cxx) = probe(&prefixed) {
+                return Ok((cxx, None));
+            }
+            if name.to_ascii_lowercase().contains("clang") {
+                if let Some(cxx) = probe(name) {
+                    return Ok((cxx, None));
+                }
+            }
+            return Err(format!(
+                "No cross compiler found for target {triple} (tried {prefixed}). Install the {triple} toolchain, or point [compiler] cpp at the cross compiler binary."
+            ));
+        }
+        let mut missing: Vec<String> = Vec::new();
+        for base in PREFERENCE {
+            let prefixed = format!("{triple}-{base}");
+            if let Some(cxx) = probe(&prefixed) {
+                let note = if missing.is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "{} not found; using {} (compiler flavor and ABI may differ)",
+                        missing.join(", "),
+                        cxx.name
+                    ))
+                };
+                return Ok((cxx, note));
+            }
+            missing.push(prefixed);
+        }
+        if let Some(cxx) = probe("clang++") {
+            let note = Some(format!(
+                "{} not found; using {} with --target={triple} (compiler flavor and ABI may differ)",
+                missing.join(", "),
+                cxx.name
+            ));
+            return Ok((cxx, note));
+        }
+        return Err(format!(
+            "No cross compiler found for target {triple} (tried {}). Install the {triple} toolchain, or point [compiler] cpp at the cross compiler binary.",
+            missing.join(", ")
+        ));
+    }
     if let Some(spec) = explicit {
         let name = resolve_spec(spec);
         return probe(name)
@@ -363,6 +423,18 @@ pub fn child_path(name: &str) -> Option<std::ffi::OsString> {
     std::env::join_paths(paths).ok()
 }
 
+/// The tool prefix of a cross compiler binary: "aarch64-linux-gnu-g++" ->
+/// "aarch64-linux-gnu-", "/usr/bin/aarch64-linux-gnu-clang++" ->
+/// "/usr/bin/aarch64-linux-gnu-"; a host compiler yields "".
+fn tool_prefix(name: &str) -> &str {
+    for suffix in ["clang++", "g++", "clang", "gcc"] {
+        if let Some(prefix) = name.strip_suffix(suffix) {
+            return prefix;
+        }
+    }
+    ""
+}
+
 /// Static library archiver: MSVC uses lib.exe; clang prefers llvm-ar, otherwise ar.
 /// Look first in the compiler's own directory (when --compiler points to a full path, LLVM/MinGW may not be in PATH), then in PATH.
 pub fn archiver(cxx: &Cxx) -> Result<String, String> {
@@ -400,21 +472,31 @@ pub fn archiver(cxx: &Cxx) -> Result<String, String> {
         return Err("No static library archiver found (lib.exe). Install Visual Studio (MSVC) and add it to PATH, or hand the static library over to CMake.".into());
     }
     let clang = cxx.name.to_ascii_lowercase().contains("clang");
-    let names: &[&str] = if clang {
-        &["llvm-ar", "ar"]
+    // Cross compilers come with a prefixed archiver (aarch64-linux-gnu-ar, llvm-ar for
+    // clang); a host compiler has no prefix, so the list collapses to the old one.
+    let prefix = tool_prefix(&cxx.name);
+    // The unprefixed names stay in the list as a fallback: a compiler with an odd name
+    // (tool_prefix strips any trailing "gcc"/"g++") must not lose plain `ar` entirely.
+    let mut names: Vec<String> = if clang {
+        vec![format!("{prefix}llvm-ar"), format!("{prefix}ar")]
     } else {
-        &["ar", "llvm-ar"]
+        vec![format!("{prefix}ar"), format!("{prefix}llvm-ar")]
     };
+    for fallback in ["llvm-ar", "ar"] {
+        if !names.iter().any(|n| n == fallback) {
+            names.push(fallback.to_string());
+        }
+    }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(parent) = Path::new(&cxx.name).parent() {
         if !parent.as_os_str().is_empty() {
-            for name in names {
+            for name in &names {
                 candidates.push(parent.join(format!("{name}.exe")));
                 candidates.push(parent.join(name));
             }
         }
     }
-    for name in names {
+    for name in &names {
         candidates.push(PathBuf::from(name));
     }
     for candidate in candidates {
@@ -498,7 +580,7 @@ mod tests {
 
     #[test]
     fn pick_with_note_reports_fallback_consistently() {
-        let (cxx, note) = pick_with_note(None).unwrap();
+        let (cxx, note) = pick_with_note(None, None).unwrap();
         if cxx.name == PREFERENCE[0] {
             assert!(note.is_none(), "unexpected fallback note: {note:?}");
         } else {
@@ -548,7 +630,7 @@ mod tests {
 
     #[test]
     fn pick_rejects_bad_explicit_spec() {
-        assert!(pick(Some("cizon2-not-a-compiler-xyz")).is_err());
+        assert!(pick(Some("cizon2-not-a-compiler-xyz"), None).is_err());
     }
 
     #[test]
@@ -563,7 +645,7 @@ mod tests {
         let Some(expected) = expected else {
             return; // skip when no compiler is available
         };
-        assert_eq!(pick(None).unwrap().name, *expected);
+        assert_eq!(pick(None, None).unwrap().name, *expected);
     }
 
     #[test]
@@ -577,6 +659,34 @@ mod tests {
         assert_eq!(first, exe.parent().unwrap());
     }
 
+    #[test]
+    fn tool_prefix_strips_compiler_suffix() {
+        assert_eq!(tool_prefix("g++"), "");
+        assert_eq!(tool_prefix("/usr/bin/clang++"), "/usr/bin/");
+        assert_eq!(tool_prefix("aarch64-linux-gnu-g++"), "aarch64-linux-gnu-");
+        assert_eq!(tool_prefix("aarch64-linux-gnu-clang++"), "aarch64-linux-gnu-");
+        assert_eq!(tool_prefix("x86_64-w64-mingw32-g++"), "x86_64-w64-mingw32-");
+    }
+
+    #[test]
+    fn pick_with_target_uses_prefixed_compiler() {
+        // The real cross compiler installed in this environment, by full path.
+        let path = "/usr/bin/aarch64-linux-gnu-g++";
+        if !std::path::Path::new(path).is_file() {
+            return;
+        }
+        let cxx = pick(Some(path), Some("aarch64-linux-gnu")).unwrap();
+        assert_eq!(cxx.name, path);
+    }
+
+    #[test]
+    fn pick_with_target_errors_when_no_cross_compiler_exists() {
+        let err = pick(Some("g++"), Some("no-such-triple-xyz")).unwrap_err();
+        assert!(err.contains("no-such-triple-xyz"), "got: {err}");
+        assert!(err.contains("no-such-triple-xyz-g++"), "got: {err}");
+    }
+
+    #[test]
     fn family_of_classifies_by_executable_stem() {
         assert_eq!(family_of("g++"), CompilerFamily::Gnu);
         assert_eq!(family_of("/usr/bin/clang++"), CompilerFamily::Clang);

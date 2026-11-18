@@ -15,16 +15,17 @@ pub fn run(
     cfg: &Config,
     release: bool,
     cc: Option<&str>,
+    target: Option<&str>,
     bin: Option<&str>,
     app_args: &[String],
 ) -> Result<i32, String> {
     let (cxx, fallback_note) =
-        compiler::pick_with_note(cc.or(cfg.explicit_compiler()))?;
+        compiler::pick_with_note(cc.or(cfg.explicit_compiler()), target)?;
     if let Some(note) = fallback_note {
         eprintln!("{note}");
     }
     let compiler_name = cxx.name.clone();
-    let plan = pipeline::plan(dir, cfg, cxx, release)?;
+    let plan = pipeline::plan(dir, cfg, cxx, release, target)?;
     let result = pipeline::build_bins(dir, cfg, &plan)?;
     let exe = match bin {
         Some(name) => result
@@ -167,7 +168,7 @@ mod tests {
 
     #[test]
     fn run_forwards_args_and_exit_code() {
-        if crate::compiler::pick(None).is_err() {
+        if crate::compiler::pick(None, None).is_err() {
             return;
         }
         let dir = std::env::temp_dir().join(format!(
@@ -186,7 +187,7 @@ mod tests {
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let args = vec!["a".to_string(), "b".to_string()];
-        assert_eq!(run(&dir, &cfg, false, None, None, &args).unwrap(), 7);
+        assert_eq!(run(&dir, &cfg, false, None, None, None, &args).unwrap(), 7);
         fs::remove_dir_all(dir).ok();
     }
 
@@ -218,7 +219,7 @@ mod tests {
 
     #[test]
     fn run_rejects_a_test_only_project() {
-        if crate::compiler::pick(None).is_err() {
+        if crate::compiler::pick(None, None).is_err() {
             return;
         }
         let dir = std::env::temp_dir().join(format!(
@@ -237,7 +238,7 @@ mod tests {
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let err = run(&dir, &cfg, false, None, None, &[]).unwrap_err();
+        let err = run(&dir, &cfg, false, None, None, None, &[]).unwrap_err();
         assert!(err.contains("no bin target"), "got: {err}");
         assert!(err.contains("cizon2 test"), "got: {err}");
         fs::remove_dir_all(dir).ok();

@@ -24,9 +24,9 @@ Usage:
   cizon2 add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
   cizon2 update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
   cizon2 sync                        # restore/verify deps from cizon.lock (no build)
-  cizon2 build [--release] [--compiler <spec>]
-  cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]
-  cizon2 test [--release] [--compiler <spec>] [<test-name>...] [-- <test args...>]
+  cizon2 build [--release] [--compiler <spec>] [--target <triple>]
+  cizon2 run [--release] [--compiler <spec>] [--target <triple>] [<bin-name>] [-- <program args...>]
+  cizon2 test [--release] [--compiler <spec>] [--target <triple>] [<test-name>...] [-- <test args...>]
   cizon2 help [<command>]            # general or per-command help
   cizon2 version                     # print version
 
@@ -129,18 +129,20 @@ Accepts no arguments.",
         "build" => "\
 cizon2 build — build all bin and library targets (not tests)
 
-Usage: cizon2 build [--release] [--compiler <spec>]
+Usage: cizon2 build [--release] [--compiler <spec>] [--target <triple>]
 
 Options:
   --release          optimize (-O2); the default debug build uses -g
   --compiler <spec>  use g++, clang++ or a full path for this build
+  --target <triple>  cross-compile for a target triple, e.g. aarch64-linux-gnu
 
-Compiles only stale objects; artifacts live under build/<mode>-<compiler>/.
+Compiles only stale objects; artifacts live under build/<mode>-<compiler>/, or
+build/<mode>-<compiler>-<triple>/ for a cross build.
 Test targets are ignored — use `cizon2 test` for those.",
         "run" => "\
 cizon2 run — build, then run a bin target
 
-Usage: cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]
+Usage: cizon2 run [--release] [--compiler <spec>] [--target <triple>] [<bin-name>] [-- <program args...>]
 
 The bin name is optional only when the project has exactly one bin. Everything after
 -- is passed to the program, and the program's exit code is forwarded.
@@ -151,7 +153,7 @@ Examples:
         "test" => "\
 cizon2 test — build and run test targets
 
-Usage: cizon2 test [--release] [--compiler <spec>] [<test-name>...] [-- <test args...>]
+Usage: cizon2 test [--release] [--compiler <spec>] [--target <triple>] [<test-name>...] [-- <test args...>]
 
 Runs the selected test targets (all when none are named), in declaration order. A test
 passes iff its process exits 0; any failure exits 1. Test output goes to stderr.
@@ -205,11 +207,12 @@ Aliases: --version, -V, -v.",
 struct Flags {
     release: bool,
     cc: Option<String>,
+    target: Option<String>,
 }
 
 /// Parse flags up to `--`; everything after it is passed through.
 fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, target: None };
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
@@ -220,6 +223,14 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
                     continue;
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
+            },
+            "--target" => match args.get(1) {
+                Some(triple) if !triple.is_empty() && !triple.starts_with('-') => {
+                    flags.target = Some(triple.clone());
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--target requires an argument, e.g. --target aarch64-linux-gnu".into()),
             },
             "--" => {
                 args = &args[1..];
@@ -236,7 +247,7 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
 fn parse_run_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Option<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, target: None };
     let mut bin = None;
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -248,6 +259,14 @@ fn parse_run_args<'a>(
                     continue;
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
+            },
+            "--target" => match args.get(1) {
+                Some(triple) if !triple.is_empty() && !triple.starts_with('-') => {
+                    flags.target = Some(triple.clone());
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--target requires an argument, e.g. --target aarch64-linux-gnu".into()),
             },
             "--" => return Ok((flags, bin, &args[1..])),
             other if !other.starts_with('-') => {
@@ -281,12 +300,13 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
         return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
     let (dir, cfg) = load_config()?;
+    let target = flags.target.as_deref().or(cfg.target());
     let (cxx, fallback_note) =
-        compiler::pick_with_note(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
+        compiler::pick_with_note(flags.cc.as_deref().or(cfg.explicit_compiler()), target)?;
     if let Some(note) = fallback_note {
         eprintln!("{note}");
     }
-    let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
+    let plan = pipeline::plan(&dir, &cfg, cxx, flags.release, target)?;
     // A test-only project has no bin to return; building its libraries is still useful and must
     // not be reported as an error.
     pipeline::build_bins(&dir, &cfg, &plan).map(|_| 0)
@@ -300,6 +320,7 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
         &cfg,
         flags.release,
         flags.cc.as_deref(),
+        flags.target.as_deref().or(cfg.target()),
         bin.as_deref(),
         app_args,
     )
@@ -309,7 +330,7 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
 fn parse_test_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Vec<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, target: None };
     let mut names = Vec::new();
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -321,6 +342,14 @@ fn parse_test_args<'a>(
                     continue;
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
+            },
+            "--target" => match args.get(1) {
+                Some(triple) if !triple.is_empty() && !triple.starts_with('-') => {
+                    flags.target = Some(triple.clone());
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--target requires an argument, e.g. --target aarch64-linux-gnu".into()),
             },
             "--" => return Ok((flags, names, &args[1..])),
             other if !other.starts_with('-') => names.push(other.to_string()),
@@ -343,6 +372,7 @@ fn test_cmd(args: &[String]) -> Result<i32, String> {
         &cfg,
         flags.release,
         flags.cc.as_deref(),
+        flags.target.as_deref().or(cfg.target()),
         &names,
         app_args,
     )

@@ -51,7 +51,7 @@
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let p = plan(&dir, &cfg, cxx, false, None).unwrap();
         assert_eq!(p.flags.iter().filter(|f| *f == "-Wall").count(), 1);
         assert!(!p.flags.iter().any(|f| f == "-lm"));
         assert_eq!(p.link_flags, vec!["-lm".to_string()]);
@@ -168,11 +168,36 @@
             libs: vec![],
             shared: vec![],
             mode: "debug",
+            target: None,
+            sysroot: None,
+            windows_target: false,
         };
         let flags = p.dep_flags_for("b");
         let pos = |needle: &str| flags.iter().position(|f| f == needle).unwrap();
         assert!(pos("-I/b/include") < pos("-I/a"), "own headers must precede other dependencies");
         assert!(pos("-I/b") < pos("-I/a"));
+    }
+
+    #[test]
+    fn cross_plan_passes_target_to_clang_only() {
+        let dir = temp_dir("cross-plan");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        std::fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let clang = Cxx { name: "clang++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, clang, false, Some("aarch64-linux-gnu")).unwrap();
+        assert!(p.flags.iter().any(|f| f == "--target=aarch64-linux-gnu"), "flags: {:?}", p.flags);
+        assert_eq!(p.target.as_deref(), Some("aarch64-linux-gnu"));
+        assert!(!p.windows_target);
+        let gnu = Cxx { name: "aarch64-linux-gnu-g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, gnu, false, Some("aarch64-linux-gnu")).unwrap();
+        assert!(!p.flags.iter().any(|f| f.starts_with("--target=")), "flags: {:?}", p.flags);
+        let mingw = Cxx { name: "x86_64-w64-mingw32-g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, mingw, false, Some("x86_64-w64-mingw32")).unwrap();
+        assert!(p.windows_target);
+        assert!(p.bins[0].out_name.ends_with(".exe"), "out: {}", p.bins[0].out_name);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -248,7 +273,7 @@
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("No .cpp file under src"), "got: {err}");
         assert!(!err.contains(&dir.display().to_string()), "got: {err}");
         fs::remove_dir_all(dir).ok();
@@ -265,7 +290,7 @@
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("[project] sources"), "got: {err}");
         assert!(!err.contains("Put source code in src/"), "got: {err}");
         fs::remove_dir_all(dir).ok();
@@ -393,7 +418,7 @@
     // when nothing changed, objects and exe must not move a single byte.
 
     fn have_compiler() -> bool {
-        crate::compiler::pick(None).is_ok()
+        crate::compiler::pick(None, None).is_ok()
     }
 
     fn shared_supported() -> bool {
@@ -402,8 +427,8 @@
 
     fn build_project(dir: &Path) -> Result<PathBuf, String> {
         let cfg = crate::config::load(dir)?;
-        let cxx = crate::compiler::pick(None)?;
-        let plan = plan(dir, &cfg, cxx, false)?;
+        let cxx = crate::compiler::pick(None, None)?;
+        let plan = plan(dir, &cfg, cxx, false, None)?;
         build(dir, &cfg, &plan)
     }
 
@@ -661,7 +686,7 @@
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("outside the project"), "got: {err}");
         remove_dir_link(&dir.join("src"));
         fs::remove_dir_all(dir).ok();
@@ -686,7 +711,7 @@
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("outside the project"), "got: {err}");
         remove_dir_link(&dir.join("applink"));
         fs::remove_dir_all(dir).ok();
@@ -702,7 +727,7 @@
         fs::write(dir.join("cizon.toml"), "[project]\nname=\"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let p = plan(&dir, &cfg, cxx, false, None).unwrap();
         let expected = format!("-I{}", dir.join("include").display());
         assert!(p.flags.contains(&expected), "flags missing {expected}: {:?}", p.flags);
         fs::remove_dir_all(dir).ok();
@@ -1067,16 +1092,16 @@
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         let cfg = crate::config::load(&dir).unwrap();
 
-        let mut cxx = crate::compiler::pick(None).unwrap();
+        let mut cxx = crate::compiler::pick(None, None).unwrap();
         cxx.version = "test-v1".into();
-        let p1 = plan(&dir, &cfg, cxx.clone(), false).unwrap();
+        let p1 = plan(&dir, &cfg, cxx.clone(), false, None).unwrap();
         build(&dir, &cfg, &p1).unwrap();
         let obj = obj_path(&dir, "main");
         let obj_t = mtime(&obj);
 
         std::thread::sleep(std::time::Duration::from_millis(50));
         cxx.version = "test-v2".into();
-        let p2 = plan(&dir, &cfg, cxx, false).unwrap();
+        let p2 = plan(&dir, &cfg, cxx, false, None).unwrap();
         build(&dir, &cfg, &p2).unwrap();
         assert_ne!(mtime(&obj), obj_t, "a compiler version change must invalidate the whole scope");
         fs::remove_dir_all(dir).ok();
@@ -1131,7 +1156,7 @@
 
     fn libs_supported() -> bool {
         have_compiler()
-            && crate::compiler::pick(None)
+            && crate::compiler::pick(None, None)
                 .ok()
                 .is_some_and(|cxx| crate::compiler::archiver(&cxx).is_ok())
     }
@@ -1331,7 +1356,7 @@
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("empty path"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -1350,7 +1375,7 @@
             .unwrap();
             let cfg = crate::config::load(&dir).unwrap();
             let cxx = Cxx { name: "g++".into(), version: "test".into() };
-            let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+            let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
             assert!(
                 err.contains("project-relative path") || err.contains("project root"),
                 "source={bad:?} got: {err}"
@@ -1730,8 +1755,8 @@
 
     fn build_bins_project(dir: &Path) -> BuildResult {
         let cfg = crate::config::load(dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let plan = plan(dir, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let plan = plan(dir, &cfg, cxx, false, None).unwrap();
         build_bins(dir, &cfg, &plan).unwrap()
     }
 
@@ -1750,13 +1775,13 @@
 
         let cfg = crate::config::load(&dir).unwrap();
         assert_eq!(
-            crate::run::run(&dir, &cfg, false, None, Some("two"), &[]).unwrap(),
+            crate::run::run(&dir, &cfg, false, None, None, Some("two"), &[]).unwrap(),
             2
         );
-        assert!(crate::run::run(&dir, &cfg, false, None, None, &[])
+        assert!(crate::run::run(&dir, &cfg, false, None, None, None, &[])
             .unwrap_err()
             .contains("multiple bin targets"));
-        assert!(crate::run::run(&dir, &cfg, false, None, Some("missing"), &[])
+        assert!(crate::run::run(&dir, &cfg, false, None, None, Some("missing"), &[])
             .unwrap_err()
             .contains("unknown bin target"));
         fs::remove_dir_all(dir).ok();
@@ -1876,8 +1901,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let plan = plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let plan = plan(&dir, &cfg, cxx, false, None).unwrap();
         let result = super::build_tests(&dir, &cfg, &plan, &[]).unwrap();
         assert_eq!(result.execs.len(), 1);
         assert_eq!(run_code(&result.execs[0].1), 0, "extern_links -lm must link and run");
@@ -1900,8 +1925,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let first_plan = plan(&dir, &cfg, cxx.clone(), false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let first_plan = plan(&dir, &cfg, cxx.clone(), false, None).unwrap();
         let result = super::build_tests(&dir, &cfg, &first_plan, &[]).unwrap();
         let exe = result.execs[0].1.clone();
         let exe_t = mtime(&exe);
@@ -1914,7 +1939,7 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let second_plan = plan(&dir, &cfg, cxx, false).unwrap();
+        let second_plan = plan(&dir, &cfg, cxx, false, None).unwrap();
         super::build_tests(&dir, &cfg, &second_plan, &[]).unwrap();
         assert_ne!(mtime(&exe), exe_t, "a extern_links change must relink");
         fs::remove_dir_all(dir).ok();
@@ -1940,8 +1965,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false, None).unwrap();
         assert!(
             p.flags.iter().any(|f| f == "-DNDEBUG"),
             "user flags must still reach normal targets"
@@ -1974,8 +1999,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false, None).unwrap();
         for f in ["-Wall", "-Wextra", "-Wpedantic", "-Werror"] {
             assert!(p.flags.iter().any(|x| x == f), "missing {f}: {:?}", p.flags);
         }
@@ -2012,8 +2037,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false, None).unwrap();
         let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
         assert_eq!(run_code(&result.execs[0].1), 0, "prefix include path must resolve");
         fs::remove_dir_all(dir).ok();
@@ -2034,8 +2059,8 @@
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
-        let cxx = crate::compiler::pick(None).unwrap();
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        let cxx = crate::compiler::pick(None, None).unwrap();
+        let err = plan(&dir, &cfg, cxx, false, None).unwrap_err();
         assert!(err.contains("prefix"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
