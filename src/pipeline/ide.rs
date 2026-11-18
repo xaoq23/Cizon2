@@ -12,6 +12,14 @@ pub(super) fn write_compile_db(
     dep_jobs: &[(String, PathBuf, PathBuf)],
 ) -> Result<(), String> {
     let mut owned: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    // Mirror the real compile flags: objects that may land in a Linux .so are compiled -fPIC.
+    let with_pic = |flags: Vec<String>| -> Vec<String> {
+        let mut flags = flags;
+        if super::state::pic_for_shared(plan) {
+            flags.push("-fPIC".to_string());
+        }
+        flags
+    };
     for bin in &plan.bins {
         let flags = super::compile_flags_with_prefix(&plan.flags, &bin.prefix);
         owned.extend(bin.sources.iter().map(|s| (s.clone(), flags.clone())));
@@ -23,17 +31,17 @@ pub(super) fn write_compile_db(
         owned.extend(test.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     for lib in &plan.libs {
-        let flags = super::compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        let flags = with_pic(super::compile_flags_with_prefix(&plan.flags, &lib.prefix));
         owned.extend(lib.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     for shared in &plan.shared {
-        let flags = super::compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        let flags = with_pic(super::compile_flags_with_prefix(&plan.flags, &shared.prefix));
         owned.extend(shared.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     owned.extend(
         dep_jobs
             .iter()
-            .map(|(name, src, _)| (src.clone(), plan.dep_flags_for(name))),
+            .map(|(name, src, _)| (src.clone(), with_pic(plan.dep_flags_for(name)))),
     );
     let entries: Vec<(&Path, &[String])> = owned
         .iter()

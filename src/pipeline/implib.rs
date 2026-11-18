@@ -9,14 +9,20 @@ use super::compile::replace_file;
 pub(super) enum ImportLibFlavor {
     Gnu,
     Msvc,
+    /// ELF (Linux): there is no import library; the .so itself is the link artifact, linked by
+    /// name (`-l<name>`) with an rpath of `$ORIGIN`.
+    Elf,
 }
 
 /// Generated import libraries are archives whose header timestamps change on every link.
 /// Hash member names and payloads only, so an unchanged export surface keeps the same fingerprint.
+/// A non-archive file (an ELF .so) is hashed whole: on Linux the fingerprint is content-based,
+/// so an implementation-only change relinks the bin as well (coarser than the Windows import-lib
+/// fingerprint, but correct).
 pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     if data.len() < 8 || &data[..8] != b"!<arch>\n" {
-        return Err(format!("{} is not a GNU archive.", path.display()));
+        return Ok(hash_bytes(&data));
     }
     let mut hash = 0xcbf29ce484222325u64;
     let mut offset = 8usize;
@@ -41,6 +47,15 @@ pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
     Ok(format!("{hash:016x}"))
 }
 
+fn hash_bytes(data: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// Keep the old import library untouched when the new one has the same semantic fingerprint.
 pub(super) fn adopt(tmp: &Path, final_path: &Path) -> Result<String, String> {
     let new_fp = fingerprint(tmp)?;
@@ -54,9 +69,15 @@ pub(super) fn adopt(tmp: &Path, final_path: &Path) -> Result<String, String> {
 }
 
 pub(super) fn flavor(cxx: &Cxx) -> Result<ImportLibFlavor, String> {
+    // On Linux there is no import library and no toolchain flavor to distinguish: every shared
+    // target is an ELF .so.
+    if cfg!(target_os = "linux") {
+        return Ok(ImportLibFlavor::Elf);
+    }
     if !cfg!(windows) {
         return Err(
-            "shared_lib is supported on Windows only (MinGW or clang++ MSVC target).".into(),
+            "shared_lib is supported on Windows and Linux only (MinGW, clang++ MSVC target, or ELF)."
+                .into(),
         );
     }
     let out = Command::new(&cxx.name)
@@ -93,6 +114,8 @@ pub(super) fn import_lib_path(
     match flavor {
         ImportLibFlavor::Gnu => dir.join(format!("lib{name}.dll.a")),
         ImportLibFlavor::Msvc => dir.join(format!("{name}.lib")),
+        // No import library on Linux: the .so itself is the link artifact.
+        ImportLibFlavor::Elf => dll_path(scope_dir, name),
     }
 }
 
@@ -100,6 +123,8 @@ pub(super) fn import_lib_arg(path: &Path, flavor: ImportLibFlavor) -> String {
     match flavor {
         ImportLibFlavor::Gnu => format!("-Wl,--out-implib,{}", path.display()),
         ImportLibFlavor::Msvc => format!("-Wl,/implib:{}", path.display()),
+        // No import library is generated on Linux; link_shared skips an empty argument.
+        ImportLibFlavor::Elf => String::new(),
     }
 }
 
@@ -172,6 +197,27 @@ mod tests {
         let msvc = import_lib_path(scope, "core", ImportLibFlavor::Msvc);
         assert!(msvc.ends_with(".shared/core/core.lib"));
         assert!(import_lib_arg(&msvc, ImportLibFlavor::Msvc).contains("/implib:"));
+
+        // ELF has no import library: the .so itself is the link artifact, and the path is
+        // platform-shaped (dll_path), so assert that relation rather than a hard-coded ".so".
+        let elf = import_lib_path(scope, "core", ImportLibFlavor::Elf);
+        assert_eq!(elf, dll_path(scope, "core"));
+        assert_eq!(import_lib_arg(&elf, ImportLibFlavor::Elf), "");
+        #[cfg(unix)]
+        assert!(elf.ends_with("libcore.so"));
+    }
+
+    #[test]
+    fn fingerprint_hashes_a_non_archive_file_whole() {
+        let dir = temp("whole");
+        let a = dir.join("a.so");
+        let b = dir.join("b.so");
+        std::fs::write(&a, b"ELF payload one").unwrap();
+        std::fs::write(&b, b"ELF payload one").unwrap();
+        assert_eq!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        std::fs::write(&b, b"ELF payload two").unwrap();
+        assert_ne!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

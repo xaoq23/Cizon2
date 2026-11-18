@@ -327,6 +327,16 @@ fn build_execs(
         }
     }
 
+    // Linux shared libraries need position-independent objects: the .so itself, plus the static
+    // libraries and dependency objects linked into it. Resolve the flavor once, before compiling,
+    // so an unsupported toolchain fails early.
+    let shared_flavor = if plan.shared.is_empty() {
+        None
+    } else {
+        Some(flavor(&plan.cxx)?)
+    };
+    let pic_shared = matches!(shared_flavor, Some(ImportLibFlavor::Elf));
+
     // 1) Determine which sources need recompiling
     let mut jobs: Vec<Job> = Vec::new(); // project sources
     for bin in &execs {
@@ -341,15 +351,22 @@ fn build_execs(
     }
     for (name, dsrc, dobj) in &dep_jobs {
         if needs_recompile(dsrc, dobj) {
+            let mut flags = plan.dep_flags_for(name);
+            if pic_shared {
+                flags.push("-fPIC".to_string());
+            }
             jobs.push(Job {
                 src: dsrc.clone(),
                 obj: dobj.clone(),
-                flags: plan.dep_flags_for(name),
+                flags,
             });
         }
     }
     for lib in &plan.libs {
-        let flags = compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        let mut flags = compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        if pic_shared {
+            flags.push("-fPIC".to_string());
+        }
         for src in &lib.sources {
             let obj = lib_obj_for(dir, &scope_dir, &lib.name, src)?;
             if needs_recompile(src, &obj) {
@@ -362,7 +379,10 @@ fn build_execs(
         }
     }
     for shared in &plan.shared {
-        let flags = compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        let mut flags = compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        if pic_shared {
+            flags.push("-fPIC".to_string());
+        }
         for src in &shared.sources {
             let obj = targets::shared_obj_for(dir, &scope_dir, &shared.name, src)?;
             if needs_recompile(src, &obj) {
@@ -474,7 +494,7 @@ fn build_execs(
     let mut shared_artifacts: Vec<SharedArtifact> = Vec::new();
     let mut shared_rebuilt = false;
     if !plan.shared.is_empty() {
-        let flavor = flavor(&plan.cxx)?;
+        let flavor = shared_flavor.expect("computed when shared targets exist");
         for shared in &plan.shared {
             let mut shared_objs: Vec<PathBuf> = shared
                 .sources
@@ -490,7 +510,13 @@ fn build_execs(
                 .map(|name| archive_path(&scope_dir, name))
                 .collect();
             let dll = dll_path(&scope_dir, &shared.name);
-            let import_lib = import_lib_path(&scope_dir, &shared.name, flavor);
+            // Linux has no import library: the .so itself is the link artifact. Windows generates
+            // the import library explicitly and fingerprints its export surface.
+            let import_lib = if matches!(flavor, ImportLibFlavor::Elf) {
+                dll.clone()
+            } else {
+                import_lib_path(&scope_dir, &shared.name, flavor)
+            };
             let state_path = shared_link_state_path(&scope_dir, &shared.name);
             let wanted_state =
                 shared_link_state_text(plan, shared, &shared_objs, &shared_archives);
@@ -510,7 +536,11 @@ fn build_execs(
             }
             if !current {
                 let tmp_import = temp_import_path(&import_lib);
-                let import_arg = import_lib_arg(&tmp_import, flavor);
+                let import_arg = if matches!(flavor, ImportLibFlavor::Elf) {
+                    String::new()
+                } else {
+                    import_lib_arg(&tmp_import, flavor)
+                };
                 let mut shared_link_flags = plan.link_flags.clone();
                 if let Some(p) = &shared.prefix {
                     shared_link_flags.push(format!("-L{}/lib", p.display()));
@@ -534,7 +564,11 @@ fn build_execs(
                         relativize_diagnostics(dir, &e)
                     ));
                 }
-                import_fp = adopt(&tmp_import, &import_lib)?;
+                import_fp = if matches!(flavor, ImportLibFlavor::Elf) {
+                    fingerprint(&dll)?
+                } else {
+                    adopt(&tmp_import, &import_lib)?
+                };
                 std::fs::write(&state_path, &wanted_state)
                     .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
                 shared_rebuilt = true;
@@ -553,6 +587,8 @@ fn build_execs(
         let mut static_archives: Vec<PathBuf> = Vec::new();
         let mut import_archives: Vec<PathBuf> = Vec::new();
         let mut imports: Vec<(PathBuf, String)> = Vec::new();
+        // Linux only: a .so is linked by name and found at runtime next to the exe.
+        let mut shared_link_flags: Vec<String> = Vec::new();
         for link in &bin.links {
             match link {
                 LinkTarget::Static(name) => static_archives.push(archive_path(&scope_dir, name)),
@@ -561,8 +597,16 @@ fn build_execs(
                         .iter()
                         .find(|a| a.name.eq_ignore_ascii_case(name))
                         .expect("plan validation guarantees a built shared target");
-                    import_archives.push(artifact.import_lib.clone());
                     imports.push((artifact.import_lib.clone(), artifact.fingerprint.clone()));
+                    if pic_shared {
+                        if shared_link_flags.is_empty() {
+                            shared_link_flags.push(format!("-L{}", scope_dir.display()));
+                            shared_link_flags.push("-Wl,-rpath,$ORIGIN".to_string());
+                        }
+                        shared_link_flags.push(format!("-l{name}"));
+                    } else {
+                        import_archives.push(artifact.import_lib.clone());
+                    }
                 }
             }
         }
@@ -584,6 +628,7 @@ fn build_execs(
             extra_flags.push(format!("-L{}/lib", p.display()));
         }
         extra_flags.extend(bin.extern_links.iter().map(|n| format!("-l{n}")));
+        extra_flags.extend(shared_link_flags);
         let link_state = match set {
             ExecSet::Bins => bin_link_state_path(&scope_dir, &bin.name, multi),
             ExecSet::Tests => test_link_state_path(&scope_dir, &bin.name),

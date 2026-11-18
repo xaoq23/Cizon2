@@ -392,7 +392,7 @@
     }
 
     fn shared_supported() -> bool {
-        cfg!(windows) && have_compiler()
+        have_compiler() && (cfg!(windows) || cfg!(target_os = "linux"))
     }
 
     fn build_project(dir: &Path) -> Result<PathBuf, String> {
@@ -1399,7 +1399,9 @@
         fs::write(dir.join("lib/core.cpp"), "int core_add(int a, int b) { return a + b; }\n").unwrap();
         fs::write(
             dir.join("capi/api.cpp"),
-            "#include \"core.h\"\nextern \"C\" __declspec(dllexport) int add(int a, int b) { return core_add(a, b); }\n",
+            // __declspec(dllexport) is Windows-only (g++/clang++ on Linux reject it); ELF
+            // exports every symbol by default, so the marker is empty there.
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\n#include \"core.h\"\nextern \"C\" CZ_EXPORT int add(int a, int b) { return core_add(a, b); }\n",
         )
         .unwrap();
         fs::write(
@@ -1413,7 +1415,12 @@
     fn shared_dll(scope: &Path, name: &str) -> PathBuf {
         ["dll", "so", "dylib"]
             .iter()
-            .map(|ext| scope.join(format!("{name}.{ext}")))
+            .flat_map(|ext| {
+                [
+                    scope.join(format!("{name}.{ext}")),
+                    scope.join(format!("lib{name}.{ext}")),
+                ]
+            })
             .find(|p| p.exists())
             .unwrap_or_else(|| panic!("shared library artifact not found for {name}"))
     }
@@ -1475,7 +1482,10 @@
         let exe = build_project(&dir).unwrap();
         let scope = scope_of(&dir, &exe);
         shared_dll(&scope, "core_dll");
-        shared_import_lib(&scope, "core_dll");
+        // Linux has no import library: the .so itself is the link artifact.
+        if cfg!(windows) {
+            shared_import_lib(&scope, "core_dll");
+        }
         assert_eq!(run_code(&exe), 0);
         fs::remove_dir_all(dir).ok();
     }
@@ -1501,7 +1511,7 @@
         .unwrap();
         fs::write(
             dir.join("dll/api.cpp"),
-            "#include \"dep.h\"\nextern \"C\" __declspec(dllexport) int shared_value() { return dep_value(); }\n",
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\n#include \"dep.h\"\nextern \"C\" CZ_EXPORT int shared_value() { return dep_value(); }\n",
         )
         .unwrap();
         fs::write(
@@ -1525,7 +1535,9 @@
 
     #[test]
     fn shared_impl_change_does_not_relink_bin() {
-        if !shared_supported() {
+        // Windows-only: the import-library fingerprint covers the export surface only. On Linux
+        // the .so fingerprint is content-based, so an impl-only change correctly relinks the bin.
+        if !cfg!(windows) || !shared_supported() {
             return;
         }
         let dir = shared_project("shared-norelink");
@@ -1563,7 +1575,7 @@
         let text = fs::read_to_string(&src).unwrap();
         fs::write(
             &src,
-            format!("{text}\nextern \"C\" __declspec(dllexport) int sub(int a, int b) {{ return a - b; }}\n"),
+            format!("{text}\nextern \"C\" CZ_EXPORT int sub(int a, int b) {{ return a - b; }}\n"),
         )
         .unwrap();
         let exe = build_project(&dir).unwrap();
@@ -1574,7 +1586,8 @@
 
     #[test]
     fn missing_import_lib_is_regenerated() {
-        if !shared_supported() {
+        // Windows-only: Linux has no import library to delete and regenerate.
+        if !cfg!(windows) || !shared_supported() {
             return;
         }
         let dir = shared_project("shared-missing-implib");
@@ -1640,12 +1653,12 @@
         .unwrap();
         fs::write(
             dir.join("one/one.cpp"),
-            "extern \"C\" __declspec(dllexport) int one() { return 1; }\n",
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\nextern \"C\" CZ_EXPORT int one() { return 1; }\n",
         )
         .unwrap();
         fs::write(
             dir.join("two/two.cpp"),
-            "extern \"C\" __declspec(dllexport) int two() { return 2; }\n",
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\nextern \"C\" CZ_EXPORT int two() { return 2; }\n",
         )
         .unwrap();
         fs::write(
@@ -1819,7 +1832,7 @@
         .unwrap();
         fs::write(
             dir.join("dll/api.cpp"),
-            "extern \"C\" __declspec(dllexport) int shared_value() { return 42; }\n",
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\nextern \"C\" CZ_EXPORT int shared_value() { return 42; }\n",
         )
         .unwrap();
         let main = "extern \"C\" int shared_value();\nint main() { return shared_value() == 42 ? 0 : 1; }\n";
