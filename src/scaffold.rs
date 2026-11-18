@@ -60,13 +60,74 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// `cizon2 init`: initialize the current directory in place; refused when a cizon.toml exists.
-pub fn init_cmd(args: &[String]) -> Result<i32, String> {
-    if !args.is_empty() {
-        return Err("Usage: cizon2 init (accepts no arguments)".into());
+/// The GitHub Actions workflow `init --ci github` writes. A fresh checkout restores its
+/// dependencies from the lock (`cizon2 sync`), then builds and tests on all three OSes.
+/// cizon2 itself is installed from its git main branch (cargo install --git), so the workflow
+/// always tracks the latest released cizon2.
+const GITHUB_CI_TEMPLATE: &str = r#"name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cizon2
+        run: cargo install --git https://github.com/xaoq23/Cizon2
+      - name: Sync dependencies
+        run: cizon2 sync
+      - name: Build
+        run: cizon2 build
+      - name: Test
+        run: cizon2 test
+"#;
+
+/// Write `.github/workflows/ci.yml` into an existing project. Never overwrites an existing
+/// workflow file; the user edits that file by hand afterwards.
+pub fn write_ci_workflow(dir: &Path) -> Result<i32, String> {
+    let workflow = dir.join(".github").join("workflows").join("ci.yml");
+    if workflow.exists() {
+        return Err(format!(
+            "{} already exists; refusing to overwrite it. Edit it by hand.",
+            workflow.display()
+        ));
     }
+    let parent = workflow.parent().expect("workflow has a parent directory");
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    std::fs::write(&workflow, GITHUB_CI_TEMPLATE)
+        .map_err(|e| format!("cannot write {}: {e}", workflow.display()))?;
+    println!(
+        "\x1b[32m      Wrote\x1b[0m {}",
+        workflow.display()
+    );
+    println!("\x1b[32m      Next\x1b[0m commit it, then watch the build run on push");
+    Ok(0)
+}
+
+/// `cizon2 init`: initialize the current directory in place; refused when a cizon.toml exists.
+/// `cizon2 init --ci github` instead writes only the GitHub Actions workflow into an existing
+/// project (it works in a directory that already has a cizon.toml).
+pub fn init_cmd(args: &[String]) -> Result<i32, String> {
     let dir = std::env::current_dir().map_err(|e| format!("cannot read the current directory: {e}"))?;
-    init_in(&dir)
+    match args {
+        [] => init_in(&dir),
+        [ci, provider] if ci == "--ci" && provider == "github" => write_ci_workflow(&dir),
+        [ci] if ci == "--ci" => Err(
+            "Usage: cizon2 init --ci github (github is the only CI provider so far)".into(),
+        ),
+        _ => Err("Usage: cizon2 init [--ci github]".into()),
+    }
 }
 
 pub fn init_in(dir: &Path) -> Result<i32, String> {
@@ -268,6 +329,23 @@ mod tests {
         // The template must be accepted by the parser as-is: shipped template and parser are
         // locked together.
         crate::config::load(&dir).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ci_workflow_writes_once_and_refuses_overwrite() {
+        let dir = PathBuf::from(temp("ci"));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(write_ci_workflow(&dir).unwrap(), 0);
+        let text = fs::read_to_string(dir.join(".github/workflows/ci.yml")).unwrap();
+        assert!(text.contains("cizon2 sync"), "got: {text}");
+        assert!(text.contains("cizon2 build"), "got: {text}");
+        assert!(text.contains("cizon2 test"), "got: {text}");
+        assert!(text.contains("ubuntu-latest"), "got: {text}");
+        assert!(text.contains("windows-latest"), "got: {text}");
+        assert!(text.contains("macos-latest"), "got: {text}");
+        let err = write_ci_workflow(&dir).unwrap_err();
+        assert!(err.contains("already exists"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 

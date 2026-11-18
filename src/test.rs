@@ -41,7 +41,9 @@ pub fn test(
     // Validate the filter against the planned tests up front: a typo must fail before building.
     let (cxx, fallback_note) = compiler::pick_with_note(cc.or(cfg.explicit_compiler()), target)?;
     if let Some(note) = fallback_note {
-        eprintln!("{note}");
+        if !crate::pipeline::output::quiet() {
+            eprintln!("{note}");
+        }
     }
     let compiler_name = cxx.name.clone();
     let plan = pipeline::plan(dir, cfg, cxx, release, target)?;
@@ -59,11 +61,13 @@ pub fn test(
     let mut failed: Vec<String> = Vec::new();
     let mut passed = 0usize;
     for (name, exe) in &result.execs {
-        eprintln!(
-            "\x1b[36m     Running\x1b[0m {}",
-            pipeline::rel_display(dir, exe)
-        );
-        eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+        if !crate::pipeline::output::quiet() {
+            eprintln!(
+                "\x1b[36m     Running\x1b[0m {}",
+                pipeline::rel_display(dir, exe)
+            );
+            eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+        }
         let start = std::time::Instant::now();
         let mut cmd = std::process::Command::new(exe);
         cmd.args(app_args);
@@ -85,7 +89,9 @@ pub fn test(
         }
         if status.success() {
             passed += 1;
-            eprintln!("\x1b[32m   Passed\x1b[0m {name} ({elapsed:.2}s)");
+            if !crate::pipeline::output::quiet() {
+                eprintln!("\x1b[32m   Passed\x1b[0m {name} ({elapsed:.2}s)");
+            }
         } else {
             let code = run::exit_code(status);
             failed.push(name.clone());
@@ -104,7 +110,9 @@ pub fn test(
 
     let total = result.execs.len();
     if failed.is_empty() {
-        eprintln!("\x1b[32m  Finished\x1b[0m test result: ok. {passed} passed; {total} total");
+        if !crate::pipeline::output::quiet() {
+            eprintln!("\x1b[32m  Finished\x1b[0m test result: ok. {passed} passed; {total} total");
+        }
         Ok(0)
     } else {
         eprintln!(

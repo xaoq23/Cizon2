@@ -19,7 +19,7 @@ mod compile;
 mod ide;
 mod implib;
 mod link;
-mod output;
+pub(crate) mod output;
 mod state;
 mod targets;
 
