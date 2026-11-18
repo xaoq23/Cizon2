@@ -144,6 +144,7 @@ pub(super) fn link_state_text(
     objs: &[PathBuf],
     archives: &[PathBuf],
     imports: &[(PathBuf, String)],
+    cmake_links: &[String],
 ) -> String {
     let mut s = format!("exe: {}\n", bin.out_name);
     s.push_str("objects:\n");
@@ -163,6 +164,13 @@ pub(super) fn link_state_text(
     if !bin.extern_links.is_empty() {
         s.push_str("extern-libs:\n");
         for link in &bin.extern_links {
+            s.push_str(link);
+            s.push('\n');
+        }
+    }
+    if !cmake_links.is_empty() {
+        s.push_str("cmake-libs:\n");
+        for link in cmake_links {
             s.push_str(link);
             s.push('\n');
         }

@@ -3,7 +3,7 @@
 //!
 //! Design boundaries:
 //! - Commit to the "regular layout": `<dep>/include/` headers + flat `<dep>/src/*.cpp`;
-//!   libraries beyond this shape are not accommodated -- that is CMake's territory
+//!   a checkout with a top-level `CMakeLists.txt` is built with CMake instead (see `cmake`)
 //! - `cizon.lock` is a machine file (rewritten as a whole table each time, comments not
 //!   preserved), the locked commit is the single source of truth; any mismatch between
 //!   cizon.toml <-> cizon.lock <-> deps/ -> report loudly, never silently self-heal
@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::compiler::Cxx;
 use crate::config;
 
 const CIZON_LOCK: &str = "cizon.lock";
@@ -74,6 +75,53 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         return Err(rollback_error(e, toml_ok && lock_ok && dep_ok, &name));
     }
     ignore_deps_dir(&dir);
+    // A checkout with a top-level CMakeLists.txt is built with CMake right away (fail fast,
+    // before reporting success): the File API discovers its library targets, and the install
+    // tree is what later builds consume. A failed cmake build rolls the whole add back.
+    if crate::cmake::is_cmake_dep(&dep_dir) {
+        let cxx = match crate::compiler::pick_with_note(cfg.explicit_compiler(), None) {
+            Ok((cxx, _)) => cxx,
+            Err(e) => {
+                let _ = std::fs::write(&toml_path, &original_toml);
+                let _ = match &original_lock {
+                    Some(text) => std::fs::write(&lock_path, text),
+                    None => std::fs::remove_file(&lock_path),
+                };
+                let _ = std::fs::remove_dir_all(&dep_dir);
+                return Err(format!("{e}\nRolled back cizon.toml, {CIZON_LOCK} and deps/{name}."));
+            }
+        };
+        let dep = match crate::cmake::ensure_built(&dir, &name, &cxx, false, None, None) {
+            Ok(dep) => dep,
+            Err(e) => {
+                let _ = std::fs::write(&toml_path, &original_toml);
+                let _ = match &original_lock {
+                    Some(text) => std::fs::write(&lock_path, text),
+                    None => std::fs::remove_file(&lock_path),
+                };
+                let _ = std::fs::remove_dir_all(&dep_dir);
+                let _ = std::fs::remove_dir_all(crate::cmake::build_dir(&dir, &name));
+                let _ = std::fs::remove_dir_all(crate::cmake::install_dir(&dir, &name));
+                return Err(format!("{e}\nRolled back cizon.toml, {CIZON_LOCK} and deps/{name}."));
+            }
+        };
+        let targets: Vec<&str> = dep.targets.iter().map(|t| t.name.as_str()).collect();
+        // Prefer a *_main target in the example (gtest_main, gmock_main): it is usually the
+        // entry point a test target wants; otherwise fall back to the first target.
+        let example = targets
+            .iter()
+            .find(|t| t.ends_with("_main"))
+            .copied()
+            .unwrap_or_else(|| targets.first().copied().unwrap_or(""));
+        eprintln!(
+            "CMake dependency {name}: built with CMake (Debug); library targets: {}. Link them with a target's extern_links, e.g. extern_links = [\"{example}\"].",
+            if targets.is_empty() {
+                "(none discovered)".to_string()
+            } else {
+                targets.join(", ")
+            },
+        );
+    }
     if let Some(warning) = layout_warning(&dep_dir, &name) {
         eprintln!("{warning}");
     }
@@ -94,6 +142,11 @@ fn remove_dep_dir(path: &Path) -> bool {
 /// block the build; this tells the user whether the dep is usable as-is (header-only) or must be
 /// built externally and linked through extern_links.
 fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
+    // CMake-built dependencies report their own layout at add time (targets discovered, install
+    // tree); no flat-layout hint applies to them.
+    if crate::cmake::is_cmake_dep(dep_dir) {
+        return None;
+    }
     if dep_dir.join("include").is_dir() {
         return None;
     }
@@ -435,22 +488,42 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
 /// from the lock when it is missing (including tag verification), and on success return the
 /// (dep-name, src, obj) compile triple; obj goes to obj_dir/<dep>/<stem>.o, physically
 /// isolated from the project objs.
+/// What `prepare` produces for the build: flat-source compile jobs (regular layout) plus the
+/// CMake-built dependencies (their install trees and discovered targets).
+#[derive(Debug)]
+pub struct DepOutputs {
+    pub jobs: Vec<(String, PathBuf, PathBuf)>,
+    pub cmake_deps: Vec<crate::cmake::CmakeDep>,
+}
+
 pub fn prepare(
     dir: &Path,
     cfg: &config::Config,
     obj_dir: &Path,
     obj_ext: &str,
-) -> Result<Vec<(String, PathBuf, PathBuf)>, String> {
-    let Some(map) = cfg.dependencies() else { return Ok(vec![]) };
+    cxx: &Cxx,
+    release: bool,
+    target: Option<&str>,
+    sysroot: Option<&str>,
+) -> Result<DepOutputs, String> {
+    let Some(map) = cfg.dependencies() else { return Ok(DepOutputs { jobs: vec![], cmake_deps: vec![] }) };
     if map.is_empty() {
-        return Ok(vec![]);
+        return Ok(DepOutputs { jobs: vec![], cmake_deps: vec![] });
     }
     let lock = read_lock(dir)?;
 
     let mut jobs = Vec::new();
+    let mut cmake_deps = Vec::new();
     for (name, info) in map {
         restore_dep(dir, name, info, &lock)?;
         let dep_dir = dir.join("deps").join(name);
+        // CMake-built dependency: no flat sources to compile; ensure the cmake build/install
+        // is up to date and hand its install tree + targets to the pipeline.
+        if crate::cmake::is_cmake_dep(&dep_dir) {
+            let dep = crate::cmake::ensure_built(dir, name, cxx, release, target, sysroot)?;
+            cmake_deps.push(dep);
+            continue;
+        }
         let src_dir = dep_dir.join("src");
         let dep_obj_dir = obj_dir.join(name);
         std::fs::create_dir_all(&dep_obj_dir)
@@ -474,7 +547,7 @@ pub fn prepare(
             jobs.push((name.clone(), src, obj));
         }
     }
-    Ok(jobs)
+    Ok(DepOutputs { jobs, cmake_deps })
 }
 
 fn is_commit_hash(s: &str) -> bool {
@@ -1162,7 +1235,7 @@ mod tests {
         // tag restore path: after deleting deps, prepare should clone by tag and verify the commit
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let cfg = config::load(&proj).unwrap();
-        prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap();
+        prepare(&proj, &cfg, &proj.join("obj"), "o", &Cxx { name: "g++".into(), version: "test".into() }, false, None, None).unwrap();
         assert_eq!(
             git_cmd(
                 &proj.join("deps").join(&name),
@@ -1191,7 +1264,7 @@ mod tests {
         .unwrap();
         git_cmd(&origin, &["tag".into(), "-f".into(), "v1".into()]).unwrap();
         fs::remove_dir_all(proj.join("deps")).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o", &Cxx { name: "g++".into(), version: "test".into() }, false, None, None).unwrap_err();
         assert!(err.contains("tag was moved"), "got: {err}");
 
         fs::remove_dir_all(origin).ok();
@@ -1457,7 +1530,7 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o", &Cxx { name: "g++".into(), version: "test".into() }, false, None, None).unwrap_err();
         assert!(err.contains("update"), "got: {err}");
         fs::remove_dir_all(proj).ok();
     }
@@ -1477,7 +1550,7 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o", &Cxx { name: "g++".into(), version: "test".into() }, false, None, None).unwrap_err();
         assert!(err.contains("40/64"), "got: {err}");
         fs::remove_dir_all(proj).ok();
     }
@@ -1513,7 +1586,7 @@ mod tests {
         add_in(&proj, &add_args(&origin)).unwrap();
 
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o", &Cxx { name: "g++".into(), version: "test".into() }, false, None, None).unwrap_err();
         assert!(err.contains("conflict"), "got: {err}");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();

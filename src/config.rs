@@ -67,9 +67,11 @@ pub struct Target {
     /// Test: same as bin.
     #[serde(default)]
     pub links: Vec<String>,
-    /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
-    /// link time. cizon2 neither downloads nor locates them; headers must already be on the
-    /// compiler's default include path (non-default prefixes go through [compiler] flags).
+    /// Bin and test targets: names of external libraries, mapped to `-l<name>` (GCC/Clang)
+    /// or `<name>.lib` (MSVC) at link time. cizon2 neither downloads nor locates them; headers
+    /// must already be on the compiler's default include path, come from a `prefix`, or come
+    /// from a CMake-built dependency's install tree. A name matching a CMake dependency's
+    /// discovered target also pulls in that target's transitive link inputs.
     #[serde(default)]
     pub extern_links: Vec<String>,
     /// Optional installed-package prefix (project-relative directory). cizon2 expands it to
@@ -254,16 +256,30 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         if !names.insert(name.to_lowercase()) {
             return Err(format!("duplicate target name {name} (case-insensitive)."));
         }
-        if target.kind != TargetKind::Test && !target.extern_links.is_empty() {
+        if matches!(target.kind, TargetKind::StaticLib | TargetKind::SharedLib)
+            && !target.extern_links.is_empty()
+        {
             return Err(format!(
-                "only test targets can declare extern_links; target {name} cannot (it is a {kind} target).",
-                kind = match target.kind {
-                    TargetKind::Bin => "bin",
+                "only bin and test targets can declare extern_links; target {name} cannot (it is a {} target).",
+                match target.kind {
                     TargetKind::StaticLib => "static_lib",
                     TargetKind::SharedLib => "shared_lib",
-                    TargetKind::Test => "test",
+                    _ => unreachable!(),
                 }
             ));
+        }
+        // extern_links entries are appended to the link command, so validate them the same
+        // way for bins and tests.
+        if matches!(target.kind, TargetKind::Bin | TargetKind::Test) {
+            let mut seen_system = HashSet::new();
+            for link in &target.extern_links {
+                validate_system_link_name(link)?;
+                if !seen_system.insert(link.to_lowercase()) {
+                    return Err(format!(
+                        "duplicate entry {link} in the extern_links of target {name}."
+                    ));
+                }
+            }
         }
         match target.kind {
             TargetKind::Bin => {}
@@ -287,15 +303,6 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
             TargetKind::Test => {
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err(format!("test target {name} must provide sources."));
-                }
-                let mut seen_system = HashSet::new();
-                for link in &target.extern_links {
-                    validate_system_link_name(link)?;
-                    if !seen_system.insert(link.to_lowercase()) {
-                        return Err(format!(
-                            "duplicate entry {link} in the extern_links of test target {name}."
-                        ));
-                    }
                 }
             }
         }
@@ -1123,8 +1130,9 @@ mod tests {
 
     #[test]
     fn extern_links_rejected_outside_test_targets() {
+        // Since v0.8 bins and tests may both declare extern_links (a bin can consume a
+        // CMake-built library the same way a test consumes gtest); libraries still may not.
         for targets in [
-            "[[target]]\nname = \"app\"\nkind = \"bin\"\nextern_links = [\"gtest\"]\n",
             "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\nextern_links = [\"gtest\"]\n\n\
              [[target]]\nname = \"app\"\nkind = \"bin\"\n",
             "[[target]]\nname = \"core_dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\nextern_links = [\"gtest\"]\n\n\
@@ -1134,11 +1142,26 @@ mod tests {
             std::fs::write(dir.join("cizon.toml"), target_config(targets)).unwrap();
             let err = load(&dir).unwrap_err();
             assert!(
-                err.contains("only test targets can declare extern_links"),
+                err.contains("only bin and test targets can declare extern_links"),
                 "targets={targets} got: {err}"
             );
             std::fs::remove_dir_all(dir).ok();
         }
+        // A bin with extern_links loads fine.
+        let dir = temp_dir("system-bin-ok");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"app\"\nkind = \"bin\"\nextern_links = [\"gtest\"]\n",
+            ),
+        )
+        .unwrap();
+        let cfg = load(&dir).unwrap();
+        assert_eq!(
+            cfg.targets().unwrap()[0].extern_links,
+            vec!["gtest".to_string()]
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

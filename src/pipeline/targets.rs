@@ -96,8 +96,10 @@ pub fn plan(
                 name: name.to_string(),
                 sources,
                 links,
-                extern_links: Vec::new(),
                 out_name: exe_name(name, windows_target),
+                // Since v0.8 bins may declare extern_links too (a bin consuming a
+                // CMake-built library links it the same way a test consumes gtest).
+                extern_links: target.extern_links.clone(),
                 prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("bin target {name}"))?,
             });
         }
@@ -185,6 +187,20 @@ pub fn plan(
     if let Some(map) = cfg.dependencies() {
         for name in map.keys() {
             let inc = dir.join("deps").join(name);
+            if crate::cmake::is_cmake_dep(&inc) {
+                // CMake-built dependency: consumers include from the install tree, which
+                // `deps::prepare` builds before compilation; the checkout root is not an
+                // include directory for it.
+                let include = cxx.include_flag(
+                    &crate::cmake::install_dir(dir, name)
+                        .join("include")
+                        .display()
+                        .to_string(),
+                );
+                flags.push(include.clone());
+                dep_includes.insert(name.clone(), vec![include]);
+                continue;
+            }
             let include = cxx.include_flag(&inc.join("include").display().to_string());
             let root = cxx.include_flag(&inc.display().to_string());
             flags.push(include.clone());

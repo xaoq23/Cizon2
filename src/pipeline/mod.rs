@@ -5,7 +5,7 @@
 //! formatter are not migrated. Since v0.2.1 collection follows modern C++ layout:
 //! recursive src/, include/ automatically added with -I.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -335,7 +335,18 @@ fn build_execs(
 
     // 0) Dependency contract: restore / verify. Missing directory is restored per the lock; a
     // mismatch with the lock is a loud error.
-    let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir, plan.cxx.obj_ext())?;
+    let dep_outputs = deps::prepare(
+        dir,
+        cfg,
+        &deps_obj_dir,
+        plan.cxx.obj_ext(),
+        &plan.cxx,
+        plan.mode == "release",
+        plan.target.as_deref(),
+        plan.sysroot.as_deref(),
+    )?;
+    let dep_jobs = dep_outputs.jobs;
+    let cmake_deps = dep_outputs.cmake_deps;
 
     // 0.5) Editor support: only when explicitly enabled, write the compile database at the project
     // root and add the VS Code IntelliSense config
@@ -651,13 +662,22 @@ fn build_execs(
         if let Some(p) = &bin.prefix {
             extra_flags.push(plan.cxx.lib_path_flag(&format!("{}/lib", p.display())));
         }
-        extra_flags.extend(bin.extern_links.iter().map(|n| format!("-l{n}")));
+        // CMake-built dependencies contribute their install lib directory (-L) and expand
+        // extern_links through the codemodel: a name matching a discovered target pulls in
+        // the target plus its transitive link inputs; unknown names pass through as -l<name>.
+        for dep in &cmake_deps {
+            if let Some(lib_dir) = dep.lib_dir() {
+                extra_flags.push(plan.cxx.lib_path_flag(&lib_dir.display().to_string()));
+            }
+        }
         extra_flags.extend(shared_link_flags);
+        let cmake_link_args = expand_extern_links(&bin.extern_links, &cmake_deps, &plan.cxx);
+        extra_flags.extend(cmake_link_args.iter().cloned());
         let link_state = match set {
             ExecSet::Bins => bin_link_state_path(&scope_dir, &bin.name, multi),
             ExecSet::Tests => test_link_state_path(&scope_dir, &bin.name),
         };
-        let wanted_link = link_state_text(plan, bin, &objs, &archives, &imports);
+        let wanted_link = link_state_text(plan, bin, &objs, &archives, &imports, &cmake_link_args);
         let link_current = std::fs::read_to_string(&link_state)
             .map_or(false, |t| t == wanted_link);
         if link_current && exe_is_fresh(&exe, &objs, &static_archives) {
@@ -721,6 +741,39 @@ fn compile_flags_with_prefix(
         flags.push(cxx.include_flag(&format!("{}/include", p.display())));
     }
     flags
+}
+
+/// Expand a bin/test target's `extern_links` through the CMake dependencies: a name matching
+/// a discovered cmake target contributes the target plus its transitive link inputs (from the
+/// codemodel sidecar); a name matching nothing passes through as a plain `-l<name>` entry.
+fn expand_extern_links(
+    extern_links: &[String],
+    cmake_deps: &[crate::cmake::CmakeDep],
+    cxx: &Cxx,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for name in extern_links {
+        let mut matched = false;
+        for dep in cmake_deps {
+            if dep.targets.iter().any(|t| t.name.eq_ignore_ascii_case(name)) {
+                matched = true;
+                for input in dep.expand_links(std::slice::from_ref(name)) {
+                    let rendered = input.render(cxx);
+                    if seen.insert(rendered.clone()) {
+                        out.push(rendered);
+                    }
+                }
+            }
+        }
+        if !matched {
+            let rendered = cxx.link_lib_flag(name);
+            if seen.insert(rendered.clone()) {
+                out.push(rendered);
+            }
+        }
+    }
+    out
 }
 
 /// When a `extern_links` entry cannot be resolved (`cannot find -l<name>`), add a plain-language

@@ -3,6 +3,7 @@
 //! See AGENTS.md for scope: single crate, recursive src/ sources, g++/clang++; git deps since v0.2.
 //! Hand-written argument dispatch to avoid clap (dependency whitelist: serde, toml).
 
+mod cmake;
 mod compiler;
 mod config;
 mod deps;
