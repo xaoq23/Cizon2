@@ -310,7 +310,7 @@ fn build_execs(
 
     // 0) Dependency contract: restore / verify. Missing directory is restored per the lock; a
     // mismatch with the lock is a loud error.
-    let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir)?;
+    let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir, plan.cxx.obj_ext())?;
 
     // 0.5) Editor support: only when explicitly enabled, write the compile database at the project
     // root and add the VS Code IntelliSense config
@@ -331,28 +331,29 @@ fn build_execs(
     let mut jobs: Vec<Job> = Vec::new(); // project sources
     for bin in &execs {
         let bin_obj = exec_obj_dir(&scope_dir, &bin.name, multi, set);
-        let flags = compile_flags_with_prefix(exec_flags, &bin.prefix);
+        let flags = compile_flags_with_prefix(exec_flags, &bin.prefix, &plan.cxx);
         for src in &bin.sources {
-            let obj = obj_for(dir, src, &bin_obj)?;
-            if needs_recompile(src, &obj) {
+            let obj = obj_for(dir, src, &bin_obj, plan.cxx.obj_ext())?;
+            if needs_recompile(src, &obj, &plan.cxx) {
                 jobs.push(Job { src: src.clone(), obj, flags: flags.clone() });
             }
         }
     }
     for (name, dsrc, dobj) in &dep_jobs {
-        if needs_recompile(dsrc, dobj) {
+        if needs_recompile(dsrc, dobj, &plan.cxx) {
+            let flags = plan.dep_flags_for(name);
             jobs.push(Job {
                 src: dsrc.clone(),
                 obj: dobj.clone(),
-                flags: plan.dep_flags_for(name),
+                flags,
             });
         }
     }
     for lib in &plan.libs {
-        let flags = compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        let flags = compile_flags_with_prefix(&plan.flags, &lib.prefix, &plan.cxx);
         for src in &lib.sources {
-            let obj = lib_obj_for(dir, &scope_dir, &lib.name, src)?;
-            if needs_recompile(src, &obj) {
+            let obj = lib_obj_for(dir, &scope_dir, &lib.name, src, plan.cxx.obj_ext())?;
+            if needs_recompile(src, &obj, &plan.cxx) {
                 jobs.push(Job {
                     src: src.clone(),
                     obj,
@@ -362,10 +363,10 @@ fn build_execs(
         }
     }
     for shared in &plan.shared {
-        let flags = compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        let flags = compile_flags_with_prefix(&plan.flags, &shared.prefix, &plan.cxx);
         for src in &shared.sources {
-            let obj = targets::shared_obj_for(dir, &scope_dir, &shared.name, src)?;
-            if needs_recompile(src, &obj) {
+            let obj = targets::shared_obj_for(dir, &scope_dir, &shared.name, src, plan.cxx.obj_ext())?;
+            if needs_recompile(src, &obj, &plan.cxx) {
                 jobs.push(Job {
                     src: src.clone(),
                     obj,
@@ -409,7 +410,7 @@ fn build_execs(
                 scope.spawn(|| loop {
                     let job = queue.lock().expect("queue poisoned").pop();
                     let Some(Job { src, obj, flags }) = job else { break };
-                    match compile_one(&plan.cxx.name, &src, &obj, &flags) {
+                    match compile_one(&plan.cxx, &src, &obj, &flags) {
                         Ok(Some(stderr)) => {
                             warnings
                                 .lock()
@@ -454,9 +455,9 @@ fn build_execs(
         let lib_objs: Vec<PathBuf> = lib
             .sources
             .iter()
-            .map(|src| lib_obj_for(dir, &scope_dir, &lib.name, src))
+            .map(|src| lib_obj_for(dir, &scope_dir, &lib.name, src, plan.cxx.obj_ext()))
             .collect::<Result<_, _>>()?;
-        let archive = archive_path(&scope_dir, &lib.name);
+        let archive = archive_path(&scope_dir, &lib.name, &plan.cxx);
         if archive_stale(&archive, &lib_objs) {
             pending_archives.push((archive, lib_objs));
         }
@@ -466,7 +467,7 @@ fn build_execs(
         let ar = compiler::archiver(&plan.cxx)?;
         for (archive, lib_objs) in &pending_archives {
             step_line("Archiving", &rel_display(dir, archive));
-            archive_lib(&ar, archive, lib_objs)?;
+            archive_lib(&ar, archive, lib_objs, &plan.cxx)?;
         }
     }
     // 3.5) Link shared libraries. The import library is generated explicitly; identical export
@@ -479,7 +480,7 @@ fn build_execs(
             let mut shared_objs: Vec<PathBuf> = shared
                 .sources
                 .iter()
-                .map(|src| targets::shared_obj_for(dir, &scope_dir, &shared.name, src))
+                .map(|src| targets::shared_obj_for(dir, &scope_dir, &shared.name, src, plan.cxx.obj_ext()))
                 .collect::<Result<_, _>>()?;
             // Dependencies are project-wide; their objects must be linked into every shared
             // library that references them, just like the bin.
@@ -487,7 +488,7 @@ fn build_execs(
             let shared_archives: Vec<PathBuf> = shared
                 .links
                 .iter()
-                .map(|name| archive_path(&scope_dir, name))
+                .map(|name| archive_path(&scope_dir, name, &plan.cxx))
                 .collect();
             let dll = dll_path(&scope_dir, &shared.name);
             let import_lib = import_lib_path(&scope_dir, &shared.name, flavor);
@@ -510,14 +511,20 @@ fn build_execs(
             }
             if !current {
                 let tmp_import = temp_import_path(&import_lib);
-                let import_arg = import_lib_arg(&tmp_import, flavor);
+                let import_arg = if plan.cxx.family().is_msvc() {
+                    // link.exe takes the raw path (link_shared formats /IMPLIB:<path>); the
+                    // MinGW driver takes -Wl,/implib:<path> instead.
+                    tmp_import.to_string_lossy().into_owned()
+                } else {
+                    import_lib_arg(&tmp_import, flavor)
+                };
                 let mut shared_link_flags = plan.link_flags.clone();
                 if let Some(p) = &shared.prefix {
-                    shared_link_flags.push(format!("-L{}/lib", p.display()));
+                    shared_link_flags.push(plan.cxx.lib_path_flag(&format!("{}/lib", p.display())));
                 }
                 step_line("Linking", &rel_display(dir, &dll));
                 let link_result = link_shared(
-                    &plan.cxx.name,
+                    &plan.cxx,
                     &shared_objs,
                     &shared_archives,
                     &dll,
@@ -555,7 +562,7 @@ fn build_execs(
         let mut imports: Vec<(PathBuf, String)> = Vec::new();
         for link in &bin.links {
             match link {
-                LinkTarget::Static(name) => static_archives.push(archive_path(&scope_dir, name)),
+                LinkTarget::Static(name) => static_archives.push(archive_path(&scope_dir, name, &plan.cxx)),
                 LinkTarget::Shared(name) => {
                     let artifact = shared_artifacts
                         .iter()
@@ -574,14 +581,14 @@ fn build_execs(
         let mut objs: Vec<PathBuf> = bin
             .sources
             .iter()
-            .map(|src| obj_for(dir, src, &bin_obj))
+            .map(|src| obj_for(dir, src, &bin_obj, plan.cxx.obj_ext()))
             .collect::<Result<_, _>>()?;
         objs.extend(dep_jobs.iter().map(|(_, _, obj)| obj.clone()));
         // Per-target prefix contributes -L<prefix>/lib; test targets then append -l<name> for
         // their declared external libraries, after all project archives and import libraries.
         let mut extra_flags: Vec<String> = Vec::new();
         if let Some(p) = &bin.prefix {
-            extra_flags.push(format!("-L{}/lib", p.display()));
+            extra_flags.push(plan.cxx.lib_path_flag(&format!("{}/lib", p.display())));
         }
         extra_flags.extend(bin.extern_links.iter().map(|n| format!("-l{n}")));
         let link_state = match set {
@@ -597,7 +604,7 @@ fn build_execs(
         }
         step_line("Linking", &rel_display(dir, &exe));
         link(
-            &plan.cxx.name,
+            &plan.cxx,
             &objs,
             &archives,
             &exe,
@@ -642,10 +649,14 @@ fn build_execs(
 
 /// Append a target's prefix include path to its base compile flags. The prefix is the installed
 /// package root; cizon2 assumes the standard `<prefix>/include` layout.
-fn compile_flags_with_prefix(base: &[String], prefix: &Option<PathBuf>) -> Vec<String> {
+fn compile_flags_with_prefix(
+    base: &[String],
+    prefix: &Option<PathBuf>,
+    cxx: &Cxx,
+) -> Vec<String> {
     let mut flags = base.to_vec();
     if let Some(p) = prefix {
-        flags.push(format!("-I{}/include", p.display()));
+        flags.push(cxx.include_flag(&format!("{}/include", p.display())));
     }
     flags
 }

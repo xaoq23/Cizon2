@@ -54,10 +54,9 @@ pub(super) fn adopt(tmp: &Path, final_path: &Path) -> Result<String, String> {
 }
 
 pub(super) fn flavor(cxx: &Cxx) -> Result<ImportLibFlavor, String> {
-    if !cfg!(windows) {
-        return Err(
-            "shared_lib is supported on Windows only (MinGW or clang++ MSVC target).".into(),
-        );
+    // MSVC (cl.exe / clang-cl) has no -dumpmachine: the family already tells us the flavor.
+    if cxx.family().is_msvc() {
+        return Ok(ImportLibFlavor::Msvc);
     }
     let out = Command::new(&cxx.name)
         .arg("-dumpmachine")

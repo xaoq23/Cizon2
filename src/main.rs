@@ -6,6 +6,7 @@
 mod compiler;
 mod config;
 mod deps;
+mod json;
 mod pipeline;
 mod run;
 mod scaffold;

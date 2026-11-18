@@ -182,7 +182,7 @@
         fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
         fs::write(dir.join("src/util.cc"), "//").unwrap();
         fs::write(dir.join("src/notes.txt"), "ignore").unwrap();
-        let s = collect_sources(&dir, None).unwrap();
+        let s = collect_sources(&dir, None, "o", "d").unwrap();
         let names: Vec<String> = s
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -196,7 +196,7 @@
         let dir = temp_dir("upper-ext");
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/Util.CPP"), "//").unwrap();
-        let s = collect_sources(&dir, None).unwrap();
+        let s = collect_sources(&dir, None, "o", "d").unwrap();
         assert_eq!(s.len(), 1, "uppercase extension must not be missed on Windows");
         fs::remove_dir_all(dir).ok();
     }
@@ -207,16 +207,16 @@
         fs::create_dir_all(dir.join("third_party")).unwrap();
         fs::write(dir.join("third_party/x.cpp"), "//").unwrap();
         let list = vec!["third_party/x.cpp".to_string()];
-        let s = collect_sources(&dir, Some(&list)).unwrap();
+        let s = collect_sources(&dir, Some(&list), "o", "d").unwrap();
         assert_eq!(s, vec![dir.join("third_party/x.cpp")]);
 
         let missing = vec!["missing.cpp".to_string()];
-        let err = collect_sources(&dir, Some(&missing)).unwrap_err();
+        let err = collect_sources(&dir, Some(&missing), "o", "d").unwrap_err();
         assert!(err.contains("does not exist"), "got: {err}");
 
         fs::write(dir.join("notes.txt"), "").unwrap();
         let bad_ext = vec!["notes.txt".to_string()];
-        let err = collect_sources(&dir, Some(&bad_ext)).unwrap_err();
+        let err = collect_sources(&dir, Some(&bad_ext), "o", "d").unwrap_err();
         assert!(err.contains("only accepts"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -229,14 +229,14 @@
         fs::write(dir.join("app/sub/b.cc"), "//").unwrap();
         fs::write(dir.join("app/notes.txt"), "ignore").unwrap();
         let list = vec!["app".to_string()];
-        let s = collect_sources(&dir, Some(&list)).unwrap();
+        let s = collect_sources(&dir, Some(&list), "o", "d").unwrap();
         let names: Vec<String> = s
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["a.cpp", "b.cc"]);
         let root = vec![".".to_string()];
-        let err = collect_sources(&dir, Some(&root)).unwrap_err();
+        let err = collect_sources(&dir, Some(&root), "o", "d").unwrap_err();
         assert!(err.contains("project root"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -277,7 +277,7 @@
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/util.cpp"), "//").unwrap();
         fs::write(dir.join("src/util.cc"), "//").unwrap();
-        let err = collect_sources(&dir, None).unwrap_err();
+        let err = collect_sources(&dir, None, "o", "d").unwrap_err();
         assert!(err.contains("object path conflict"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -288,7 +288,7 @@
         fs::create_dir_all(dir.join("src/foo.o")).unwrap();
         fs::write(dir.join("src/foo.cpp"), "//").unwrap();
         fs::write(dir.join("src/foo.o/bar.cpp"), "//").unwrap();
-        let err = collect_sources(&dir, None).unwrap_err();
+        let err = collect_sources(&dir, None, "o", "d").unwrap_err();
         assert!(err.contains("conflicts with a directory"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -299,7 +299,7 @@
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/main.cpp"), "//").unwrap();
         let list = vec!["src/main.cpp".to_string(), "src/main.cpp".to_string()];
-        let err = collect_sources(&dir, Some(&list)).unwrap_err();
+        let err = collect_sources(&dir, Some(&list), "o", "d").unwrap_err();
         assert!(err.contains("more than once"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
@@ -313,7 +313,8 @@
             "build/obj/main.o: \\\n src/main.cpp src/util.hpp \\\n third_party/x.h\n\nsrc/util.hpp:\n",
         )
         .unwrap();
-        let inputs = dep_inputs(&f).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let inputs = dep_inputs(&f, &cxx).unwrap();
         let names: Vec<String> = inputs
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -333,7 +334,8 @@
              C:\\path\\ with\\ space\\src\\h.h:\n",
         )
         .unwrap();
-        let inputs = dep_inputs(&f).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let inputs = dep_inputs(&f, &cxx).unwrap();
         let names: Vec<String> = inputs
             .iter()
             .map(|p| p.to_string_lossy().to_string())
@@ -352,7 +354,8 @@
         let src = dir.join("a.cpp");
         fs::write(&src, "//").unwrap();
         let obj = dir.join("nope.o");
-        assert!(needs_recompile(&src, &obj));
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        assert!(needs_recompile(&src, &obj, &cxx));
         fs::remove_dir_all(dir).ok();
     }
 
@@ -366,7 +369,8 @@
         fs::write(&obj, "").unwrap();
         // A directory masquerading as .d: exists but unreadable — must be treated as "needs recompile"
         fs::create_dir(dir.join("a.o.d")).unwrap();
-        assert!(needs_recompile(&src, &obj));
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        assert!(needs_recompile(&src, &obj, &cxx));
         fs::remove_dir_all(dir).ok();
     }
 
@@ -379,7 +383,8 @@
         std::thread::sleep(std::time::Duration::from_millis(20));
         fs::write(&obj, "").unwrap();
         fs::write(dir.join("a.o.d"), "garbage without target separator").unwrap();
-        assert!(needs_recompile(&src, &obj));
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        assert!(needs_recompile(&src, &obj, &cxx));
         fs::remove_dir_all(dir).ok();
     }
 
@@ -605,7 +610,7 @@
         fs::write(dir.join("src/core/util.cc"), "//").unwrap();
         fs::write(dir.join("src/core/deep/x.cxx"), "//").unwrap();
         fs::write(dir.join("src/notes.txt"), "ignore").unwrap();
-        let s = collect_sources(&dir, None).unwrap();
+        let s = collect_sources(&dir, None, "o", "d").unwrap();
         assert_eq!(s.len(), 3, "should recursively collect three levels of source files: {s:?}");
         fs::remove_dir_all(dir).ok();
     }
@@ -617,7 +622,7 @@
         fs::create_dir_all(dir.join("src/b")).unwrap();
         fs::write(dir.join("src/a/core.cpp"), "//").unwrap();
         fs::write(dir.join("src/b/core.cpp"), "//").unwrap();
-        let sources = collect_sources(&dir, None).unwrap();
+        let sources = collect_sources(&dir, None, "o", "d").unwrap();
         assert_eq!(sources.len(), 2, "same stem across directories must be allowed");
         fs::remove_dir_all(dir).ok();
     }

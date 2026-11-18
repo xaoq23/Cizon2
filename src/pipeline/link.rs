@@ -2,14 +2,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::compiler::Cxx;
+
 use super::compile::{replace_file, temp_sibling};
 use super::state::reset_dir;
 
-pub(super) fn archive_path(scope_dir: &Path, name: &str) -> PathBuf {
-    scope_dir
-        .join("lib")
-        .join(name)
-        .join(format!("lib{name}.a"))
+pub(super) fn archive_path(scope_dir: &Path, name: &str, cxx: &Cxx) -> PathBuf {
+    scope_dir.join("lib").join(name).join(cxx.archive_name(name))
 }
 
 /// When project flags or the library source list change, invalidate library objects and archives together.
@@ -28,15 +27,25 @@ pub(super) fn archive_stale(archive: &Path, objs: &[PathBuf]) -> bool {
     })
 }
 
-pub(super) fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<(), String> {
+pub(super) fn archive_lib(
+    ar: &str,
+    archive: &Path,
+    objs: &[PathBuf],
+    cxx: &Cxx,
+) -> Result<(), String> {
     if objs.is_empty() {
         return Err(format!("static library {} has no object file.", archive.display()));
     }
     let tmp = temp_sibling(archive);
     let _ = std::fs::remove_file(&tmp);
-    let out = Command::new(ar)
-        .arg("rcs")
-        .arg(&tmp)
+    // lib.exe takes /OUT:<archive> (no "rcs" verb); ar takes "rcs <archive>".
+    let mut cmd = Command::new(ar);
+    if cxx.family().is_msvc() {
+        cmd.arg(format!("/OUT:{}", tmp.display())).arg("/NOLOGO");
+    } else {
+        cmd.arg("rcs").arg(&tmp);
+    }
+    let out = cmd
         .args(objs)
         .output()
         .map_err(|e| format!("Failed to start archiver {ar}: {e}"))?;
@@ -53,7 +62,7 @@ pub(super) fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<
 }
 
 pub(super) fn link_shared(
-    cxx: &str,
+    cxx: &Cxx,
     objs: &[PathBuf],
     archives: &[PathBuf],
     out: &Path,
@@ -62,7 +71,30 @@ pub(super) fn link_shared(
     import_arg: &str,
     static_runtime: bool,
 ) -> Result<(), String> {
-    let mut cmd = Command::new(cxx);
+    let mut cmd = Command::new(&cxx.name);
+    if cxx.family().is_msvc() {
+        // link.exe does not take the compile flags (/std:, /O2, ...): only link inputs,
+        // /DLL + /OUT + /IMPLIB and the user link flags.
+        cmd.arg("/DLL");
+        cmd.arg(format!("/OUT:{}", out.display()));
+        if !import_arg.is_empty() {
+            cmd.arg(format!("/IMPLIB:{import_arg}"));
+        }
+        cmd.arg("/NOLOGO");
+        for obj in objs {
+            cmd.arg(obj);
+        }
+        for archive in archives {
+            cmd.arg(archive);
+        }
+        for f in link_flags {
+            cmd.arg(f);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("Failed to start linker {}: {e}", cxx.name))?;
+        return finish_link(out, &cxx.name);
+    }
     cmd.arg("-shared");
     for obj in objs {
         cmd.arg(obj);
@@ -83,7 +115,13 @@ pub(super) fn link_shared(
     }
     let out = cmd
         .output()
-        .map_err(|e| format!("Failed to start linker {cxx}: {e}"))?;
+        .map_err(|e| format!("Failed to start linker {}: {e}", cxx.name))?;
+    finish_link(out, &cxx.name)
+}
+
+/// Shared link-result handling: non-zero status is the error, anything on stderr is passed
+/// through (link.exe also reports warnings there).
+fn finish_link(out: std::process::Output, cxx_name: &str) -> Result<(), String> {
     let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
         return Err(stderr.to_string());
@@ -92,11 +130,12 @@ pub(super) fn link_shared(
         let mut err = std::io::stderr();
         let _ = err.write_all(stderr.as_bytes());
     }
+    let _ = cxx_name;
     Ok(())
 }
 
 pub(super) fn link(
-    cxx: &str,
+    cxx: &Cxx,
     objs: &[PathBuf],
     archives: &[PathBuf],
     exe: &Path,
@@ -104,7 +143,29 @@ pub(super) fn link(
     link_flags: &[String],
     extra: &[String],
 ) -> Result<(), String> {
-    let mut cmd = Command::new(cxx);
+    let mut cmd = Command::new(&cxx.name);
+    if cxx.family().is_msvc() {
+        // link.exe does not take the compile flags: /OUT + /SUBSYSTEM:CONSOLE + inputs.
+        cmd.arg(format!("/OUT:{}", exe.display()));
+        cmd.arg("/SUBSYSTEM:CONSOLE");
+        cmd.arg("/NOLOGO");
+        for obj in objs {
+            cmd.arg(obj);
+        }
+        for archive in archives {
+            cmd.arg(archive);
+        }
+        for f in link_flags {
+            cmd.arg(f);
+        }
+        for f in extra {
+            cmd.arg(f);
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("Failed to start linker {}: {e}", cxx.name))?;
+        return finish_link(out, &cxx.name);
+    }
     for obj in objs {
         cmd.arg(obj);
     }
@@ -123,16 +184,8 @@ pub(super) fn link(
     }
     let out = cmd
         .output()
-        .map_err(|e| format!("Failed to start linker {cxx}: {e}"))?;
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if !out.status.success() {
-        return Err(stderr.to_string());
-    }
-    if !stderr.trim().is_empty() {
-        let mut err = std::io::stderr();
-        let _ = err.write_all(stderr.as_bytes());
-    }
-    Ok(())
+        .map_err(|e| format!("Failed to start linker {}: {e}", cxx.name))?;
+    finish_link(out, &cxx.name)
 }
 
 // ── Output style (cargo-like) ─────────────────────────────────

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::compiler::{self, Cxx};
+use crate::compiler::Cxx;
 use crate::config::{Config, TargetKind};
 
 use super::output::rel_display;
@@ -10,6 +10,10 @@ use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
+    // Compiler-driven file rules: MSVC objects are .obj with JSON dep files and .exe outputs;
+    // GCC/Clang use .o with .d depfiles.
+    let obj_ext = cxx.obj_ext();
+    let dep_ext = cxx.dep_ext();
     let (bins, tests, libs, shared) = if let Some(targets) = cfg.targets() {
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
@@ -18,6 +22,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 dir,
                 target.sources.as_deref(),
                 &format!("static library target {name}"),
+                obj_ext,
+                dep_ext,
             )?;
             if lib_sources.is_empty() {
                 return Err(format!("static library target {name} has no source file to compile."));
@@ -35,6 +41,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 dir,
                 target.sources.as_deref(),
                 &format!("shared library target {name}"),
+                obj_ext,
+                dep_ext,
             )?;
             if shared_sources.is_empty() {
                 return Err(format!(
@@ -65,6 +73,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 dir,
                 target.sources.as_deref(),
                 &format!("bin target {name}"),
+                obj_ext,
+                dep_ext,
             )?;
             if sources.is_empty() {
                 return Err(format!("bin target {name} has no source file to compile."));
@@ -86,6 +96,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 dir,
                 target.sources.as_deref(),
                 &format!("test target {name}"),
+                obj_ext,
+                dep_ext,
             )?;
             if sources.is_empty() {
                 return Err(format!("test target {name} has no source file to compile."));
@@ -103,7 +115,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         (bins, tests, libs, shared)
     } else {
         let explicit = cfg.explicit_sources();
-        let sources = collect_sources(dir, explicit)?;
+        let sources = collect_sources(dir, explicit, obj_ext, dep_ext)?;
         if sources.is_empty() {
             return Err(match explicit {
                 Some(_) => "No .cpp file found under the paths listed in [project] sources. Check those paths, or remove sources to scan src/.".into(),
@@ -125,35 +137,40 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         (bins, Vec::new(), Vec::new(), Vec::new())
     };
 
-    let edition = compiler::edition_flag(cfg.edition());
-    let optimization = if release { "-O2" } else { "-g" };
-    let mut flags = vec![edition.clone(), optimization.into()];
+    let edition = cxx.edition_flag(cfg.edition());
+    let mut flags = vec![edition.clone()];
+    flags.extend(cxx.opt_flags(release));
     // Convenience warning switches expand to fixed flag bundles; user flags come after so they
     // can still override (e.g. -Wno-...). These apply to project sources only, never deps.
     if cfg.strict() {
-        flags.extend(["-Wall", "-Wextra", "-Wpedantic"].map(String::from));
+        flags.extend(cxx.strict_flags());
     }
     if cfg.werror() {
-        flags.push("-Werror".into());
+        if let Some(f) = cxx.werror_flag() {
+            flags.push(f);
+        }
     }
     flags.extend(cfg.flags().iter().cloned());
     // Public header directory: modern-layout include/ is added with -I automatically; when the
     // directory is missing the compiler safely ignores it
-    flags.push(format!("-I{}", dir.join("include").display()));
+    flags.push(cxx.include_flag(&dir.join("include").display().to_string()));
     // Dependency header paths enter flags unconditionally: when the directory is missing the
     // compiler safely ignores it, so planning needs no network operation
     let mut dep_includes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if let Some(map) = cfg.dependencies() {
         for name in map.keys() {
             let inc = dir.join("deps").join(name);
-            let include = format!("-I{}", inc.join("include").display());
-            let root = format!("-I{}", inc.display());
+            let include = cxx.include_flag(&inc.join("include").display().to_string());
+            let root = cxx.include_flag(&inc.display().to_string());
             flags.push(include.clone());
             flags.push(root.clone());
             dep_includes.insert(name.clone(), vec![include, root]);
         }
     }
-    let dep_base = vec![edition, optimization.into()];
+    // Dependency base flags: edition + optimization only (user flags are never applied to
+    // dependencies). Kept as one flag per entry: MSVC debug expands to two (/Od /Z7).
+    let mut dep_base = vec![edition];
+    dep_base.extend(cxx.opt_flags(release));
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);
@@ -183,12 +200,13 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 
 /// Remove every `-DNDEBUG` spelling from test-source flags. Tests must not silently compile out
 /// their own asserts: the exit-code contract is only meaningful while `assert` is live.
+/// Both spellings are stripped: `-D NDEBUG` / `-DNDEBUG` (GCC/Clang) and `/D NDEBUG` / `/DNDEBUG` (MSVC).
 fn without_ndebug(flags: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(flags.len());
     let mut i = 0;
     while i < flags.len() {
         let flag = &flags[i];
-        if flag == "-D"
+        if (flag == "-D" || flag == "/D")
             && flags
                 .get(i + 1)
                 .is_some_and(|v| v == "NDEBUG" || v.starts_with("NDEBUG="))
@@ -196,7 +214,11 @@ fn without_ndebug(flags: &[String]) -> Vec<String> {
             i += 2;
             continue;
         }
-        if flag == "-DNDEBUG" || flag.starts_with("-DNDEBUG=") {
+        if flag == "-DNDEBUG"
+            || flag.starts_with("-DNDEBUG=")
+            || flag == "/DNDEBUG"
+            || flag.starts_with("/DNDEBUG=")
+        {
             i += 1;
             continue;
         }
@@ -206,8 +228,7 @@ fn without_ndebug(flags: &[String]) -> Vec<String> {
     out
 }
 
-/// Resolve an optional installed-package prefix to an absolute directory inside the project.
-/// cizon2 later expands it to -I<prefix>/include (compile) and -L<prefix>/lib (link) for the
+/// Resolve an optional installed-package prefix to an absolute directory inside the project./// cizon2 later expands it to -I<prefix>/include (compile) and -L<prefix>/lib (link) for the
 /// owning target, so consuming an installed library needs no hand-written search-path flags.
 fn resolve_prefix(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<PathBuf>, String> {
     let Some(raw) = raw else {
@@ -311,7 +332,12 @@ pub(super) fn ensure_dir_inside(dir: &Path, path: &Path, owner: &str) -> Result<
 
 /// Explicit sources or recursive scan of src/. Same-name stem conflicts in the same directory
 /// error out immediately (object files are named by path mirror).
-pub(super) fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result<Vec<PathBuf>, String> {
+pub(super) fn collect_sources(
+    dir: &Path,
+    explicit: Option<&[String]>,
+    obj_ext: &str,
+    dep_ext: &str,
+) -> Result<Vec<PathBuf>, String> {
     let mut out: Vec<PathBuf> = Vec::new();
     match explicit {
         Some(list) => {
@@ -347,7 +373,7 @@ pub(super) fn collect_sources(dir: &Path, explicit: Option<&[String]>) -> Result
     } else {
         "src/"
     };
-    check_object_paths(dir, &out, owner)?;
+    check_object_paths(dir, &out, owner, obj_ext, dep_ext)?;
     Ok(out)
 }
 
@@ -357,6 +383,8 @@ pub(super) fn collect_target_sources(
     dir: &Path,
     list: Option<&[String]>,
     owner: &str,
+    obj_ext: &str,
+    dep_ext: &str,
 ) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     match list {
@@ -384,18 +412,24 @@ pub(super) fn collect_target_sources(
         }
     }
     out.sort();
-    check_object_paths(dir, &out, owner)?;
+    check_object_paths(dir, &out, owner, obj_ext, dep_ext)?;
     Ok(out)
 }
 
 /// Object paths within one target must be unique; same stem across directories is allowed,
 /// same stem within the same directory errors out.
-pub(super) fn check_object_paths(dir: &Path, sources: &[PathBuf], owner: &str) -> Result<(), String> {
+pub(super) fn check_object_paths(
+    dir: &Path,
+    sources: &[PathBuf],
+    owner: &str,
+    obj_ext: &str,
+    dep_ext: &str,
+) -> Result<(), String> {
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
     for src in sources {
         let rel = project_relative(dir, src)?;
         let mut obj_rel = rel;
-        obj_rel.set_extension("o");
+        obj_rel.set_extension(obj_ext);
         let key = obj_rel.to_string_lossy().to_lowercase();
         if let Some(prev) = seen.insert(key, src.clone()) {
             if prev == *src {
@@ -413,9 +447,9 @@ pub(super) fn check_object_paths(dir: &Path, sources: &[PathBuf], owner: &str) -
     let mut artifacts: HashSet<String> = HashSet::new();
     for key in seen.keys() {
         artifacts.insert(key.clone());
-        artifacts.insert(format!("{key}.d"));
+        artifacts.insert(format!("{key}.{dep_ext}"));
         artifacts.insert(format!("{key}.tmp"));
-        artifacts.insert(format!("{key}.d.tmp"));
+        artifacts.insert(format!("{key}.{dep_ext}.tmp"));
     }
     for key in seen.keys() {
         for ancestor in Path::new(key).ancestors().skip(1) {
@@ -493,9 +527,14 @@ pub(super) fn check_source_ext(path: &Path) -> Result<(), String> {
 
 // ── Build execution ──────────────────────────────────────────────
 
-pub(super) fn obj_for(dir: &Path, src: &Path, obj_dir: &Path) -> Result<PathBuf, String> {
+pub(super) fn obj_for(
+    dir: &Path,
+    src: &Path,
+    obj_dir: &Path,
+    obj_ext: &str,
+) -> Result<PathBuf, String> {
     let mut rel = project_relative(dir, src)?;
-    rel.set_extension("o");
+    rel.set_extension(obj_ext);
     Ok(obj_dir.join(rel))
 }
 
@@ -508,9 +547,10 @@ pub(super) fn lib_obj_for(
     scope_dir: &Path,
     name: &str,
     src: &Path,
+    obj_ext: &str,
 ) -> Result<PathBuf, String> {
     let mut rel = project_relative(dir, src)?;
-    rel.set_extension("o");
+    rel.set_extension(obj_ext);
     Ok(lib_obj_dir(scope_dir, name).join(rel))
 }
 
@@ -545,9 +585,10 @@ pub(super) fn shared_obj_for(
     scope_dir: &Path,
     name: &str,
     src: &Path,
+    obj_ext: &str,
 ) -> Result<PathBuf, String> {
     let mut rel = project_relative(dir, src)?;
-    rel.set_extension("o");
+    rel.set_extension(obj_ext);
     Ok(shared_obj_dir(scope_dir, name).join(rel))
 }
 

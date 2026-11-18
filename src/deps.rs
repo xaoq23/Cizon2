@@ -439,6 +439,7 @@ pub fn prepare(
     dir: &Path,
     cfg: &config::Config,
     obj_dir: &Path,
+    obj_ext: &str,
 ) -> Result<Vec<(String, PathBuf, PathBuf)>, String> {
     let Some(map) = cfg.dependencies() else { return Ok(vec![]) };
     if map.is_empty() {
@@ -469,7 +470,7 @@ pub fn prepare(
                     src.display()
                 ));
             }
-            let obj = dep_obj_dir.join(format!("{stem}.o"));
+            let obj = dep_obj_dir.join(format!("{stem}.{obj_ext}"));
             jobs.push((name.clone(), src, obj));
         }
     }
@@ -1161,7 +1162,7 @@ mod tests {
         // tag restore path: after deleting deps, prepare should clone by tag and verify the commit
         fs::remove_dir_all(proj.join("deps")).unwrap();
         let cfg = config::load(&proj).unwrap();
-        prepare(&proj, &cfg, &proj.join("obj")).unwrap();
+        prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap();
         assert_eq!(
             git_cmd(
                 &proj.join("deps").join(&name),
@@ -1190,7 +1191,7 @@ mod tests {
         .unwrap();
         git_cmd(&origin, &["tag".into(), "-f".into(), "v1".into()]).unwrap();
         fs::remove_dir_all(proj.join("deps")).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
         assert!(err.contains("tag was moved"), "got: {err}");
 
         fs::remove_dir_all(origin).ok();
@@ -1456,7 +1457,7 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
         assert!(err.contains("update"), "got: {err}");
         fs::remove_dir_all(proj).ok();
     }
@@ -1476,7 +1477,7 @@ mod tests {
         )
         .unwrap();
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
         assert!(err.contains("40/64"), "got: {err}");
         fs::remove_dir_all(proj).ok();
     }
@@ -1512,7 +1513,7 @@ mod tests {
         add_in(&proj, &add_args(&origin)).unwrap();
 
         let cfg = config::load(&proj).unwrap();
-        let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
+        let err = prepare(&proj, &cfg, &proj.join("obj"), "o").unwrap_err();
         assert!(err.contains("conflict"), "got: {err}");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
