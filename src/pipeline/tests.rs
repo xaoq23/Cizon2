@@ -1799,8 +1799,11 @@
         }
         let dir = multi_bin_project("multi-bin-cleanup");
         let result = build_bins_project(&dir);
-        let scope = scope_of(&dir, &result.execs[0].1);
-        assert!(scope.join("two.exe").exists());
+        // Use the real artifact paths from the build result: the executable suffix is
+        // host-dependent (.exe on Windows, extensionless on Linux).
+        let one = result.execs.iter().find(|(n, _)| n == "one").unwrap().1.clone();
+        let two = result.execs.iter().find(|(n, _)| n == "two").unwrap().1.clone();
+        assert!(two.exists());
         fs::write(
             dir.join("cizon.toml"),
             "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
@@ -1808,8 +1811,8 @@
         )
         .unwrap();
         let _ = build_bins_project(&dir);
-        assert!(scope.join("one.exe").exists());
-        assert!(!scope.join("two.exe").exists(), "removed bin exe must be cleaned");
+        assert!(one.exists());
+        assert!(!two.exists(), "removed bin exe must be cleaned");
         fs::remove_dir_all(dir).ok();
     }
 
