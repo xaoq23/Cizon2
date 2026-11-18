@@ -109,7 +109,11 @@ pub(super) fn link_shared(
     if static_runtime {
         cmd.arg("-static");
     }
-    cmd.arg(import_arg);
+    // An empty import argument (Linux: no import library is generated) is skipped: passing an
+    // empty string to the linker would be treated as an input file.
+    if !import_arg.is_empty() {
+        cmd.arg(import_arg);
+    }
     for f in link_flags {
         cmd.arg(f);
     }

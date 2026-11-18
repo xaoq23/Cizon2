@@ -269,6 +269,15 @@ fn build_execs(
         ExecSet::Bins => &plan.flags,
         ExecSet::Tests => &plan.test_flags,
     };
+    // Shared libraries need the toolchain flavor up front: on Linux their objects — and the
+    // static-library and dependency objects linked into them — must be position-independent,
+    // and an unsupported toolchain fails here instead of after compiling everything.
+    let shared_flavor = if plan.shared.is_empty() {
+        None
+    } else {
+        Some(flavor(&plan.cxx)?)
+    };
+    let pic_shared = matches!(shared_flavor, Some(ImportLibFlavor::Elf));
     if !state_current(&project_state, &wanted_project)? {
         clear_project_objects(&obj_dir)?;
         reset_dir(&test_obj_root)?;
@@ -357,7 +366,10 @@ fn build_execs(
     }
     for (name, dsrc, dobj) in &dep_jobs {
         if needs_recompile(dsrc, dobj, &plan.cxx) {
-            let flags = plan.dep_flags_for(name);
+            let mut flags = plan.dep_flags_for(name);
+            if pic_shared && !plan.cxx.family().is_msvc() {
+                flags.push("-fPIC".to_string());
+            }
             jobs.push(Job {
                 src: dsrc.clone(),
                 obj: dobj.clone(),
@@ -366,7 +378,10 @@ fn build_execs(
         }
     }
     for lib in &plan.libs {
-        let flags = compile_flags_with_prefix(&plan.flags, &lib.prefix, &plan.cxx);
+        let mut flags = compile_flags_with_prefix(&plan.flags, &lib.prefix, &plan.cxx);
+        if pic_shared && !plan.cxx.family().is_msvc() {
+            flags.push("-fPIC".to_string());
+        }
         for src in &lib.sources {
             let obj = lib_obj_for(dir, &scope_dir, &lib.name, src, plan.cxx.obj_ext())?;
             if needs_recompile(src, &obj, &plan.cxx) {
@@ -379,7 +394,10 @@ fn build_execs(
         }
     }
     for shared in &plan.shared {
-        let flags = compile_flags_with_prefix(&plan.flags, &shared.prefix, &plan.cxx);
+        let mut flags = compile_flags_with_prefix(&plan.flags, &shared.prefix, &plan.cxx);
+        if pic_shared && !plan.cxx.family().is_msvc() {
+            flags.push("-fPIC".to_string());
+        }
         for src in &shared.sources {
             let obj = targets::shared_obj_for(dir, &scope_dir, &shared.name, src, plan.cxx.obj_ext())?;
             if needs_recompile(src, &obj, &plan.cxx) {
@@ -491,7 +509,7 @@ fn build_execs(
     let mut shared_artifacts: Vec<SharedArtifact> = Vec::new();
     let mut shared_rebuilt = false;
     if !plan.shared.is_empty() {
-        let flavor = flavor(&plan.cxx)?;
+        let flavor = shared_flavor.expect("computed above when shared targets exist");
         for shared in &plan.shared {
             let mut shared_objs: Vec<PathBuf> = shared
                 .sources
@@ -507,7 +525,14 @@ fn build_execs(
                 .map(|name| archive_path(&scope_dir, name, &plan.cxx))
                 .collect();
             let dll = dll_path(&scope_dir, &shared.name);
-            let import_lib = import_lib_path(&scope_dir, &shared.name, flavor);
+            // On Linux there is no import library: the .so itself is the link artifact. On
+            // Windows the import library is generated explicitly and fingerprinted by export
+            // surface, so an implementation-only change does not relink the bin.
+            let import_lib = if matches!(flavor, ImportLibFlavor::Elf) {
+                dll.clone()
+            } else {
+                import_lib_path(&scope_dir, &shared.name, flavor)
+            };
             let state_path = shared_link_state_path(&scope_dir, &shared.name);
             let wanted_state =
                 shared_link_state_text(plan, shared, &shared_objs, &shared_archives);
@@ -531,6 +556,8 @@ fn build_execs(
                     // link.exe takes the raw path (link_shared formats /IMPLIB:<path>); the
                     // MinGW driver takes -Wl,/implib:<path> instead.
                     tmp_import.to_string_lossy().into_owned()
+                } else if matches!(flavor, ImportLibFlavor::Elf) {
+                    String::new()
                 } else {
                     import_lib_arg(&tmp_import, flavor)
                 };
@@ -557,7 +584,11 @@ fn build_execs(
                         relativize_diagnostics(dir, &e)
                     ));
                 }
-                import_fp = adopt(&tmp_import, &import_lib)?;
+                import_fp = if matches!(flavor, ImportLibFlavor::Elf) {
+                    fingerprint(&dll)?
+                } else {
+                    adopt(&tmp_import, &import_lib)?
+                };
                 std::fs::write(&state_path, &wanted_state)
                     .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
                 shared_rebuilt = true;
@@ -576,6 +607,8 @@ fn build_execs(
         let mut static_archives: Vec<PathBuf> = Vec::new();
         let mut import_archives: Vec<PathBuf> = Vec::new();
         let mut imports: Vec<(PathBuf, String)> = Vec::new();
+        // Linux only: the bin links each .so by name and finds it at runtime next to the exe.
+        let mut shared_link_flags: Vec<String> = Vec::new();
         for link in &bin.links {
             match link {
                 LinkTarget::Static(name) => static_archives.push(archive_path(&scope_dir, name, &plan.cxx)),
@@ -584,8 +617,20 @@ fn build_execs(
                         .iter()
                         .find(|a| a.name.eq_ignore_ascii_case(name))
                         .expect("plan validation guarantees a built shared target");
-                    import_archives.push(artifact.import_lib.clone());
                     imports.push((artifact.import_lib.clone(), artifact.fingerprint.clone()));
+                    if pic_shared {
+                        if shared_link_flags.is_empty() {
+                            shared_link_flags.push(plan.cxx.lib_path_flag(&scope_dir.display().to_string()));
+                            shared_link_flags.push("-Wl,-rpath,$ORIGIN".to_string());
+                        }
+                        shared_link_flags.push(plan.cxx.link_lib_flag(name));
+                    } else if plan.cxx.family().is_msvc() {
+                        // MSVC links the import library by file name; the DLL is found next
+                        // to the exe at runtime, so there is no rpath equivalent.
+                        shared_link_flags.push(plan.cxx.link_lib_flag(name));
+                    } else {
+                        import_archives.push(artifact.import_lib.clone());
+                    }
                 }
             }
         }
@@ -607,6 +652,7 @@ fn build_execs(
             extra_flags.push(plan.cxx.lib_path_flag(&format!("{}/lib", p.display())));
         }
         extra_flags.extend(bin.extern_links.iter().map(|n| format!("-l{n}")));
+        extra_flags.extend(shared_link_flags);
         let link_state = match set {
             ExecSet::Bins => bin_link_state_path(&scope_dir, &bin.name, multi),
             ExecSet::Tests => test_link_state_path(&scope_dir, &bin.name),

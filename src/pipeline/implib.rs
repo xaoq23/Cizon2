@@ -9,14 +9,20 @@ use super::compile::replace_file;
 pub(super) enum ImportLibFlavor {
     Gnu,
     Msvc,
+    /// ELF (Linux): there is no import library; the .so itself is the link artifact and the
+    /// bin links it by name (`-l<name>`) with an rpath of `$ORIGIN`.
+    Elf,
 }
 
 /// Generated import libraries are archives whose header timestamps change on every link.
 /// Hash member names and payloads only, so an unchanged export surface keeps the same fingerprint.
+/// A non-archive file (an ELF .so) is hashed whole: on Linux the fingerprint is content-based,
+/// so an implementation-only change relinks the bin as well (correct, just coarser than the
+/// Windows import-library fingerprint).
 pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
     let data = std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     if data.len() < 8 || &data[..8] != b"!<arch>\n" {
-        return Err(format!("{} is not a GNU archive.", path.display()));
+        return Ok(hash_bytes(&data));
     }
     let mut hash = 0xcbf29ce484222325u64;
     let mut offset = 8usize;
@@ -39,6 +45,15 @@ pub(super) fn fingerprint(path: &Path) -> Result<String, String> {
         offset = end + (size & 1);
     }
     Ok(format!("{hash:016x}"))
+}
+
+fn hash_bytes(data: &[u8]) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 /// Keep the old import library untouched when the new one has the same semantic fingerprint.
@@ -74,9 +89,11 @@ pub(super) fn flavor(cxx: &Cxx) -> Result<ImportLibFlavor, String> {
         Ok(ImportLibFlavor::Msvc)
     } else if triple.contains("mingw") || triple.contains("windows") {
         Ok(ImportLibFlavor::Gnu)
+    } else if triple.contains("linux") {
+        Ok(ImportLibFlavor::Elf)
     } else {
         Err(format!(
-            "Cannot determine a Windows target for {} (got {:?}); shared_lib needs a Windows toolchain.",
+            "Cannot determine a Windows or Linux target for {} (got {:?}); shared_lib needs a Windows or Linux toolchain.",
             cxx.name,
             triple.trim()
         ))
@@ -92,6 +109,8 @@ pub(super) fn import_lib_path(
     match flavor {
         ImportLibFlavor::Gnu => dir.join(format!("lib{name}.dll.a")),
         ImportLibFlavor::Msvc => dir.join(format!("{name}.lib")),
+        // No import library on Linux: the .so itself is the link artifact.
+        ImportLibFlavor::Elf => dll_path(scope_dir, name),
     }
 }
 
@@ -99,6 +118,8 @@ pub(super) fn import_lib_arg(path: &Path, flavor: ImportLibFlavor) -> String {
     match flavor {
         ImportLibFlavor::Gnu => format!("-Wl,--out-implib,{}", path.display()),
         ImportLibFlavor::Msvc => format!("-Wl,/implib:{}", path.display()),
+        // No import library is generated on Linux; link_shared skips an empty argument.
+        ImportLibFlavor::Elf => String::new(),
     }
 }
 
@@ -171,6 +192,23 @@ mod tests {
         let msvc = import_lib_path(scope, "core", ImportLibFlavor::Msvc);
         assert!(msvc.ends_with(".shared/core/core.lib"));
         assert!(import_lib_arg(&msvc, ImportLibFlavor::Msvc).contains("/implib:"));
+
+        let elf = import_lib_path(scope, "core", ImportLibFlavor::Elf);
+        assert_eq!(elf, scope.join("libcore.so"));
+        assert_eq!(import_lib_arg(&elf, ImportLibFlavor::Elf), "");
+    }
+
+    #[test]
+    fn fingerprint_hashes_a_non_archive_file_whole() {
+        let dir = temp("whole");
+        let a = dir.join("a.so");
+        let b = dir.join("b.so");
+        std::fs::write(&a, b"ELF payload one").unwrap();
+        std::fs::write(&b, b"ELF payload one").unwrap();
+        assert_eq!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        std::fs::write(&b, b"ELF payload two").unwrap();
+        assert_ne!(fingerprint(&a).unwrap(), fingerprint(&b).unwrap());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

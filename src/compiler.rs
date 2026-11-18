@@ -116,6 +116,15 @@ impl Cxx {
         }
     }
 
+    /// `-l<name>` / `<name>.lib` (MSVC links import libraries by file name).
+    pub fn link_lib_flag(&self, name: &str) -> String {
+        if self.family().is_msvc() {
+            format!("{name}.lib")
+        } else {
+            format!("-l{name}")
+        }
+    }
+
     /// Optimization/debug flags: `-O2` / `-g` for GCC/Clang, `/O2` / `/Od /Z7` for MSVC
     /// (/Z7 embeds debug info in the object, so no PDB sidecar is needed).
     pub fn opt_flags(&self, release: bool) -> Vec<String> {
@@ -711,6 +720,7 @@ mod tests {
         assert_eq!(cl.include_flag("/x/include"), "/I/x/include");
 
         assert_eq!(cl.lib_path_flag("/x/lib"), "/LIBPATH:/x/lib");
+        assert_eq!(cl.link_lib_flag("gtest"), "gtest.lib");
         assert_eq!(cl.opt_flags(true), ["/O2"]);
         assert_eq!(cl.opt_flags(false), ["/Od", "/Z7"]);
         assert_eq!(cl.strict_flags(), ["/W4"]);
@@ -724,6 +734,7 @@ mod tests {
         assert_eq!(gxx.dep_ext(), "d");
         assert_eq!(gxx.archive_name("core"), "libcore.a");
         assert_eq!(gxx.include_flag("/x/include"), "-I/x/include");
+        assert_eq!(gxx.link_lib_flag("gtest"), "-lgtest");
     }
 
     /// A fake `cl` (a shell script printing the MSVC banner) exercises the probe path on any

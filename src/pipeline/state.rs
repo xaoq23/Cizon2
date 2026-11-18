@@ -76,6 +76,9 @@ pub(super) fn project_state_text(plan: &Plan) -> String {
 /// Compile parameters for dependency sources (base flags + each dependency's own include set).
 pub(super) fn deps_state_text(plan: &Plan) -> String {
     let mut s = String::from("dep-base:\n");
+    if pic_for_shared(plan) {
+        s.push_str("pic-shared\n");
+    }
     for f in &plan.dep_base {
         s.push_str(f);
         s.push('\n');
@@ -90,9 +93,23 @@ pub(super) fn deps_state_text(plan: &Plan) -> String {
     s
 }
 
+/// On Linux, objects that may be linked into a .so must be position-independent. When a project
+/// gains (or loses) a shared target, the static-library and dependency objects must be rebuilt
+/// with (or without) -fPIC, so the flag decision is part of their state text.
+pub(super) fn pic_for_shared(plan: &Plan) -> bool {
+    // Shared library targets need -fPIC on Unix-like hosts (and their objects too, so a static
+    // library linked into a shared one does not produce relocation errors). CMake dependencies
+    // are built with -DCMAKE_POSITION_INDEPENDENT_CODE=ON, so they are not covered here.
+    // A Windows cross target (mingw) is a native Windows build: no -fPIC there.
+    cfg!(target_os = "linux") && !plan.shared.is_empty() && !plan.windows_target
+}
+
 /// Source list of static library targets; when it changes, clear static objects and archives.
 pub(super) fn libs_state_text(plan: &Plan) -> String {
     let mut s = String::from("libs:\n");
+    if pic_for_shared(plan) {
+        s.push_str("pic-shared\n");
+    }
     for lib in &plan.libs {
         s.push_str(&format!("lib {}:\n", lib.name));
         for src in &lib.sources {
