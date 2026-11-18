@@ -10,7 +10,9 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.7.1**. Adds test targets, per-target `prefix`, `strict`/`werror`, `sync`, and richer help. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
+Current version: **v0.7.1**. Adds test targets, per-target `prefix`, `strict`/`werror`, `sync`, and richer help. Primarily targets Windows x86-64; supports g++ or clang++, not MSVC yet.
+
+Unreleased v0.8 work (in the working tree, no release yet): CMake dependencies via the File API, MSVC (`cl.exe`) support, cross-compilation (`--target` / `[compiler] target`), and CI support (`sync --check`, `--quiet`, `init --ci github`).
 
 > **Status:** personally maintained and still under active development. Do not use it for real projects yet.
 
@@ -21,17 +23,20 @@ Current version: **v0.7.1**. Adds test targets, per-target `prefix`, `strict`/`w
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically
 - Multiple bins, static libraries, and shared libraries through `[[target]]`; `links` controls archive/import-library order
-- `shared_lib` builds DLLs and import libraries; unchanged import libraries do not force a relink
+- `shared_lib` builds DLLs (Windows) or `.so` files (Linux); unchanged import libraries do not force a relink
 - `cizon2 run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
 - Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
+- v0.8: CMake dependencies — `cizon2 add` detects a `CMakeLists.txt`, queries the CMake File API, builds and installs the dependency, and links its targets through `extern_links` (gtest, fmt, Catch2, ...)
+- v0.8: MSVC (`cl.exe` / `link.exe` / `lib.exe`) as a first-class compiler family, and cross-compilation with `--target <triple>` / `[compiler] target` (GCC prefixed binaries, clang `--target`, optional `sysroot`)
+- v0.8: CI support — `cizon2 sync --check` (verify-only, like `cargo --locked`), `--quiet` for build/run/test, and `cizon2 init --ci github` to write a GitHub Actions workflow
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
 - Compiler stderr is captured and replayed (lossy decoding for non-UTF-8); crash exit codes are translated into plain language
 
 ## Installation
 
-Building and running projects requires Windows x86-64 and `g++` or `clang++` on PATH; `new` / `help` / `version` need no compiler. A Rust toolchain is only needed when building from source.
+Building and running projects requires a C++ compiler on PATH — `g++`, `clang++`, or MSVC `cl.exe` (Windows, via a Developer Command Prompt or vswhere discovery); Linux and macOS builds work with g++/clang++. `new` / `help` / `version` need no compiler. A Rust toolchain is only needed when building from source.
 
 ### 1. Build from source
 
@@ -129,7 +134,9 @@ Creates a directory containing `cizon.toml`, `src/main.cpp`, and `.gitignore`. T
 
 ### `cizon2 init`
 
-Initializes a single-executable project in the current directory; the project name is the directory name. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists anywhere below the directory, so user code is never overwritten. It accepts no arguments.
+Initializes a single-executable project in the current directory; the project name is the directory name. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists anywhere below the directory, so user code is never overwritten.
+
+`cizon2 init --ci github` instead writes only `.github/workflows/ci.yml` into an existing project (it works when `cizon.toml` already exists) and refuses to overwrite an existing workflow file. The workflow installs Rust and cizon2, then runs `cizon2 sync`, `cizon2 build`, and `cizon2 test` on ubuntu/windows/macos.
 
 ### `cizon2 build`
 
@@ -139,11 +146,14 @@ Builds every bin, static library, and shared library in the plan, compiling only
 |---|---|
 | `--release` | Uses `-O2`; the default debug build uses `-g` |
 | `--compiler <spec>` | Temporarily selects the compiler for this build |
+| `--target <triple>` | Cross-compile for a target triple, e.g. `aarch64-linux-gnu` |
+| `--quiet` | Suppress cizon2's own progress lines; errors and warnings still print |
 
-- `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
-- An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon2 probes g++ → clang++ and prints a notice when g++ is missing
-- Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers never happens
-- `build` accepts only the two options above and no program arguments; use `run` to pass arguments
+- `--compiler` accepts `g++`, `clang++`, `cl`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
+- An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon2 probes g++ → clang++ → cl and prints a notice when g++ is missing
+- Artifacts live under `build/<mode>-<compiler>/`, or `build/<mode>-<compiler>-<triple>/` for a cross build; linking across modes, compilers, or targets never happens
+- `build` accepts only the options above and no program arguments; use `run` to pass arguments
+- `--target` needs a cross compiler: a bare name is probed as `<triple>-g++` / `<triple>-clang++`; plain `clang++` also works (cizon2 passes `--target=<triple>` to it). A full compiler path is used as-is. MSVC cross (x86 ↔ x64) is not supported in v1
 
 ```bash
 cizon2 build
@@ -179,14 +189,14 @@ cizon2 test calc_test codec_test         # select targets, case-insensitive
 cizon2 test calc_test -- --gtest_filter=Add*  # everything after -- goes to each test process
 ```
 
-- Accepts `--release` and `--compiler <spec>` like `build` / `run`; the build phase only handles test targets and their `links` dependencies, and `build` / `run` never build or execute test targets
+- Accepts `--release`, `--compiler <spec>`, `--target <triple>`, and `--quiet` like `build` / `run`; the build phase only handles test targets and their `links` dependencies, and `build` / `run` never build or execute test targets
 - Any non-zero exit or crash fails the whole run; cizon2 keeps running the remaining tests and prints a `passed/failed/total` summary
 - Child stdout/stderr are replayed untouched on stderr (cizon2's stdout stays empty); `Running`, `Passed` / `Failed`, and the summary also go to stderr
 - With no test targets, `cizon test` prints `no test targets` and exits 0; explicitly naming a missing test is an error
 - Test sources never see `-DNDEBUG`, so assert-based tests cannot silently become no-ops
 - Test processes run with the project root as their working directory; crash diagnostics reuse `run`'s exit-code table (`ACCESS_VIOLATION`, `DLL_NOT_FOUND`, ...)
 - v1 does not run tests in parallel, apply timeouts, or write report files; CTest labels/fixtures wait for real demand
-- Acquiring frameworks is not cizon2's job: compiled frameworks use a test target's `extern_links`, header-only frameworks are vendored
+- Compiled frameworks can come from a CMake dependency: `cizon2 add https://github.com/google/googletest.git`, then `extern_links = ["gtest_main", "gtest"]` on the test target; header-only frameworks are vendored
 
 ### `cizon2 add <git-url> [--tag <tag>]`
 
@@ -195,7 +205,7 @@ Shallow-clones the dependency into `deps/<name>`, appends an entry to `[dependen
 - `--tag` is optional; without it the remote default branch is cloned
 - Refuses when the name already exists in `[dependencies]`, or when `deps/<name>` exists but is not managed by cizon2
 - A clone or write failure rolls back `cizon.toml`, `cizon.lock`, and `deps/<name>`
-- A dependency without `include/` prints a one-time layout note (it is still added): header-only libraries (e.g. doctest) may already be usable via the automatic `-Ideps/<name>` include path; compiled libraries (e.g. googletest/Catch2) point at the system package manager plus a test target's `extern_links`
+- A dependency with a `CMakeLists.txt` is built with CMake instead: `add` configures, builds, and installs it (File API query), and prints the discovered library targets — link them with a bin/test target's `extern_links`. A dependency without `include/` and without a `CMakeLists.txt` prints a one-time layout note (it is still added): header-only libraries (e.g. doctest) may already be usable via the automatic `-Ideps/<name>` include path; other compiled libraries point at the system package manager plus `extern_links`
 
 ```bash
 cizon2 add https://github.com/fmtlib/fmt --tag 11.0.2
@@ -218,6 +228,8 @@ cizon2 update fmt
 ### `cizon2 sync`
 
 Restores/verifies every dependency checkout from `cizon.lock` without building or changing `cizon.toml`. Use it after cloning a project to materialize its dependencies (the lock is the source of truth). It needs git but no compiler.
+
+`cizon2 sync --check` verifies only — no network, no writes: the lock must agree with `cizon.toml` and every checkout must exist at the locked commit and be clean. It exits 1 on any drift, so a pipeline can gate on it like `cargo --locked`.
 
 ```bash
 git clone <project> && cd <project>
@@ -325,13 +337,16 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 | Key | Required | Default | Meaning |
 |---|---|---|---|
-| `cpp` | No | Auto-detect | `g++` → `clang++` |
+| `cpp` | No | Auto-detect | `g++` → `clang++` → `cl` |
+| `target` | No | None | Cross-compilation target triple, e.g. `aarch64-linux-gnu` |
+| `sysroot` | No | None | Passed as `--sysroot=<path>` to the compiler (and `-DCMAKE_SYSROOT` to CMake deps) |
 | `strict` | No | `false` | Expand to `-Wall -Wextra -Wpedantic` for project sources |
 | `werror` | No | `false` | Append `-Werror` (warnings become errors) for project sources |
 | `flags` | No | Empty | Appended to project source compile commands |
 | `link_flags` | No | Empty | Appended to bin and shared-library link commands |
 
-- `cpp` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored. An explicitly selected compiler that cannot be probed is a hard error; without one, a missing g++ falls back to clang++ with a notice.
+- `cpp` accepts `g++`, `clang++`, `cl`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored. An explicitly selected compiler that cannot be probed is a hard error; without one, a missing g++ falls back to clang++ (then cl, on Windows via vswhere) with a notice.
+- `target` cross-compiles: a bare `cpp` is probed as `<triple>-g++` / `<triple>-clang++`, and plain `clang++` is also accepted (cizon2 passes `--target=<triple>` to it). `--target <triple>` on the command line overrides `[compiler] target`. Cross artifacts live in `build/<mode>-<compiler>-<triple>/`. `sysroot` is passed to the compiler and to CMake-built dependencies; note that a Debian multiarch sysroot (`/usr/aarch64-linux-gnu`) breaks the linker-script paths there — for that layout, omit `sysroot` and let clang++/the prefixed GCC find the multiarch paths itself.
 - `strict` and `werror` are convenience switches over warning policy: `strict = true` is exactly `-Wall -Wextra -Wpedantic`, `werror = true` adds `-Werror`. They apply to project sources only (never dependencies), and user `flags` come after so they can still override (e.g. `-Wno-...`). Prefer these over hand-writing the same `-W` flags.
 - `flags` applies to every project target and is global; per-target flags do not exist. Do not expose private directories to every target with `-Ilib` — use a target's `prefix` for installed packages instead. Dependency sources compile with `edition`, the optimization level, and dependency includes; they do not inherit `flags`.
 - `link_flags` is appended only to bin and shared-library links; static libraries are archived, not linked. For example, GCC needs `-lstdc++exp` for `std::print`.
@@ -402,19 +417,20 @@ Rules:
 - A single bin may omit `name` and use `[project].name`; with multiple bins every bin must be named explicitly; tests must always be named
 - A test target shares the bin compile/link pipeline but is built and executed only by `cizon test`; `build` / `run` ignore it. A test-only project builds successfully (libraries are built, no exe is produced)
 - Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; the default debug `-g` keeps assert messages readable, while `cizon test --release` uses `-O2` but still never adds NDEBUG
-- `extern_links` is accepted only on test targets; cizon2 does not probe, download, or version-lock them. An unresolved `-l<name>` prints an installation hint
+- `extern_links` is accepted on bin and test targets (not on libraries); cizon2 does not probe, download, or version-lock system libraries. An unresolved `-l<name>` prints an installation hint. A name that matches a CMake dependency's target also pulls in that target's transitive link inputs
 - `extern_links` is appended in declaration order; static-library dependents come first (`gtest_main` depends on `gtest`, so write `["gtest_main", "gtest"]`)
 - `prefix` declares an installed package root (project-relative, must exist); cizon2 derives `-I<prefix>/include` and `-L<prefix>/lib` for that target only, so consuming an installed library needs no hand-written search-path flags. It assumes the standard `include/` + `lib/` layout. Keep external build/install artifacts under `deps/.build/<name>` / `deps/.install/<name>`, not at the project root
 - Test artifacts are `build/<mode>-<compiler>/<name>.exe` and their objects live in `test-obj/<name>/`, fully isolated from the bin `obj/` tree
 - Target names are case-insensitive and unique, and must pass file-name validation: not `obj` / `lib` / `deps-obj`, no leading dot, and no Windows device names. A target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); files and directories are accepted and directories are scanned recursively; same-named sources in different directories are allowed
-- `static_lib` does not support `links`; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
+- `static_lib` does not support `links`; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries (Windows) or the `.so` by name (Linux)
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
 - Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
 - Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
-- A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` (Windows only today)
+- A shared library produces `build/<mode>-<compiler>/<name>.dll` (Windows) or `build/<mode>-<compiler>/lib<name>.so` (Linux), plus an import library under `build/<mode>-<compiler>/.shared/<name>/` on Windows; Linux has no import library, the `.so` itself is the link artifact
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
-- Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
+- Exports are explicit C ABI: on Windows write `extern "C" __declspec(dllexport)`; on Linux the same function needs no attribute (ELF exports every symbol by default). cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
+- On Linux, the shared library's objects — and the static-library and dependency objects linked into it — are compiled with `-fPIC`; the bin links the `.so` by name with an rpath of `$ORIGIN`, so the exe finds it next to itself without `LD_LIBRARY_PATH`
 - On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
 - Every bin produces `build/<mode>-<compiler>/<name>.exe`; `cizon2 run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin
 - `run --all` is not supported: cizon2 does not supervise multiple processes. Use a shell/Python harness for IPC or multi-process tests
@@ -428,7 +444,7 @@ Rules:
 
 - **gtest (system package)**: `pacman -S mingw-w64-ucrt-x86_64-gtest`, then use `extern_links = ["gtest_main", "gtest"]` on the test target; the UCRT64 sysroot already provides the headers.
 - **doctest / Catch2 v2 (header-only)**: vendor the single header under `include/` (for example `include/doctest/doctest.h`) and define `DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN` or `CATCH_CONFIG_MAIN` in one test source; no `extern_links` needed.
-- **Catch2 v3 (compiled library)**: after a system install use `extern_links = ["Catch2Main", "Catch2"]`; without a system package, build it with CMake — cizon2 does not download or build frameworks.
+- **Catch2 v3 (compiled library)**: after a system install use `extern_links = ["Catch2Main", "Catch2"]`; without a system package, `cizon2 add` the Catch2 repo (it has a CMakeLists.txt, so cizon2 builds and installs it) and use the same `extern_links`.
 
 Declaration order is link order. Static libraries are order-sensitive, so gtest must be written as `gtest_main` before `gtest`.
 
@@ -440,6 +456,8 @@ import ctypes
 lib = ctypes.CDLL("build/debug-g++/shape_dll.dll")
 print(lib.shape_area(3, 4))   # an extern "C" function exported by the DLL
 ```
+
+On Linux the same call loads `build/debug-g++/libshape_dll.so`.
 
 Python only needs the DLL; the import library exists for C/C++ consumers. Python and Rust `libloading` callers both rely on the C ABI. Rust link-time consumers must match the import-library flavor: MinGW uses `.dll.a`, MSVC uses `.lib`. Direct C++ ABI export is outside the current contract; use a C wrapper or a pure-virtual/opaque-handle interface.
 
@@ -454,11 +472,53 @@ cizon2 update fmt
 - `add` / `update` shallow-clone; `build` restores from the lock when `deps/` is missing.
 - To upgrade or downgrade, change only the `tag` in `cizon.toml`, then run `cizon2 update <name>`.
 - `update` replaces the entire `deps/<name>` tree and refuses when the directory has uncommitted changes. To keep local commits, push them and update the `tag` first.
-- Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. For other layouts or libraries that need a build system, use CMake.
+- Dependencies follow a fixed layout (headers in `include/` plus flat `src/*.cpp`) **or** a CMake layout: when `deps/<name>` has a `CMakeLists.txt`, `add` builds and installs it with CMake (see below) and consumers link its targets through `extern_links`.
 - When `deps/<name>` has no `include/`, `add`/`update` print a one-time layout note (`build`/`test` no longer repeat it): header-only libraries may already be usable, while compiled libraries should go through the system package manager plus `extern_links`, or be vendored header-only.
 - Dependency source objects are linked into the bin and every shared library; dependencies are project-wide, not per-target.
 - If an external dependency needs its own cmake build/install, keep the build tree and install prefix under `deps/.build/<name>` and `deps/.install/<name>`, not at the project root; the root keeps only source directories plus `deps/` and `build/`.
 - Any mismatch among the git/tag in `cizon.toml`/`cizon.lock`, the `deps/` HEAD, and the working tree is a loud error; a missing dependency directory is restored from the lock, never silently self-healed.
+
+### CMake dependencies
+
+When `cizon2 add` finds a `CMakeLists.txt` in the dependency, it queries the CMake File API (codemodel v2) instead of compiling the sources itself:
+
+- Configure with `-DCMAKE_INSTALL_PREFIX=deps/.install/<name>`, `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`, and the current compiler/mode; build, install, then read the codemodel for the installable library targets and their link inputs.
+- The install tree is the consumer's include/lib root: `-Ideps/.install/<name>/include`, `-Ldeps/.install/<name>/lib`, and a target's `extern_links` name that matches a discovered library links it (plus its transitive links) by name.
+- A fingerprint (locked commit + compiler + mode + cmake version + target + sysroot) plus the installed artifacts decide whether cmake runs again; an unchanged dependency is a cache hit.
+- Limits (v1): the dependency must have `install(TARGETS ...)` rules for its libraries; public compile definitions from the codemodel are not forwarded; a `shared_lib` target cannot link a CMake dependency yet; custom install destinations outside `lib`/`lib64`/`bin` are not found.
+
+```bash
+cizon2 add https://github.com/google/googletest.git
+# CMake dependency googletest: built with CMake (Debug); library targets: gmock, gmock_main, gtest, gtest_main
+```
+
+```toml
+[[target]]
+name = "math_test"
+kind = "test"
+sources = ["tests"]
+extern_links = ["gtest_main", "gtest"]
+```
+
+### Cross-compilation
+
+```toml
+[compiler]
+target = "aarch64-linux-gnu"
+# sysroot = "/opt/aarch64-sysroot"   # only when the toolchain needs one
+```
+
+or per build: `cizon2 build --target aarch64-linux-gnu`. GCC uses the prefixed binary (`aarch64-linux-gnu-g++`, and `<triple>-ar` for archives); clang++ gets `--target=<triple>`. CMake dependencies are configured with `-DCMAKE_SYSTEM_NAME` / `-DCMAKE_SYSTEM_PROCESSOR` derived from the triple. Cross-built binaries cannot be executed on the host (`cizon2 run` reports the exec-format error plainly); use `cizon2 test --target ...` only when the target can actually run (e.g. via qemu, which cizon2 does not set up). MSVC cross (x86 ↔ x64) is not supported in v1.
+
+### Continuous integration
+
+```bash
+cizon2 init --ci github   # write .github/workflows/ci.yml (ubuntu/windows/macos)
+cizon2 sync --check       # verify-only gate: lock vs cizon.toml, checkouts vs lock
+cizon2 build --quiet      # progress lines off; errors and warnings still print
+```
+
+The generated workflow installs Rust and cizon2 (`cargo install --git https://github.com/xaoq23/Cizon2`), then runs `cizon2 sync`, `cizon2 build`, and `cizon2 test`. `sync --check` is for workspaces whose checkouts already exist (a developer machine, or a CI cache); a fresh checkout uses plain `cizon2 sync` to materialize the dependencies first.
 
 ## Editors (clangd / VS Code)
 
@@ -536,7 +596,7 @@ One-time `.vscode/tasks.json`:
 - Test sources compile with `-DNDEBUG` stripped; changing `extern_links` changes the link fingerprint and forces a relink
 - Link inputs (object list, static archives, `extern_links`, `link_flags`) change: forced relink
 - Static library sources change: only that archive is rebuilt, then relinked; changing only the bin does not rebuild archives
-- Shared library sources change: the DLL relinks; if the import library fingerprint is unchanged, the bin is not relinked. Export changes relink the bin
+- Shared library sources change: the DLL relinks; if the import library fingerprint is unchanged, the bin is not relinked. Export changes relink the bin. On Linux the `.so` fingerprint is a content hash: a byte-identical `.so` does not relink the bin, but an implementation change that changes the `.so` bytes does (Windows avoids that relink via the import-library fingerprint)
 - Removing or renaming a shared target cleans its DLL, import library, and `.shared` objects
 - Compiler version changes: the whole `build/<mode>-<compiler>/` scope is invalidated
 - Concurrent builds of the same project are unsupported: do not run `cizon2 build` in two terminals at once
@@ -580,9 +640,9 @@ cizon2 puts the compiler's bin directory first in the child PATH for `run` / `te
 - `cizon2 test` builds and runs test targets only; exit 0 when every test exits 0, otherwise 1; no test targets prints `no test targets` and exits 0
 - Test targets never define `-DNDEBUG`; frameworks are supplied by the user, and external libraries are wired in explicitly through `extern_links`
 - `run --all` is not supported; multi-process/IPC orchestration belongs in an external harness
-- Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library
+- Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library on Windows, a `.so` on Linux
 - Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
-- Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
+- Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes. On Linux the `.so` files sit next to the exe too and are found via the `$ORIGIN` rpath
 - `include/` is the only automatic `-I` directory; keep private headers out of it and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; a build with an older object layout does one full rebuild
 - `[project].version` is metadata only; it does not affect compilation or artifact names
@@ -617,6 +677,14 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 - Dogfooded on a real project with gtest, doctest, Catch2 and plain assert tests
 - CTest labels / fixtures / parallel / timeout / report files wait for real demand
 
+### v0.8 (in development, working tree only — no release, no commits yet)
+
+- CMake dependencies: File API integration in `add` (codemodel v2 parsing, fingerprint-cached configure/build/install, `extern_links` expansion with transitive links). Verified end to end with googletest (test target, 2/2 pass) and fmt (bin target, `answer=42`); the fmt case exposed two real bugs that are fixed (install-rule-less targets are skipped; `plan()` dropped bin `extern_links`).
+- MSVC: `cl.exe` probing (incl. vswhere), flag mapping (`/std:`, `/O2`, `/W4`, `/WX`, `/I`, `/D`, `/LIBPATH:`), `.obj`/`.lib`/`.exe`/`.dll` outputs, `/sourceDependencies` JSON dep files. Implemented and unit-tested; **not verified on a real Windows machine yet** — the sandbox has no Windows.
+- Cross-compilation: `[compiler] target` / `--target`, optional `sysroot`, per-target build scopes, prefixed archiver, CMake `-DCMAKE_SYSTEM_NAME`/`-DCMAKE_SYSTEM_PROCESSOR`. Verified with `aarch64-linux-gnu` on g++ and clang++ (aarch64 ELF confirmed with `file`).
+- CI: `sync --check`, `--quiet` (build/run/test), `init --ci github`.
+- Known v1 limits: CMake deps need `install(TARGETS ...)` rules and cannot be linked from a `shared_lib` target; codemodel compile definitions are not forwarded; MSVC cross (x86 ↔ x64) is out of scope; `init --ci` only supports GitHub.
+
 ### Reliability
 
 - The linker writes the exe directly, and lock/`cizon.toml` writes are not power-loss atomic; temporary-file replacement could be added
@@ -627,14 +695,14 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 ### Diagnostics and engineering
 
 - Config structure errors come from serde; messages such as `unknown field` are English (low-priority style issue)
-- CI builds tagged releases; tests are local and skip when the compiler/git is missing
+- CI builds tagged releases; `cizon2 init --ci github` writes a workflow that runs `sync`/`build`/`test` on ubuntu/windows/macos, and `sync --check` / `--quiet` are the CI-facing primitives. Tests still skip locally when the compiler/git is missing
 - `rustfmt`/`clippy` are not wired in yet
 
 ### Wait for real demand
 
 - Transitive target dependencies, per-target flags/include
 - install/export, a one-shot CMake export command
-- MSVC, cross-compilation, external package managers
+- External package managers (vcpkg / Conan)
 - Consumers of a generated header/compile macro for `[project].version`
 - Compiler discovery in common install locations and version selection
 
@@ -646,10 +714,10 @@ Cizon2 targets small-to-medium projects with one or more bins (optionally with s
 - install/export/find_package/packaging, DLL versioning/SONAME
 - Shared libraries depending on other shared libraries, direct C++ ABI distribution
 - Code generation (protobuf, Qt moc), custom build steps
-- MSVC, cross-compilation, complex toolchain conditions
+- Complex toolchain conditions beyond a single target triple
 - External package managers such as vcpkg / Conan
 
-None of these are supported today.
+MSVC and cross-compilation are supported since v0.8 (see above); the rest are not supported today.
 
 ## Development
 
