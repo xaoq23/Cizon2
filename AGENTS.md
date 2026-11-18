@@ -14,12 +14,14 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.7.1）
+## 当前边界（v0.8 开发中）
 
 | 在边界内 | 边界外 |
 |---|---|
 | `build` / `run` / `test` / `sync` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
 | 中小型单项目（多个 bin/test + 静态库/共享库 `[[target]]`） | 嵌套 target 图 / install-export / 共享库依赖共享库 |
+| Linux `shared_lib`：`.so`、`-fPIC`、`$ORIGIN` rpath | MSVC / 交叉编译 / 复杂工具链 |
+| CI 原语：`sync --check`（只校验）、`--quiet` | `init --ci`、企业级 CI |
 | `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
 | test target 的 `extern_links`（仅 `-l<name>`）+ per-target `prefix`（推导 `-I`/`-L`） | vcpkg / Conan / conda / CMake provision |
 | `[compiler] strict`/`werror` 警告开关；`help <command>` 详细帮助 | 完整 per-target flags/include 作用域 |
@@ -42,7 +44,7 @@
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
-- `shared_lib` 仅 Windows；导出必须使用 C ABI；DLL 与 exe 同目录，import lib 在 `.shared/<name>/`，内部目录保留给 cizon2
+- `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon2
 
 ## 输出约定
 
@@ -99,4 +101,5 @@
 10. v0.6 多 bin target + `run <bin>` —— 已发布 v0.6.0
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
-13. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+13. v0.8 Linux 共享库 + CI 原语 —— 开发中（`release/0.8.0`，未发布）：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
+14. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

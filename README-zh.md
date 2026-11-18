@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.7.1**。新增 test target、per-target `prefix`、`strict`/`werror`、`sync` 与更完善的 help。目前主要面向 Windows x86-64（未编译 Linux/macOS 版及其他架构），支持 g++ 或 clang++，暂不支持 MSVC。
+当前版本：**v0.8.0**（开发中；上个发布版 v0.7.1）。在 v0.7.1 的 test target、`prefix`、`strict`/`werror` 之上，新增 Linux 共享库（`.so`）、`sync --check` 与 `--quiet`。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
 
@@ -17,10 +17,11 @@
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`
 - 多个 bin、静态库、共享库 target；`links` 控制归档与 import lib 的顺序
-- `shared_lib` 生成 DLL 与 import lib；import lib 未变时不重链 bin
+- `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon2 run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
-- git 依赖 + 锁文件：`cizon2 add` / `cizon2 update`
+- git 依赖 + 锁文件：`cizon2 add` / `cizon2 update` / `cizon2 sync`；`sync --check` 在 CI 中只校验锁、不写文件
+- `--quiet` 关闭 build/run/test 的进度行（错误、警告与程序输出仍照常）
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
@@ -107,13 +108,15 @@ hello/
 |---|---|
 | `cizon2 new <路径>` | 创建项目骨架 |
 | `cizon2 init` | 在当前目录初始化（已有文件不覆盖） |
-| `cizon2 build [--release] [--compiler <spec>]` | 构建全部 bin 与库 target（不构建 test） |
-| `cizon2 run [--release] [--compiler <spec>] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
-| `cizon2 test [--release] [--compiler <spec>] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
+| `cizon2 build [--release] [--compiler <spec>] [--quiet]` | 构建全部 bin 与库 target（不构建 test） |
+| `cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
+| `cizon2 test [--release] [--compiler <spec>] [--quiet] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
 | `cizon2 add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
 | `cizon2 update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
-| `cizon2 sync` | 从 `cizon.lock` 恢复/校验依赖（不构建） |
+| `cizon2 sync [--check]` | 从 `cizon.lock` 恢复依赖，或只校验不写 |
 | `cizon2 help [<命令>]` / `cizon2 version` | 总览或单命令详细帮助 / 版本 |
+
+`--quiet` 用于 `build` / `run` / `test`：关闭 cizon2 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。
 
 ### `cizon2 new <路径>`
 
@@ -213,12 +216,16 @@ cizon2 update fmt
 
 ### `cizon2 sync`
 
-从 `cizon.lock` 恢复/校验所有依赖 checkout，不构建、不改 `cizon.toml`。克隆项目后用它把依赖落地（锁是唯一真相）。需要 git，不需要编译器。
+从 `cizon.lock` 恢复所有依赖 checkout，不构建、不改 `cizon.toml`。克隆项目后用它把依赖落地（锁是唯一真相）。需要 git，不需要编译器。
+
+`cizon2 sync --check` 是 CI 闸门：只校验锁与 `cizon.toml` 一致、每个 checkout 存在且位于锁定的 commit、工作区干净——不联网、不写文件；任何漂移都返回非 0。
 
 ```bash
 git clone <项目> && cd <项目>
 cizon2 sync
 cizon2 build
+# CI 中：
+cizon2 sync --check
 ```
 
 ### `cizon2 help` / `cizon2 version`
@@ -408,8 +415,9 @@ extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序�
 - `links` 必须引用配置中已存在的 target，重复条目会报错；共享库不能链接其他共享库，DLL 之间的传递依赖交给 CMake
 - 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
 - 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
-- 共享库产物为 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`（目前仅 Windows）
+- 共享库在 Windows 产 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`；在 Linux 产 `build/<mode>-<compiler>/lib<name>.so`
 - Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon2 显式传 import lib 参数
+- Linux 下可能进入 `.so` 的对象（依赖对象、静态库、共享库自身）以 `-fPIC` 编译；消费者按名链接 `.so` 并带 `-Wl,-rpath,$ORIGIN`，exe 在自身目录找到它，无需 `LD_LIBRARY_PATH`
 - 导出使用显式 C ABI：`extern "C" __declspec(dllexport)`。cizon2 不自动导出符号、不生成绑定，也不保证 C++ ABI
 - MinGW 下 `shared_lib` 默认静态链接运行库，DLL 不依赖 `libstdc++`/`libgcc`/`libwinpthread`，Python `ctypes` 无需改 PATH。保持 C ABI 边界：DLL 与 exe 各有一套静态运行库时，不要跨边界传 C++ 对象或异常
 - 每个 bin 产出 `build/<mode>-<compiler>/<name>.exe`；`cizon2 run <bin>` 会构建全部 bin 后运行指定项，只有项目恰好一个 bin 时才能省略名字

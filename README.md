@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.7.1**. Adds test targets, per-target `prefix`, `strict`/`werror`, `sync`, and richer help. Primarily targets Windows x86-64 (no Linux/macOS builds or other architectures); supports g++ or clang++, not MSVC yet.
+Current version: **v0.8.0** (development; last release v0.7.1). Adds Linux shared libraries (`.so`), `sync --check` and `--quiet` on top of v0.7.1's test targets, `prefix` and `strict`/`werror`. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained and still under active development. Do not use it for real projects yet.
 
@@ -21,10 +21,11 @@ Current version: **v0.7.1**. Adds test targets, per-target `prefix`, `strict`/`w
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically
 - Multiple bins, static libraries, and shared libraries through `[[target]]`; `links` controls archive/import-library order
-- `shared_lib` builds DLLs and import libraries; unchanged import libraries do not force a relink
+- `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon2 run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
-- Git dependencies with a lock file: `cizon2 add` / `cizon2 update`
+- Git dependencies with a lock file: `cizon2 add` / `cizon2 update` / `cizon2 sync`; `sync --check` verifies a locked checkout in CI without writing
+- `--quiet` silences build/run/test progress lines (errors, warnings and program output still print)
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
 - Compiler stderr is captured and replayed (lossy decoding for non-UTF-8); crash exit codes are translated into plain language
@@ -111,13 +112,15 @@ Except for `new`, every command runs in the directory containing `cizon.toml`; c
 |---|---|
 | `cizon2 new <path>` | Create a project skeleton |
 | `cizon2 init` | Initialize in the current directory (existing files are not overwritten) |
-| `cizon2 build [--release] [--compiler <spec>]` | Build every bin and library target (not tests) |
-| `cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]` | Build bins and their dependencies, then run and forward arguments |
-| `cizon2 test [--release] [--compiler <spec>] [<test-name>...] [-- <test args...>]` | Build and run test targets one by one |
+| `cizon2 build [--release] [--compiler <spec>] [--quiet]` | Build every bin and library target (not tests) |
+| `cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]` | Build bins and their dependencies, then run and forward arguments |
+| `cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]` | Build and run test targets one by one |
 | `cizon2 add <git-url> [--tag <tag>]` | Add a git dependency and write the lock file |
 | `cizon2 update <dependency>` | Align the lock with the intent in `cizon.toml` (upgrade or downgrade) |
-| `cizon2 sync` | Restore/verify deps from `cizon.lock` (no build) |
+| `cizon2 sync [--check]` | Restore deps from `cizon.lock`, or verify them without writing |
 | `cizon2 help [<command>]` / `cizon2 version` | General or per-command help / version |
+
+`--quiet` on `build` / `run` / `test` suppresses cizon2's own progress lines; errors, compiler warnings and the program/test output still print.
 
 ### `cizon2 new <path>`
 
@@ -217,12 +220,16 @@ cizon2 update fmt
 
 ### `cizon2 sync`
 
-Restores/verifies every dependency checkout from `cizon.lock` without building or changing `cizon.toml`. Use it after cloning a project to materialize its dependencies (the lock is the source of truth). It needs git but no compiler.
+Restores every dependency checkout from `cizon.lock` without building or changing `cizon.toml`. Use it after cloning a project to materialize its dependencies (the lock is the source of truth). It needs git but no compiler.
+
+`cizon2 sync --check` is the CI gate: it verifies that the lock agrees with `cizon.toml` and every checkout is present, at the locked commit and clean — with no network and no writes. Exit non-zero on any drift.
 
 ```bash
 git clone <project> && cd <project>
 cizon2 sync
 cizon2 build
+# in CI:
+cizon2 sync --check
 ```
 
 ### `cizon2 help` / `cizon2 version`
@@ -412,8 +419,9 @@ Rules:
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
 - Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
 - Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
-- A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` (Windows only today)
+- A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` on Windows, or `build/<mode>-<compiler>/lib<name>.so` on Linux
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
+- On Linux, objects that may land in a `.so` (dependency objects, static libraries, the shared target itself) compile with `-fPIC`; consumers link the `.so` by name with `-Wl,-rpath,$ORIGIN`, so the executable finds it next to itself with no `LD_LIBRARY_PATH`
 - Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
 - On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
 - Every bin produces `build/<mode>-<compiler>/<name>.exe`; `cizon2 run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin
