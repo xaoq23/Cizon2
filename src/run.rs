@@ -21,7 +21,9 @@ pub fn run(
     let (cxx, fallback_note) =
         compiler::pick_with_note(cc.or(cfg.explicit_compiler()))?;
     if let Some(note) = fallback_note {
-        eprintln!("{note}");
+        if !pipeline::output::quiet() {
+            eprintln!("{note}");
+        }
     }
     let compiler_name = cxx.name.clone();
     let plan = pipeline::plan(dir, cfg, cxx, release)?;
@@ -61,11 +63,13 @@ pub fn run(
         }
     };
 
-    eprintln!(
-        "\x1b[36m     Running\x1b[0m {}",
-        pipeline::rel_display(dir, &exe)
-    );
-    eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+    if !pipeline::output::quiet() {
+        eprintln!(
+            "\x1b[36m     Running\x1b[0m {}",
+            pipeline::rel_display(dir, &exe)
+        );
+        eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+    }
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(app_args);
     // Put the compiler's runtime DLLs first so an older libstdc++ elsewhere on PATH (e.g. Git's

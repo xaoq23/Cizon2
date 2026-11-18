@@ -1,7 +1,22 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::compiler::Cxx;
+
+/// `--quiet` (build/run/test): suppress cizon2's own progress lines (Compiling/Linking/
+/// Finished/Running/Passed) while keeping errors, warnings and the executed program's own
+/// output. Process-global because the progress sites are spread across the pipeline, run and
+/// test drivers; set once from the CLI flags.
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_quiet(value: bool) {
+    QUIET.store(value, Ordering::Relaxed);
+}
+
+pub(crate) fn quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
 
 /// Output path: relative to the project root; falls back to the original path when outside it.
 pub(crate) fn rel_display(base: &Path, path: &Path) -> String {
@@ -15,6 +30,9 @@ const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
 pub(super) fn step_line(label: &str, detail: &str) {
+    if quiet() {
+        return;
+    }
     eprintln!("{GREEN}{label:>12}{RESET} {detail}", label = label, detail = detail);
 }
 

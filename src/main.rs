@@ -22,10 +22,10 @@ Usage:
   cizon2 init                        # initialize in place in the current directory
   cizon2 add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
   cizon2 update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
-  cizon2 sync                        # restore/verify deps from cizon.lock (no build)
-  cizon2 build [--release] [--compiler <spec>]
-  cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]
-  cizon2 test [--release] [--compiler <spec>] [<test-name>...] [-- <test args...>]
+  cizon2 sync [--check]              # restore deps from the lock, or verify without writing
+  cizon2 build [--release] [--compiler <spec>] [--quiet]
+  cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
+  cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
   cizon2 help [<command>]            # general or per-command help
   cizon2 version                     # print version
 
@@ -91,10 +91,23 @@ fn dispatch(args: &[String]) -> i32 {
 }
 
 fn sync_cmd(args: &[String]) -> Result<i32, String> {
-    if !args.is_empty() {
-        return Err("Usage: cizon2 sync (accepts no arguments)".into());
-    }
+    let check = match args {
+        [] => false,
+        [arg] if arg == "--check" => true,
+        _ => return Err("Usage: cizon2 sync [--check]".into()),
+    };
     let (dir, cfg) = load_config()?;
+    if check {
+        let n = deps::check(&dir, &cfg)?;
+        if n == 0 {
+            eprintln!("no dependencies to check");
+        } else {
+            eprintln!(
+                "\x1b[32m  Finished\x1b[0m dependencies in sync ({n} checked, no changes made)"
+            );
+        }
+        return Ok(0);
+    }
     let n = deps::sync(&dir, &cfg)?;
     if n == 0 {
         eprintln!("no dependencies to sync");
@@ -128,18 +141,19 @@ Accepts no arguments.",
         "build" => "\
 cizon2 build — build all bin and library targets (not tests)
 
-Usage: cizon2 build [--release] [--compiler <spec>]
+Usage: cizon2 build [--release] [--compiler <spec>] [--quiet]
 
 Options:
   --release          optimize (-O2); the default debug build uses -g
   --compiler <spec>  use g++, clang++ or a full path for this build
+  --quiet            suppress progress lines (errors and warnings still print)
 
 Compiles only stale objects; artifacts live under build/<mode>-<compiler>/.
 Test targets are ignored — use `cizon2 test` for those.",
         "run" => "\
 cizon2 run — build, then run a bin target
 
-Usage: cizon2 run [--release] [--compiler <spec>] [<bin-name>] [-- <program args...>]
+Usage: cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
 
 The bin name is optional only when the project has exactly one bin. Everything after
 -- is passed to the program, and the program's exit code is forwarded.
@@ -150,7 +164,7 @@ Examples:
         "test" => "\
 cizon2 test — build and run test targets
 
-Usage: cizon2 test [--release] [--compiler <spec>] [<test-name>...] [-- <test args...>]
+Usage: cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
 
 Runs the selected test targets (all when none are named), in declaration order. A test
 passes iff its process exits 0; any failure exits 1. Test output goes to stderr.
@@ -178,10 +192,11 @@ a dirty deps/<name>. Change the tag in cizon.toml first, then run update.",
         "sync" => "\
 cizon2 sync — restore dependencies from the lock
 
-Usage: cizon2 sync
+Usage: cizon2 sync [--check]
 
-Restores/verifies every dependency checkout from cizon.lock without building or
-changing cizon.toml. Use it after cloning a project to materialize its dependencies.",
+Restores every dependency checkout from cizon.lock without building or changing
+cizon.toml. With --check it only verifies the lock and checkouts (no network, no
+writes) and exits non-zero on drift — the CI gate for a locked build.",
         "help" => "\
 cizon2 help — show help
 
@@ -204,14 +219,17 @@ Aliases: --version, -V, -v.",
 struct Flags {
     release: bool,
     cc: Option<String>,
+    /// Suppress cizon2's own progress lines (errors, warnings and program output still print).
+    quiet: bool,
 }
 
 /// Parse flags up to `--`; everything after it is passed through.
 fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, quiet: false };
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
+            "--quiet" | "-q" => flags.quiet = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -235,11 +253,12 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
 fn parse_run_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Option<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, quiet: false };
     let mut bin = None;
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
+            "--quiet" | "-q" => flags.quiet = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -279,11 +298,14 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
     if !rest.is_empty() {
         return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
+    pipeline::output::set_quiet(flags.quiet);
     let (dir, cfg) = load_config()?;
     let (cxx, fallback_note) =
         compiler::pick_with_note(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
     if let Some(note) = fallback_note {
-        eprintln!("{note}");
+        if !pipeline::output::quiet() {
+            eprintln!("{note}");
+        }
     }
     let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
     // A test-only project has no bin to return; building its libraries is still useful and must
@@ -293,6 +315,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
 
 fn execute_run(args: &[String]) -> Result<i32, String> {
     let (flags, bin, app_args) = parse_run_args(args)?;
+    pipeline::output::set_quiet(flags.quiet);
     let (dir, cfg) = load_config()?;
     run::run(
         &dir,
@@ -308,11 +331,12 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
 fn parse_test_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Vec<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None };
+    let mut flags = Flags { release: false, cc: None, quiet: false };
     let mut names = Vec::new();
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
+            "--quiet" | "-q" => flags.quiet = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -336,6 +360,7 @@ fn parse_test_args<'a>(
 
 fn test_cmd(args: &[String]) -> Result<i32, String> {
     let (flags, names, app_args) = parse_test_args(args)?;
+    pipeline::output::set_quiet(flags.quiet);
     let (dir, cfg) = load_config()?;
     test::test(
         &dir,

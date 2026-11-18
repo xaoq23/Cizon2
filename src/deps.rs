@@ -512,14 +512,13 @@ fn read_lock(dir: &Path) -> Result<toml::Table, String> {
         .map_err(|e| format!("{CIZON_LOCK} failed to parse: {e}"))
 }
 
-/// Restore/verify one dependency checkout against the lock (no compilation): validate the lock
-/// entry, ensure the checkout sits at the pinned commit, and refuse a dirty or mismatched tree.
-fn restore_dep(
-    dir: &Path,
+/// The locked commit for a dependency, after checking that the lock agrees with [dependencies]
+/// (URL, tag, commit shape). Shared by `sync` (restore) and `sync --check`.
+fn lock_commit(
     name: &str,
     info: &config::DepInfo,
     lock: &toml::Table,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let entry = lock
         .get(name)
         .and_then(|v| v.as_table())
@@ -546,7 +545,18 @@ fn restore_dep(
             "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon2 update {name} to rebuild the lock."
         ));
     }
-    let commit = commit.to_ascii_lowercase();
+    Ok(commit.to_ascii_lowercase())
+}
+
+/// Restore/verify one dependency checkout against the lock (no compilation): validate the lock
+/// entry, ensure the checkout sits at the pinned commit, and refuse a dirty or mismatched tree.
+fn restore_dep(
+    dir: &Path,
+    name: &str,
+    info: &config::DepInfo,
+    lock: &toml::Table,
+) -> Result<(), String> {
+    let commit = lock_commit(name, info, lock)?;
 
     let dep_dir = dir.join("deps").join(name);
     if dep_dir.exists() {
@@ -580,9 +590,61 @@ fn restore_dep(
         }
     } else {
         clone_pinned(dir, &info.git, info.tag.as_deref(), &commit, name)?;
-        eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+        if !crate::pipeline::output::quiet() {
+            eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+        }
     }
     Ok(())
+}
+
+/// `sync --check`: verify that the lock agrees with cizon.toml and every checkout exists at the
+/// locked commit and is clean — no network, no writes (the cargo `--locked` analogue for CI).
+pub fn check(dir: &Path, cfg: &config::Config) -> Result<usize, String> {
+    let Some(map) = cfg.dependencies() else {
+        return Ok(0);
+    };
+    if map.is_empty() {
+        return Ok(0);
+    }
+    let lock = read_lock(dir)?;
+    for (name, info) in map {
+        let commit = lock_commit(name, info, &lock)?;
+        let dep_dir = dir.join("deps").join(name);
+        if !dep_dir.exists() {
+            return Err(format!(
+                "deps/{name} is missing; run cizon2 sync to restore it from the lock (check mode never clones)."
+            ));
+        }
+        let head = git_cmd(
+            dir,
+            &[
+                "-C".into(),
+                format!("deps/{name}"),
+                "rev-parse".into(),
+                "HEAD".into(),
+            ],
+        )?;
+        if head != commit {
+            return Err(format!(
+                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). Run cizon2 sync to restore from the lock, or cizon2 update {name} to align the lock."
+            ));
+        }
+        let status = git_cmd(
+            dir,
+            &[
+                "-C".into(),
+                format!("deps/{name}"),
+                "status".into(),
+                "--porcelain".into(),
+            ],
+        )?;
+        if !status.is_empty() {
+            return Err(format!(
+                "deps/{name} has uncommitted changes, the lock no longer represents the actual code. Commit and push to the remote, update cizon.toml's tag, then run update; or delete the directory and let sync restore from the lock."
+            ));
+        }
+    }
+    Ok(map.len())
 }
 
 /// Restore by tag (shallow clone + commit verification) or by bare commit (full clone +
@@ -871,6 +933,42 @@ mod tests {
         assert!(!proj.join("build").exists(), "sync must not build");
         // A second sync just verifies the restored checkout.
         assert_eq!(sync(&proj, &cfg).unwrap(), 1);
+
+        fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn check_verifies_lock_without_writing() {
+        if !has_git() {
+            return;
+        }
+        let origin = temp("check-origin");
+        let proj = temp("check-proj");
+        make_origin(&origin, false);
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::write(proj.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        add_in(&proj, &add_args(&origin)).unwrap();
+        let name = origin.file_name().unwrap().to_string_lossy().into_owned();
+        let dep_dir = proj.join("deps").join(&name);
+        let cfg = config::load(&proj).unwrap();
+        assert_eq!(check(&proj, &cfg).unwrap(), 1);
+
+        // A missing checkout fails without cloning anything back.
+        fs::remove_dir_all(&dep_dir).unwrap();
+        let err = check(&proj, &cfg).unwrap_err();
+        assert!(err.contains("is missing"), "got: {err}");
+        assert!(!dep_dir.exists(), "check mode must never restore");
+
+        // Restoring via sync makes check green again.
+        assert_eq!(sync(&proj, &cfg).unwrap(), 1);
+        assert_eq!(check(&proj, &cfg).unwrap(), 1);
+
+        // A dirty checkout fails too.
+        fs::write(dep_dir.join("include/dep.h"), "// dirty\n").unwrap();
+        let err = check(&proj, &cfg).unwrap_err();
+        assert!(err.contains("uncommitted changes"), "got: {err}");
 
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
