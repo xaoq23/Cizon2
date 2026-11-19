@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and release (v0.6.0 or 0.6.0)"
+        description: "Existing tag to build and release (v0.8.0 or 0.8.0)"
         required: true
         type: string
 
@@ -15,78 +15,112 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 20
-
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.normalize.outputs.tag }}
     steps:
-      - name: Normalize release tag
-        shell: pwsh
+      - id: normalize
+        shell: bash
         run: |
-          $tag = "${{ inputs.tag }}"
-          if ([string]::IsNullOrWhiteSpace($tag)) {
-            $tag = "${{ github.ref_name }}"
-          }
-          if (-not $tag.StartsWith("v")) {
-            $tag = "v$tag"
-          }
-          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "CHECKOUT_REF=refs/tags/$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
+          tag="${{ inputs.tag }}"
+          if [ -z "$tag" ]; then
+            tag="${{ github.ref_name }}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) tag="v$tag" ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: windows-x86_64.exe
+          - os: ubuntu-latest
+            suffix: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.CHECKOUT_REF }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify tag matches Cargo version
+        shell: bash
+        run: |
+          version=$(cargo pkgid | sed 's/.*@//')
+          tag="${{ needs.prepare.outputs.tag }}"
+          if [ "v$version" != "$tag" ]; then
+            echo "Tag $tag does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Build release
         run: cargo build --release --locked
 
-      - name: Name release asset
+      # Linux has no local gate for .so support: run the whole suite here so the release
+      # fails before publishing when shared libraries break.
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test --release
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $meta = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
-          $version = $meta.packages[0].version
-          $tag = $env:RELEASE_TAG
-
-          if (-not $tag.StartsWith("v")) {
-            throw "Release tag must start with 'v', got '$tag'"
-          }
-          $tagVersion = $tag.Substring(1)
-          if ($tagVersion -ne $version) {
-            throw "Tag $tag does not match Cargo.toml version $version"
-          }
-
-          $asset = "cizon2-v$version-windows-x86_64.exe"
+          $asset = "cizon2-v$env:VERSION-windows-x86_64.exe"
           Copy-Item target/release/cizon2.exe $asset
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Set-Content "$asset.sha256" -Encoding ascii
-
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "ARTIFACT=cizon2-v$version-windows-x86_64" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          asset="cizon2-v${VERSION}-linux-x86_64"
+          cp target/release/cizon2 "$asset"
+          chmod +x "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARTIFACT }}
+          name: ${{ matrix.suffix }}
           path: |
             ${{ env.ASSET }}
             ${{ env.ASSET }}.sha256
           if-no-files-found: error
 
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create or update GitHub Release
-        if: startsWith(env.RELEASE_TAG, 'v')
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = $env:RELEASE_TAG
-          $asset = $env:ASSET
-          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $asset "$asset.sha256" --clobber --repo $env:GITHUB_REPOSITORY
-          } else {
-            gh release create $tag $asset "$asset.sha256" --title $tag --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY
-          }
+          tag="${{ needs.prepare.outputs.tag }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/* --title "$tag" --generate-notes --verify-tag --repo "$GITHUB_REPOSITORY"
+          fi

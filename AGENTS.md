@@ -14,7 +14,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.8 开发中）
+## 当前边界（v0.8.0）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -75,7 +75,7 @@
 - `main` 只收可发布版本；功能与修复提交到 `dev`，可发布后合入 `main`。
 - 一个功能一个 commit；测试先行（模块单测 + 真实编译器/git 端到端）。
 - git commit 信息一律使用英文（保留 `feat:` / `fix:` / `docs:` 等类型前缀）。
-- CI 只在 `v*` tag 上构建并发布 release；测试仍在本地跑。
+- CI 只在 `v*` tag 上构建并发布 release；Windows 测试在本地跑，Linux 测试在 CI 跑（`.so` 的唯一门禁）。
 - 源码注释、文档注释和用户面字符串一律使用英文；`README-zh.md` 保留中文文档。
 - `README.md` 是英文主文档，`README-zh.md` 是中文版；修改文档时两份同步。
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
@@ -101,5 +101,5 @@
 10. v0.6 多 bin target + `run <bin>` —— 已发布 v0.6.0
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
-13. v0.8 Linux 共享库 + CI 原语 —— 开发中（`release/0.8.0`，未发布）：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
+13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. 之后：需要嵌套 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

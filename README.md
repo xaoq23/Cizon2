@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.8.0** (development; last release v0.7.1). Adds Linux shared libraries (`.so`), `sync --check` and `--quiet` on top of v0.7.1's test targets, `prefix` and `strict`/`werror`. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.8.0**. Adds Linux shared libraries (`.so`), `sync --check` and `--quiet` on top of v0.7.1's test targets, `prefix` and `strict`/`werror`. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained and still under active development. Do not use it for real projects yet.
 
@@ -32,38 +32,46 @@ Current version: **v0.8.0** (development; last release v0.7.1). Adds Linux share
 
 ## Installation
 
-Building and running projects requires Windows x86-64 and `g++` or `clang++` on PATH; `new` / `help` / `version` need no compiler. A Rust toolchain is only needed when building from source.
+Building and running projects requires Windows x86-64 or Linux x86-64 and `g++` or `clang++` on PATH; `new` / `help` / `version` need no compiler. A Rust toolchain is only needed when building from source.
 
 ### 1. Build from source
 
 ```bash
 cargo build --release
-# artifact: target/release/cizon2.exe
+# artifact: target/release/cizon2 (cizon2.exe on Windows)
 
-# or install into %USERPROFILE%\.cargo\bin
+# or install into ~/.cargo/bin
 cargo install --path .
 ```
 
-`cargo install --path .` puts `cizon2.exe` in `%USERPROFILE%\.cargo\bin`; rustup keeps that directory on PATH, so a new terminal can run `cizon2` directly.
-
-If you only ran `cargo build --release`, copy `target\release\cizon2.exe` into a directory already on PATH, or add `target\release` to PATH as described below.
+`cargo install --path .` puts the binary in `~/.cargo/bin` (`%USERPROFILE%\.cargo\bin` on Windows); rustup keeps that directory on PATH, so a new terminal can run `cizon2` directly.
 
 ### 2. Download from GitHub Releases
 
-Download `cizon2-v0.7.1-windows-x86_64.exe` and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed. Move the exe to a fixed directory and add that directory to PATH (next section).
+Download the asset for your platform and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed.
 
-Verify the download in PowerShell:
+- Windows: `cizon2-v0.8.0-windows-x86_64.exe`
+- Linux: `cizon2-v0.8.0-linux-x86_64`
+
+Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\cizon2-v0.7.1-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon2-v0.7.1-windows-x86_64.exe.sha256
+Get-FileHash .\cizon2-v0.8.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon2-v0.8.0-windows-x86_64.exe.sha256
+```
+
+Linux:
+
+```bash
+sha256sum -c cizon2-v0.8.0-linux-x86_64.sha256
+chmod +x cizon2-v0.8.0-linux-x86_64
 ```
 
 Both SHA-256 values must match exactly.
 
-### 3. Add the cizon2 directory to PATH
+### 3. Put cizon2 on PATH
 
-PowerShell (point `$dir` at `target\release` or the directory holding the downloaded exe):
+Windows (PowerShell; point `$dir` at the download directory or `target\release`):
 
 ```powershell
 $dir = "C:\path\to\cizon2"
@@ -71,17 +79,21 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 [Environment]::SetEnvironmentVariable("Path", "$userPath;$dir", "User")
 ```
 
-Reopen the terminal, then verify:
+Linux:
 
-```powershell
-Get-Command cizon2
-cizon2 version
+```bash
+install -Dm755 cizon2-v0.8.0-linux-x86_64 ~/.local/bin/cizon2
+# If ~/.local/bin is not on PATH, add it:
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-- Do not use `setx PATH "%PATH%;..."`: it folds the system PATH into the user PATH and truncates long values.
+Reopen the terminal (or export PATH), then verify with `cizon2 version`.
+
+- Do not use `setx PATH "%PATH%;..."` on Windows: it folds the system PATH into the user PATH and truncates long values.
 - `g++` / `clang++` must be on PATH; cizon2 probes the compiler at build time. When g++ is missing it falls back to clang++ with a notice; when neither exists the build fails.
 - MSYS2 UCRT64: add `<MSYS2>\ucrt64\bin` (for example `C:\Users\<user>\msys2\ucrt64\bin`) to PATH and install `mingw-w64-ucrt-x86_64-gcc`.
 - Git Bash inherits the Windows PATH, so the same setting applies there.
+- Shared libraries: Windows produces a DLL + import library next to the executable; Linux produces a `.so` found via the executable's `$ORIGIN` rpath.
 
 ## Quick start
 
@@ -669,6 +681,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows binary, uploads `cizon2-v<version>-windows-x86_64.exe` plus a SHA-256 file, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.6.0`). Tests stay local; CI does not run them.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon2-v<version>-windows-x86_64.exe` and `cizon2-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.8.0`). Windows tests stay local.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).

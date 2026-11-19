@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.8.0**（开发中；上个发布版 v0.7.1）。在 v0.7.1 的 test target、`prefix`、`strict`/`werror` 之上，新增 Linux 共享库（`.so`）、`sync --check` 与 `--quiet`。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.8.0**。在 v0.7.1 的 test target、`prefix`、`strict`/`werror` 之上，新增 Linux 共享库（`.so`）、`sync --check` 与 `--quiet`。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
 
@@ -28,38 +28,46 @@
 
 ## 安装
 
-构建与运行项目需要 Windows x86-64，以及 PATH 中的 `g++` 或 `clang++`；`new` / `help` / `version` 不需要编译器。Rust 工具链只在从源码构建时需要。
+构建与运行项目需要 Windows x86-64 或 Linux x86-64，以及 PATH 中的 `g++` 或 `clang++`；`new` / `help` / `version` 不需要编译器。Rust 工具链只在从源码构建时需要。
 
 ### 1. 从源码安装
 
 ```bash
 cargo build --release
-# 产物：target/release/cizon2.exe
+# 产物：target/release/cizon2（Windows 为 cizon2.exe）
 
-# 或安装到 %USERPROFILE%\.cargo\bin
+# 或安装到 ~/.cargo/bin
 cargo install --path .
 ```
 
-`cargo install --path .` 会把 `cizon2.exe` 装到 `%USERPROFILE%\.cargo\bin`；rustup 默认已把该目录加入 PATH，新开终端即可直接运行 `cizon2`。
-
-如果只执行了 `cargo build --release`，把 `target\release\cizon2.exe` 复制到任意已在 PATH 中的目录，或按下一节把 `target\release` 加入 PATH。
+`cargo install --path .` 会把二进制装到 `~/.cargo/bin`（Windows 为 `%USERPROFILE%\.cargo\bin`）；rustup 默认已把该目录加入 PATH，新开终端即可直接运行 `cizon2`。
 
 ### 2. 从 GitHub Release 下载
 
-在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载 `cizon2-v0.7.1-windows-x86_64.exe` 与同名 `.sha256` 文件，不需要 Rust 工具链。移动到一个固定目录后，把该目录加入 PATH（见下一节）。
+在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-PowerShell 校验下载：
+- Windows：`cizon2-v0.8.0-windows-x86_64.exe`
+- Linux：`cizon2-v0.8.0-linux-x86_64`
+
+Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon2-v0.7.1-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon2-v0.7.1-windows-x86_64.exe.sha256
+Get-FileHash .\cizon2-v0.8.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon2-v0.8.0-windows-x86_64.exe.sha256
+```
+
+Linux 校验：
+
+```bash
+sha256sum -c cizon2-v0.8.0-linux-x86_64.sha256
+chmod +x cizon2-v0.8.0-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
 
-### 3. 把 cizon2 所在目录加入 PATH
+### 3. 把 cizon2 放入 PATH
 
-PowerShell（把 `$dir` 换成 `target\release` 或存放下载 exe 的目录）：
+Windows（PowerShell，把 `$dir` 换成下载目录或 `target\release`）：
 
 ```powershell
 $dir = "C:\path\to\cizon2"
@@ -67,17 +75,21 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 [Environment]::SetEnvironmentVariable("Path", "$userPath;$dir", "User")
 ```
 
-重新打开终端后确认：
+Linux：
 
-```powershell
-Get-Command cizon2
-cizon2 version
+```bash
+install -Dm755 cizon2-v0.8.0-linux-x86_64 ~/.local/bin/cizon2
+# 若 ~/.local/bin 不在 PATH 中，加入它：
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+重新打开终端（或 export PATH）后，用 `cizon2 version` 确认。
 
 - 不要用 `setx PATH "%PATH%;..."`：它会把系统 PATH 并进用户 PATH，且超长时会被截断。
 - `g++` / `clang++` 必须在 PATH 中；cizon2 在构建时探测编译器。缺少 g++ 时会回退到 clang++ 并打印提示；两者都没有则构建失败。
 - MSYS2 UCRT64：把 `<MSYS2>\ucrt64\bin`（例如 `C:\Users\<user>\msys2\ucrt64\bin`）加入 PATH，并安装 `mingw-w64-ucrt-x86_64-gcc`。
 - Git Bash 会继承 Windows 的 PATH，同样适用。
+- 共享库：Windows 在 exe 旁产 DLL + import lib；Linux 产 `.so`，通过 exe 的 `$ORIGIN` rpath 查找。
 
 ## 快速开始
 
@@ -665,6 +677,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 二进制、上传 `cizon2-v<version>-windows-x86_64.exe` 与 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.6.0`）。测试仍在本地跑，CI 不执行测试。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon2-v<version>-windows-x86_64.exe` 与 `cizon2-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.8.0`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
