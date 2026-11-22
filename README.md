@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.9.4**. Adds `cizon help toml`, a terminal-local reference for every configuration key with defaults and constraints. This sits on top of v0.9.3's rename to `cizon`, edition validation and output cleanup, v0.9.2's Linux SONAME, v0.9.1's library project templates, and v0.9.0's target public includes and static dependencies. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.9.5**. Hardening release: adds regression coverage for include-path changes (library and consumer rebuild) and shared-library include propagation, with no CLI changes. This sits on top of v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, v0.9.2's Linux SONAME, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained and still under active development. Do not use it for real projects yet.
 
@@ -50,21 +50,21 @@ cargo install --path .
 
 Download the asset for your platform and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed.
 
-- Windows: `cizon-v0.9.4-windows-x86_64.exe`
-- Linux: `cizon-v0.9.4-linux-x86_64`
+- Windows: `cizon-v0.9.5-windows-x86_64.exe`
+- Linux: `cizon-v0.9.5-linux-x86_64`
 
 Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\cizon-v0.9.4-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.9.4-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.9.5-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.9.5-windows-x86_64.exe.sha256
 ```
 
 Linux:
 
 ```bash
-sha256sum -c cizon-v0.9.4-linux-x86_64.sha256
-chmod +x cizon-v0.9.4-linux-x86_64
+sha256sum -c cizon-v0.9.5-linux-x86_64.sha256
+chmod +x cizon-v0.9.5-linux-x86_64
 ```
 
 Both SHA-256 values must match exactly.
@@ -82,7 +82,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux:
 
 ```bash
-install -Dm755 cizon-v0.9.4-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.9.5-linux-x86_64 ~/.local/bin/cizon
 # If ~/.local/bin is not on PATH, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -706,6 +706,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.9.4`). Windows tests stay local.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.9.5`). Windows tests stay local.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).
