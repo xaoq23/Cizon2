@@ -14,7 +14,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.9.5）
+## 当前边界（v0.9.6）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -35,7 +35,7 @@
 
 ## 项目结构约定
 
-- 根 `include/` 只放项目级公开头（唯一自动 `-I`）；多库项目把公共头留在各库自己的 `include/`，用 target `include` 传播，不要复制/搬到根目录；私有头放 `lib/` 或实现文件旁边，默认不暴露
+- 根 `include/` 只放项目级公开头（唯一自动的项目公开头 `-I`；依赖目录 `deps/<name>`、`deps/<name>/include` 也会自动加入）；多库项目把公共头留在各库自己的 `include/`，用 target `include` 传播，不要复制/搬到根目录；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
@@ -43,10 +43,11 @@
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
 - `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
-- release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `test-obj/<name>/`，`build` / `run` 不构建 test target
+- release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `build/<mode>-<compiler>/test-obj/<name>/`，`build` / `run` 不构建 test target
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
+- 项目级构建锁为 `build/.cizon-build.lock`：并发 build 明确报错；exe、状态文件、`cizon.lock`、`compile_commands.json` 通过临时文件替换写入（Unix 原子 rename，Windows 先删后 rename）
 - `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath，带无版本 SONAME `lib<name>.so`；带版本的 SONAME/SOVERSION 属于 install/export，交给 CMake）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon
 
 ## 输出约定
@@ -58,7 +59,7 @@
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
 - `cizon test` 的测试进程输出统一转发到 stderr；cizon 汇总 `passed/failed/total`，任一失败退出 1
 - `run` / `test` 子进程 PATH 前置编译器 bin 目录，规避旧运行库 DLL 遮蔽；退出码表覆盖 `0xC0000139`（入口点缺失）
-- 依赖布局提示仅在 `add` / `update` 打印一次（区分 header-only 与需编译库）；bin/test target 的 sources 重叠会警告
+- 依赖布局提示仅在 `add` 打印一次（区分 header-only 与需编译库）；bin/test target 的 sources 重叠会警告
 
 ## 非目标（重开需明确讨论）
 
@@ -79,7 +80,7 @@
 - `main` 只收可发布版本；功能与修复提交到 `dev`，可发布后合入 `main`。
 - 一个功能一个 commit；测试先行（模块单测 + 真实编译器/git 端到端）。
 - git commit 信息一律使用英文（保留 `feat:` / `fix:` / `docs:` 等类型前缀）。
-- CI 只在 `v*` tag 上构建并发布 release；Windows 测试在本地跑，Linux 测试在 CI 跑（`.so` 的唯一门禁）。
+- CI 在 `v*` tag 或手动 `workflow_dispatch` 上构建并发布 release；Windows 测试在本地跑，Linux 测试在 CI 跑（`.so` 的唯一门禁）。
 - 源码注释、文档注释和用户面字符串一律使用英文；`README-zh.md` 保留中文文档。
 - `README.md` 是英文主文档，`README-zh.md` 是中文版；修改文档时两份同步。
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
@@ -88,7 +89,7 @@
 ## 已知待办（未排期）
 
 - VSCode 断点调试当前靠手工 `.vscode/launch.json` + `tasks.json`；未来优先按 `[project] vscode = true` 非破坏生成（不实现调试器，gdb 先行），详见 README「后续改进」
-- 候选工程改进：exe/锁文件原子替换、项目级构建锁、compile_commands 关闭清理、依赖移除后的锁/目录清理
+- 候选工程改进：compile_commands 关闭清理、依赖移除后的锁/目录清理
 - 详细清单与真实需求触发条件见 README「后续改进」；开工前按三道闸确认
 
 ## 路线
@@ -106,4 +107,5 @@
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
-14. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为当前可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
+15. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

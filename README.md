@@ -10,9 +10,9 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.9.5**. Hardening release: adds regression coverage for include-path changes (library and consumer rebuild) and shared-library include propagation, with no CLI changes. This sits on top of v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, v0.9.2's Linux SONAME, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.9.6**. Reliability release: exe/build-state/`cizon.lock`/`compile_commands.json` writes use temporary-file replacement, a project-level build lock rejects concurrent builds, and regression coverage now includes include-path changes, static link changes, target removal, and shared include propagation. No CLI changes. This sits on top of v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
-> **Status:** personally maintained and still under active development. Do not use it for real projects yet.
+> **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
 ## Features
 
@@ -50,21 +50,21 @@ cargo install --path .
 
 Download the asset for your platform and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed.
 
-- Windows: `cizon-v0.9.5-windows-x86_64.exe`
-- Linux: `cizon-v0.9.5-linux-x86_64`
+- Windows: `cizon-v0.9.6-windows-x86_64.exe`
+- Linux: `cizon-v0.9.6-linux-x86_64`
 
 Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\cizon-v0.9.5-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.9.5-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.9.6-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.9.6-windows-x86_64.exe.sha256
 ```
 
 Linux:
 
 ```bash
-sha256sum -c cizon-v0.9.5-linux-x86_64.sha256
-chmod +x cizon-v0.9.5-linux-x86_64
+sha256sum -c cizon-v0.9.6-linux-x86_64.sha256
+chmod +x cizon-v0.9.6-linux-x86_64
 ```
 
 Both SHA-256 values must match exactly.
@@ -82,7 +82,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux:
 
 ```bash
-install -Dm755 cizon-v0.9.5-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.9.6-linux-x86_64 ~/.local/bin/cizon
 # If ~/.local/bin is not on PATH, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -118,7 +118,7 @@ It does not run `git init`: version control is your decision. The generated `.gi
 
 ## Commands
 
-Except for `new`, every command runs in the directory containing `cizon.toml`; cizon reads its configuration from the current directory. Running `cizon` without a subcommand prints usage.
+Commands that operate on a project (`build` / `run` / `test` / `add` / `update` / `sync`) run in the directory containing `cizon.toml`; `new` creates a directory, `init` initializes the current directory, and `help` / `version` need no project. Running `cizon` without a subcommand prints usage.
 
 | Command | Purpose |
 |---|---|
@@ -149,7 +149,7 @@ Creates a directory containing `cizon.toml` and `.gitignore`. The project name i
 
 ### `cizon init [--kind bin|static_lib|shared_lib]`
 
-Initializes a project in the current directory; the project name is the directory name. The default `bin` template writes `src/main.cpp`; library kinds write the `include/<name>/`, `src/`, and `tests/` layout described above. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists anywhere below the directory, so user code is never overwritten.
+Initializes a project in the current directory; the project name is the directory name. The default `bin` template writes `src/main.cpp`; library kinds write the `include/<name>/`, `src/`, and `tests/` layout described above. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists under `src/`, so user code is never overwritten.
 
 ### `cizon build`
 
@@ -159,11 +159,12 @@ Builds every bin, static library, and shared library in the plan, compiling only
 |---|---|
 | `--release` | Uses `-O2 -DNDEBUG` (asserts off for project/dependency sources); the default debug build uses `-g`. Test sources always strip NDEBUG |
 | `--compiler <spec>` | Temporarily selects the compiler for this build |
+| `--quiet` / `-q` | Suppress progress lines; errors, warnings and program output still print |
 
 - `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
 - An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon probes g++ → clang++ and prints a notice when g++ is missing
 - Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers never happens
-- `build` accepts only the two options above and no program arguments; use `run` to pass arguments
+- `build` accepts only the three options above and no program arguments; use `run` to pass arguments
 
 ```bash
 cizon build
@@ -199,7 +200,7 @@ cizon test calc_test codec_test         # select targets, case-insensitive
 cizon test calc_test -- --gtest_filter=Add*  # everything after -- goes to each test process
 ```
 
-- Accepts `--release` and `--compiler <spec>` like `build` / `run`; the build phase only handles test targets and their `links` dependencies, and `build` / `run` never build or execute test targets
+- Accepts `--release` and `--compiler <spec>` like `build` / `run`; the build phase builds the selected test targets and all planned library targets (bins are not built), and `build` / `run` never build or execute test targets
 - Any non-zero exit or crash fails the whole run; cizon keeps running the remaining tests and prints a `passed/failed/total` summary
 - Child stdout/stderr are replayed untouched on stderr (cizon's stdout stays empty); `Running`, `Passed` / `Failed`, and the summary also go to stderr
 - With no test targets, `cizon test` prints `no test targets` and exits 0; explicitly naming a missing test is an error
@@ -257,7 +258,7 @@ cizon sync --check
 
 - `Compiling` / `Rebuilding g++ [n/m files]`: translation units actually compiled this run / total
 - Compiler warnings are grouped per source file: a yellow `Warning <relative path> (compiler version)` header; a blank line separates the warning section from build status, with no decorative rule; project absolute path prefixes in diagnostic bodies are replaced with relative paths, while line numbers and message text stay untouched
-- Warnings do not fail the build; for strict mode use `[compiler].flags = ["-Werror"]`
+- Warnings do not fail the build; set `[compiler] werror = true` for strict mode
 - Build and `Running` status go to stderr, keeping program stdout clean: `cizon run > out.txt` contains only program output
 - ANSI color is decided per stream and turns off automatically when stdout or stderr is redirected (pipes, files, CI); timings keep the unit attached to the number (`0.12s`), so escape-stripped logs cannot turn them into `ms`
 - `cizon test` prints `Running` / `Passed` / `Failed` per target and a final `test result: ok` or `FAILED`; any failure exits 1, all-pass exits 0
@@ -291,7 +292,7 @@ The layout is a convention, not a hard-coded framework: `sources` may point at a
 
 ### Public and private headers
 
-- The project-root `include/` is the only directory added to `-I` automatically; it is optional and is visible to every target
+- The project-root `include/` is the only automatic `-I` for project public headers; it is optional and visible to every target. Dependency directories are also added automatically (`deps/<name>` and `deps/<name>/include`)
 - Multi-library projects should keep each library's public headers inside that library (for example `libs/net/include`) and point the target's `include` at it. Do not copy or move them into the root `include/`: target `include` propagation preserves ownership and gives consumers the same view
 - Private headers and implementation details belong in `lib/` or next to the implementation files and stay off the include path by default
 - Include private headers with relative paths, e.g. `#include "detail/shape_impl.h"`; never put them in `include/`
@@ -440,17 +441,17 @@ Rules:
 - Source files left under `src/` that no target compiles trigger a warning, since the implicit build no longer picks them up
 - A single bin may omit `name` and use `[project].name`; with multiple bins every bin must be named explicitly; tests must always be named
 - A test target shares the bin compile/link pipeline but is built and executed only by `cizon test`; `build` / `run` ignore it. Projects without bins (test-only or library-only) build their libraries successfully and produce no exe
-- Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; release builds define NDEBUG for project and dependency sources, while `cizon test --release` still strips it from test sources
+- Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; release builds define NDEBUG for project and dependency sources, while `cizon test --release` still strips it from test sources. Because of this, inline assert-bearing headers can differ between test and library TUs; keeping tests live is the accepted trade-off
 - `extern_links` is accepted only on test targets; cizon does not probe, download, or version-lock them. An unresolved `-l<name>` prints an installation hint
 - `extern_links` is appended in declaration order; static-library dependents come first (`gtest_main` depends on `gtest`, so write `["gtest_main", "gtest"]`)
-- `prefix` declares an installed package root (project-relative, must exist); cizon derives `-I<prefix>/include` and `-L<prefix>/lib` for that target only, so consuming an installed library needs no hand-written search-path flags. It assumes the standard `include/` + `lib/` layout. Keep external build/install artifacts under `deps/.build/<name>` / `deps/.install/<name>`, not at the project root
-- Test artifacts are `build/<mode>-<compiler>/<name>.exe` and their objects live in `test-obj/<name>/`, fully isolated from the bin `obj/` tree
+- `prefix` declares an installed package root (project-relative, must exist); cizon derives `-I<prefix>/include` and `-L<prefix>/lib` for that target only, so consuming an installed library needs no hand-written search-path flags. It assumes the standard `include/` + `lib/` layout. It is input-only and is not propagated: a library's public headers must be self-contained or get external includes from project-level dependencies. Keep external build/install artifacts under `deps/.build/<name>` / `deps/.install/<name>`, not at the project root
+- Test artifacts live in `build/<mode>-<compiler>/` (`<name>.exe` on Windows, `<name>` on Linux) and their objects in `build/<mode>-<compiler>/test-obj/<name>/`, fully isolated from the bin `obj/` tree
 - Target names are case-insensitive and unique, and must pass file-name validation: not `obj` / `lib` / `deps-obj`, no leading dot, and no Windows device names. A target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); files and directories are accepted and directories are scanned recursively; same-named sources in different directories are allowed
 - `include` adds a target-owned public header root on top of the automatic project-root `include/`; it must exist, be a directory, stay inside the project, and must not be the project root. Missing paths fail during planning, before compilation
 - For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
 - `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
-- Link order inside the static dependency graph is derived dependency-first, so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)
+- Link order inside the static dependency graph is derived dependent-first (consumers before their dependencies), so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
 - `include` and `prefix` point in opposite directions: `prefix` is an input for consuming an installed package (target-local `-I`/`-L`, never propagated); `include` is the target's public output, propagated through `links`
 - Public headers go in the project-root `include/` or a target's `include` root; a library's private headers may sit next to its sources
@@ -459,9 +460,9 @@ Rules:
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon passes the import-library flag explicitly
 - On Linux, objects that may land in a `.so` (dependency objects, static libraries, the shared target itself) compile with `-fPIC`; consumers link the `.so` by name with `-Wl,-rpath,$ORIGIN`, so the executable finds it next to itself with no `LD_LIBRARY_PATH`
 - Linux `.so` files carry an unversioned SONAME (`lib<name>.so`), so consumers do not depend on how they spelled the path; versioned SONAMEs / SOVERSION remain an install/export concern for CMake
-- Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon does not auto-export symbols, generate bindings, or guarantee the C++ ABI
+- Exports are explicit C ABI: use `extern "C"` with `__declspec(dllexport)` on Windows or `__attribute__((visibility("default")))` on Linux (the generated shared template shows both branches). cizon does not auto-export symbols, generate bindings, or guarantee the C++ ABI
 - On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
-- Every bin produces `build/<mode>-<compiler>/<name>.exe`; `cizon run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin
+- Every bin produces `build/<mode>-<compiler>/<name>` (`<name>.exe` on Windows); `cizon run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin
 - `run --all` is not supported: cizon does not supervise multiple processes. Use a shell/Python harness for IPC or multi-process tests
 - Object paths mirror source paths: a single bin uses `obj/<project-relative-path>.o`; multiple bins use `obj/<bin>/<project-relative-path>.o`; static libraries use `lib/<name>/obj/...`, shared libraries `.shared/<name>/obj/...`, dependencies `deps-obj/<dep>/`
 - Same stem in the same directory (e.g. `util.cpp` + `util.cc`) is still an error; rename one
@@ -500,7 +501,7 @@ cizon update fmt
 - To upgrade or downgrade, change only the `tag` in `cizon.toml`, then run `cizon update <name>`.
 - `update` replaces the entire `deps/<name>` tree and refuses when the directory has uncommitted changes. To keep local commits, push them and update the `tag` first.
 - Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. For other layouts or libraries that need a build system, use CMake.
-- When `deps/<name>` has no `include/`, `add`/`update` print a one-time layout note (`build`/`test` no longer repeat it): header-only libraries may already be usable, while compiled libraries should go through the system package manager plus `extern_links`, or be vendored header-only.
+- When `deps/<name>` has no `include/`, `add` prints a one-time layout note (later `build`/`test` do not repeat it): header-only libraries may already be usable, while compiled libraries should go through the system package manager plus `extern_links`, or be vendored header-only.
 - Dependency source objects are linked into the bin and every shared library; dependencies are project-wide, not per-target.
 - If an external dependency needs its own cmake build/install, keep the build tree and install prefix under `deps/.build/<name>` and `deps/.install/<name>`, not at the project root; the root keeps only source directories plus `deps/` and `build/`.
 - Any mismatch among the git/tag in `cizon.toml`/`cizon.lock`, the `deps/` HEAD, and the working tree is a loud error; a missing dependency directory is restored from the lock, never silently self-healed.
@@ -577,14 +578,15 @@ One-time `.vscode/tasks.json`:
 - A newer source file or header (tracked via `.d` files): only affected files are recompiled
 - Project source compile inputs (edition, optimization level, `[compiler].flags`, dependency include set) change: project objects are invalidated and rebuilt; dependency sources follow only edition, optimization, and dependency includes, never `[compiler].flags`
 - Object paths mirror source paths; a build with an older object layout is detected and does one full rebuild
-- Test objects live in `test-obj/<name>/` with independent link state; `cizon test <name>` builds only the selected test and never removes other test artifacts
-- Test sources compile with `-DNDEBUG` stripped; changing `extern_links` changes the link fingerprint and forces a relink
+- Test objects live in `build/<mode>-<compiler>/test-obj/<name>/` with independent link state; `cizon test <name>` builds only the selected test and never removes other test artifacts
+- Test sources compile without `-DNDEBUG`; changing `extern_links` changes the link fingerprint and forces a relink
+- Target include paths change: affected targets and their consumers are invalidated and recompiled
 - Link inputs (object list, static archives, `extern_links`, `link_flags`) change: forced relink
 - Static library sources change: only that archive is rebuilt, then relinked; changing only the bin does not rebuild archives
 - Shared library sources change: the DLL relinks; if the import library fingerprint is unchanged, the bin is not relinked. Export changes relink the bin
-- Removing or renaming a shared target cleans its DLL, import library, and `.shared` objects
+- Removing or renaming a target cleans its exe, archive/DLL, import library and state files
 - Compiler version changes: the whole `build/<mode>-<compiler>/` scope is invalidated
-- Concurrent builds of the same project are unsupported: do not run `cizon build` in two terminals at once
+- A project-level lock (`build/.cizon-build.lock`) rejects a second concurrent build. If no build is running, delete a stale lock file and retry
 
 ## Troubleshooting
 
@@ -621,26 +623,26 @@ cizon puts the compiler's bin directory first in the child PATH for `run` / `tes
 
 ## Usage notes
 
-- A project declares at least one target; library-only and test-only projects are valid. `cizon run <bin>` runs bins only, and an omitted name is only valid with exactly one bin
+- When `[[target]]` is used, at least one target is required; library-only and test-only projects are valid. `cizon run <bin>` runs bins only, and an omitted name is only valid with exactly one bin
 - `cizon test` builds and runs test targets only; exit 0 when every test exits 0, otherwise 1; no test targets prints `no test targets` and exits 0
 - Test targets never define `-DNDEBUG`; frameworks are supplied by the user, and external libraries are wired in explicitly through `extern_links`
 - `run --all` is not supported; multi-process/IPC orchestration belongs in an external harness
-- Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library
+- Static library artifacts are `.a` (GNU archives); on Windows `shared_lib` produces a DLL plus an import library, and on Linux a `.so` without an import library
 - Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
 - Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
-- `include/` is the only automatic `-I` directory; a target's `include` is explicit and propagates through `links`. Keep private headers out of both and do not expose them with a global `-Ilib`
+- The project-root `include/` is the only automatic project public-header `-I`; a target's `include` is explicit and propagates through `links`, and dependency directories are also added automatically. Keep private headers out of all of them and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; a build with an older object layout does one full rebuild
 - `[project].version` is metadata only; it does not affect compilation or artifact names
-- Concurrent builds of one project are unsupported; never run `cizon build` in multiple terminals
+- A project-level lock (`build/.cizon-build.lock`) rejects a second concurrent build; delete a stale lock only when no build is running
 - Turning `compile_commands` off does not delete an existing `compile_commands.json` or `.vscode/c_cpp_properties.json`; delete them manually when no longer needed
 - Unknown sections or unknown keys in known sections are hard errors, never silently ignored
-- Compiler warnings (e.g. ignoring a `[[nodiscard]]` return value) do not fail the build; use `-Werror` for strict mode
+- Compiler warnings (e.g. ignoring a `[[nodiscard]]` return value) do not fail the build; set `[compiler] werror = true` for strict mode
 - Overlapping sources across bin/test targets (common with recursive directories) print a warning; multiple `main()` definitions fail to link — use explicit files or separate directories
 - `run`/`test` put the compiler's bin directory first in the child PATH to avoid older runtime DLLs shadowing it (see Troubleshooting)
 
-## Roadmap (unscheduled and pending release)
+## Roadmap and known issues
 
-Known issues that are not committed work yet; they advance on real demand and the gates in AGENTS.md.
+Items that are not committed work yet advance on real demand and the gates in AGENTS.md.
 
 ### Debugging integration (unscheduled)
 
@@ -654,26 +656,18 @@ The goal is first-class breakpoint debugging, but **cizon does not implement a d
 - v1 is validated on float_test with g++/MinGW + gdb; tests cover configuration content, scope/paths, non-overwrite behavior, and a clear error when gdb is missing—without actually starting a debugger
 - Terminal-only `cizon run --debug` cannot provide VS Code breakpoints and is not a substitute
 
-### Test targets (v0.7.1, released)
-
-- Implemented: `kind = "test"` + `cizon test`; `build` / `run` ignore tests; exit code 0 is the pass contract; test sources strip `-DNDEBUG`
-- `extern_links` is test-target-only and maps names to `-l<name>`; no probing, downloading, or version locking
-- v0.7.1 transparency & convenience: per-target `prefix` (derives `-I`/`-L`), `[compiler] strict`/`werror`, `sync`, `help <command>`, compiler-bin-first child PATH for run/test, `0xC0000139` diagnostic
-- Dogfooded on a real project with gtest, doctest, Catch2 and plain assert tests
-- CTest labels / fixtures / parallel / timeout / report files wait for real demand
-
 ### Reliability
 
-- The linker writes the exe directly, and lock/`cizon.toml` writes are not power-loss atomic; temporary-file replacement could be added
-- No project-level build lock; two terminals building at once remain unsupported
-- Disabling `compile_commands` leaves the generated `compile_commands.json` and `.vscode/c_cpp_properties.json` behind
+- exe, build state, `cizon.lock` and `compile_commands.json` are written through a sibling temporary file and then replaced; Unix uses an atomic rename, Windows removes the old file before renaming
+- Disabling `compile_commands` leaves the generated `compile_commands.json` and `.vscode/c_cpp_properties.json` behind; delete them manually
 - Removing a dependency leaves `cizon.lock`/`deps/` untouched; a separate remove command may be needed (would trip the second gate)
 
 ### Diagnostics and engineering
 
 - Config structure errors come from serde; messages such as `unknown field` are English (low-priority style issue)
-- CI builds tagged releases; tests are local and skip when the compiler/git is missing
+- Windows tests run locally; tagged Linux CI jobs run the full suite
 - `rustfmt`/`clippy` are not wired in yet
+- CTest labels / fixtures / parallel / timeout / report files wait for real demand
 
 ### Wait for real demand
 
@@ -706,6 +700,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.9.5`). Windows tests stay local.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.9.6`). Windows tests stay local.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).

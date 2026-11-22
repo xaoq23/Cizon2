@@ -6,9 +6,9 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.9.5**。加固版本：新增 include 路径变更（库与消费者重编）及 shared_lib 公共 include 传播的回归测试，无 CLI 变化。在此前 v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.2 的 Linux SONAME、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.9.6**。可靠性版本：exe、构建状态、`cizon.lock` 与 `compile_commands.json` 改为临时文件替换写入；项目级构建锁会拒绝并发 build；回归测试覆盖 include 变更、静态链接变更、target 删除与 shared include 传播。无 CLI 变化。在此前 v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
-> **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
+> **状态说明：** 个人维护的 pre-1.0 项目，持续演进；已在小型真实项目上 dogfood，minor 版本之间可能有 breaking changes。
 
 ## 特性
 
@@ -46,21 +46,21 @@ cargo install --path .
 
 在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-- Windows：`cizon-v0.9.5-windows-x86_64.exe`
-- Linux：`cizon-v0.9.5-linux-x86_64`
+- Windows：`cizon-v0.9.6-windows-x86_64.exe`
+- Linux：`cizon-v0.9.6-linux-x86_64`
 
 Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon-v0.9.5-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.9.5-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.9.6-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.9.6-windows-x86_64.exe.sha256
 ```
 
 Linux 校验：
 
 ```bash
-sha256sum -c cizon-v0.9.5-linux-x86_64.sha256
-chmod +x cizon-v0.9.5-linux-x86_64
+sha256sum -c cizon-v0.9.6-linux-x86_64.sha256
+chmod +x cizon-v0.9.6-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
@@ -78,7 +78,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-v0.9.5-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.9.6-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -114,7 +114,7 @@ hello/
 
 ## 命令
 
-除 `new` 外，所有命令都在 `cizon.toml` 所在目录执行；cizon 从当前目录读取配置。不带子命令运行 `cizon` 会打印用法。
+需要项目的命令（`build` / `run` / `test` / `add` / `update` / `sync`）在 `cizon.toml` 所在目录执行；`new` 创建目录，`init` 初始化当前目录，`help` / `version` 不需要项目。不带子命令运行 `cizon` 会打印用法。
 
 | 命令 | 作用 |
 |---|---|
@@ -145,7 +145,7 @@ hello/
 
 ### `cizon init [--kind bin|static_lib|shared_lib]`
 
-在当前目录初始化项目，项目名取目录名。默认 `bin` 模板写 `src/main.cpp`；库模板写上面描述的 `include/<name>/`、`src/`、`tests/` 结构。若当前目录已有 `cizon.toml`，或任意层级已存在 `main.cpp` / `main.cc` / `main.cxx`，则拒绝执行，避免覆盖用户代码。
+在当前目录初始化项目，项目名取目录名。默认 `bin` 模板写 `src/main.cpp`；库模板写上面描述的 `include/<name>/`、`src/`、`tests/` 结构。若当前目录已有 `cizon.toml`，或 `src/` 下已存在 `main.cpp` / `main.cc` / `main.cxx`，则拒绝执行，避免覆盖用户代码。
 
 ### `cizon build`
 
@@ -155,11 +155,12 @@ hello/
 |---|---|
 | `--release` | 使用 `-O2 -DNDEBUG`（项目与依赖源码关闭 assert）；默认 debug 使用 `-g`。test 源码始终剥离 NDEBUG |
 | `--compiler <spec>` | 本次构建临时指定编译器 |
+| `--quiet` / `-q` | 关闭进度行；错误、警告与程序输出仍照常打印 |
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
 - 显式指定的编译器不可用时会直接报错，不会静默回退；未指定时按 g++ → clang++ 探测，g++ 缺失会打印回退提示
 - 产物位于 `build/<mode>-<compiler>/`；不同模式或编译器之间不会混链
-- `build` 只接受上面两个选项，不接受程序参数；要传参请用 `run`
+- `build` 只接受上面三个选项，不接受程序参数；要传参请用 `run`
 
 ```bash
 cizon build
@@ -195,7 +196,7 @@ cizon test calc_test codec_test         # 只运行指定 target，名字大小�
 cizon test calc_test -- --gtest_filter=Add*  # -- 后参数透传给每个选中的测试进程
 ```
 
-- 与 `build` / `run` 一样接受 `--release` 与 `--compiler <spec>`；构建阶段只处理 test target 及其 `links` 依赖，`build` / `run` 不会构建或运行 test target
+- 与 `build` / `run` 一样接受 `--release` 与 `--compiler <spec>`；构建阶段构建选中的 test target 与计划内全部库 target（不构建 bin），`build` / `run` 不会构建或运行 test target
 - 任一 test 非 0 或崩溃即整体失败；cizon 继续跑完其余 test，最后汇总 `passed/failed/total`
 - 子进程 stdout/stderr 都原样转发到 stderr（cizon 的 stdout 保持为空）；`Running`、`Passed` / `Failed` 与汇总也写 stderr
 - 没有 test target 时打印 `no test targets` 并返回 0；显式指定不存在的 test 名则报错
@@ -253,7 +254,7 @@ cizon sync --check
 
 - `Compiling` / `Rebuilding g++ [n/m files]`：本次实际编译的翻译单元数 / 总数
 - 编译器警告会按源文件分组：黄色 `Warning <相对路径> (编译器 版本)` 头；警告段与构建状态之间空一行，不打印装饰分割线；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
-- 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
+- 警告不会让构建失败；需要严格模式时设置 `[compiler] werror = true`
 - 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon run > out.txt` 只包含程序输出
 - ANSI 颜色按流判断：stdout 或 stderr 被重定向（管道、文件、CI）时该流自动关色；计时单位始终紧贴数字（`0.12s`），剥离转义码后的日志不会变成 `ms`
 - `cizon test` 逐项打印 `Running` / `Passed` / `Failed`，最后输出 `test result: ok` 或 `FAILED`；任一 test 失败时命令退出 1，全部通过退出 0
@@ -287,7 +288,7 @@ project/
 
 ### 公开头与私有头
 
-- 项目根 `include/` 是唯一自动加入 `-I` 的目录；它可选，对所有 target 可见
+- 项目根 `include/` 是唯一自动加入的项目公开头 `-I`；它可选，对所有 target 可见。依赖目录也会自动加入（`deps/<name>` 与 `deps/<name>/include`）
 - 多库项目应把各库公共头留在库目录内（例如 `libs/net/include`），用 target 的 `include` 指向它。不要复制或搬到根 `include/`：target include 传播既保留归属，又给消费者同样的视图
 - `lib/` 或实现文件旁边放私有头与实现细节，默认不在 include 路径里
 - 私有头用相对路径包含，如 `#include "detail/shape_impl.h"`；不要放进 `include/`
@@ -436,11 +437,11 @@ kind = "bin"
 - `src/` 中未被任何 target 编译的源文件会触发警告，因为隐式构建已不再接管它们
 - 只有一个 bin 时 `name` 可省略并默认项目名；多个 bin 时每个都必须显式命名；test 必须显式命名
 - test target 与 bin 共用编译/链接链路，但只由 `cizon test` 构建和执行；`build` / `run` 忽略它。没有 bin 的项目（test-only 或纯库）可以正常 `build`：构建库，不产出 exe，也不报错
-- test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；release 构建会为项目与依赖源码定义 NDEBUG，而 `cizon test --release` 仍会从 test 源码中剥离它
+- test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；release 构建会为项目与依赖源码定义 NDEBUG，而 `cizon test --release` 仍会从 test 源码中剥离它。因此带 assert 的 inline 头在 test 与库 TU 之间可能不一致；优先保证测试有效是接受的取舍
 - `extern_links` 只允许 test target；cizon 不探测、不下载、不锁版本；`-l<name>` 解析失败会给出安装提示
 - `extern_links` 按声明顺序追加；静态库依赖方在前（gtest_main 依赖 gtest，因此写 `["gtest_main", "gtest"]`）
-- `prefix` 声明已安装包根目录（项目内相对路径，必须存在）；cizon 只为该 target 推导 `-I<prefix>/include` 与 `-L<prefix>/lib`，消费已安装库无需手写搜索路径 flag。它假设标准 `include/` + `lib/` 布局。外部构建/安装产物放在 `deps/.build/<name>` / `deps/.install/<name>`，不要铺在项目根
-- test target 的产物为 `build/<mode>-<compiler>/<name>.exe`，对象在 `test-obj/<name>/`，与 bin 的 `obj/` 完全隔离
+- `prefix` 声明已安装包根目录（项目内相对路径，必须存在）；cizon 只为该 target 推导 `-I<prefix>/include` 与 `-L<prefix>/lib`，消费已安装库无需手写搜索路径 flag。它假设标准 `include/` + `lib/` 布局。`prefix` 是输入侧且不传播：库的公开头必须自包含，或通过项目级依赖获得外部 include。外部构建/安装产物放在 `deps/.build/<name>` / `deps/.install/<name>`，不要铺在项目根
+- test target 的产物位于 `build/<mode>-<compiler>/`（Windows 为 `<name>.exe`，Linux 为 `<name>`），对象在 `build/<mode>-<compiler>/test-obj/<name>/`，与 bin 的 `obj/` 完全隔离
 - target 名大小写不敏感且不能重复，还必须满足文件名校验：不能是 `obj` / `lib` / `deps-obj`、不能以 `.` 开头、不能使用 Windows 设备名等；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - `sources` 必须是项目内相对路径（不能是绝对路径或包含 `..`）；文件或目录均可，目录递归扫描；允许跨目录同名源文件
 - `include` 在自动的项目根 `include/` 之上增加 target 自己的公共头根目录；路径必须存在、是目录、在项目内，且不能是项目根。缺失路径在 plan 阶段直接报错，不拖到编译
@@ -455,9 +456,9 @@ kind = "bin"
 - Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon 显式传 import lib 参数
 - Linux 下可能进入 `.so` 的对象（依赖对象、静态库、共享库自身）以 `-fPIC` 编译；消费者按名链接 `.so` 并带 `-Wl,-rpath,$ORIGIN`，exe 在自身目录找到它，无需 `LD_LIBRARY_PATH`
 - Linux `.so` 带无版本 SONAME（`lib<name>.so`），消费者不依赖链接时的路径拼写；带版本的 SONAME / SOVERSION 仍属于 install/export，交给 CMake
-- 导出使用显式 C ABI：`extern "C" __declspec(dllexport)`。cizon 不自动导出符号、不生成绑定，也不保证 C++ ABI
+- 导出使用显式 C ABI：`extern "C"` 搭配 Windows 的 `__declspec(dllexport)` 或 Linux 的 `__attribute__((visibility("default")))`（生成的 shared 模板包含两种分支）。cizon 不自动导出符号、不生成绑定，也不保证 C++ ABI
 - MinGW 下 `shared_lib` 默认静态链接运行库，DLL 不依赖 `libstdc++`/`libgcc`/`libwinpthread`，Python `ctypes` 无需改 PATH。保持 C ABI 边界：DLL 与 exe 各有一套静态运行库时，不要跨边界传 C++ 对象或异常
-- 每个 bin 产出 `build/<mode>-<compiler>/<name>.exe`；`cizon run <bin>` 会构建全部 bin 后运行指定项，只有项目恰好一个 bin 时才能省略名字
+- 每个 bin 产出 `build/<mode>-<compiler>/<name>`（Windows 为 `<name>.exe`）；`cizon run <bin>` 会构建全部 bin 后运行指定项，只有项目恰好一个 bin 时才能省略名字
 - 不支持 `run --all`：cizon 不做多进程监督；IPC/多进程测试请用 shell/Python harness
 - 对象路径镜像源相对路径：单 bin 为 `obj/<项目相对路径>.o`；多 bin 为 `obj/<bin>/<项目相对路径>.o`；静态库为 `lib/<name>/obj/...`，共享库为 `.shared/<name>/obj/...`，依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
@@ -496,7 +497,7 @@ cizon update fmt
 - 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon update <名字>`。
 - `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
 - 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
-- `deps/<name>` 缺少 `include/` 时，`add`/`update` 会给出一次性布局提示（`build`/`test` 不再重复刷屏）：header-only 库可能已可用，需编译的库改用系统包管理器 + `extern_links`，或 vendor header-only 框架。
+- `deps/<name>` 缺少 `include/` 时，`add` 会给出一次性布局提示（后续 `build`/`test` 不再重复刷屏）：header-only 库可能已可用，需编译的库改用系统包管理器 + `extern_links`，或 vendor header-only 框架。
 - 依赖源码对象会链接进 bin 与每个共享库；依赖是项目级的，不支持 per-target 依赖。
 - 外部依赖若需自行 cmake 构建/安装，构建树与安装产物放在 `deps/.build/<name>`、`deps/.install/<name>`，不要散落在项目根；项目根只保留源码目录 + `deps/` + `build/`。
 - `cizon.toml`、`cizon.lock` 的 git/tag、`deps/` 的 HEAD 与工作区不一致都会大声报错；任一依赖目录缺失时按锁恢复，不静默自愈。
@@ -573,14 +574,15 @@ compile_commands = true
 - 源文件或头文件（经 `.d` 解析）变新：只重编受影响的文件
 - 项目源码的编译参数（edition、优化级、`[compiler].flags`、依赖 include 集合）变化：项目对象失效并重编；依赖源码只跟随 edition、优化级与依赖 include，不继承 `[compiler].flags`
 - 对象路径镜像源相对路径；旧版本对象布局会在首次构建时被识别并全量重编一次
-- test target 的对象在 `test-obj/<name>/`，链接状态独立；`cizon test <name>` 只构建选中的 test，不影响其他 test 的产物
+- test target 的对象在 `build/<mode>-<compiler>/test-obj/<name>/`，链接状态独立；`cizon test <name>` 只构建选中的 test，不影响其他 test 的产物
 - test 源码使用剔除 `-DNDEBUG` 后的编译参数；`extern_links` 变化会改变链接指纹并触发重链
+- target include 路径变化：受影响的 target 与消费者失效并重编
 - 链接输入（对象清单、静态库归档、`extern_links`、`link_flags`）变化：强制重链
 - 静态库源变化：只重建对应归档并重链；只改 bin 不会重建归档
 - 共享库源变化：重链 DLL；import lib 指纹不变时不重链 bin；导出变化才重链 bin
-- 删除或重命名 shared target 会清理 DLL、import lib 与 `.shared` 对象
+- 删除或重命名 target 会清理对应的 exe、归档/DLL、import lib 与状态文件
 - 编译器版本变化：`build/<mode>-<compiler>/` 整目录作废
-- 同一项目不支持并发构建：请勿同时在两个终端运行 `cizon build`
+- 项目级锁（`build/.cizon-build.lock`）会拒绝第二个并发 build；确认没有 build 在运行时才删除陈旧锁文件
 
 ## 故障排查
 
@@ -617,26 +619,26 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 
 ## 使用注意
 
-- 项目至少声明一个 target；纯库与 test-only 项目都合法。`cizon run <bin>` 只运行 bin，只有恰好一个 bin 时才能省略名字
+- 使用 `[[target]]` 时至少声明一个 target；纯库与 test-only 项目都合法。`cizon run <bin>` 只运行 bin，只有恰好一个 bin 时才能省略名字
 - `cizon test` 只构建并运行 test target；全部退出 0 时命令返回 0，否则返回 1；没有 test target 时返回 0 并打印 `no test targets`
 - test target 永不定义 `-DNDEBUG`；测试框架由用户提供，外部库通过 `extern_links` 显式接入
 - 不支持 `run --all`；多进程/IPC 编排请放在外部 harness
-- 静态库产物是 `.a`（GNU 归档）；`shared_lib` 产出 DLL 与 import lib
+- 静态库产物是 `.a`（GNU 归档）；Windows 下 `shared_lib` 产出 DLL 与 import lib，Linux 下产出 `.so` 且没有 import lib
 - 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
 - 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
-- `include/` 是唯一自动 `-I` 的目录；target 的 `include` 是显式声明并沿 `links` 传播。私有头不要放进这两处，也不要用全局 `-Ilib` 暴露
+- 项目根 `include/` 是唯一自动加入的项目公开头 `-I`；target 的 `include` 显式声明并沿 `links` 传播，依赖目录也会自动加入。私有头不要放进这些目录，也不要用全局 `-Ilib` 暴露
 - `sources` 必须是项目内相对路径；旧对象布局首次构建会全量重编一次
 - `[project].version` 当前仅作元数据，不参与编译或产物命名
-- 同一项目不支持并发构建；请勿在多个终端同时运行 `cizon build`
+- 项目级锁（`build/.cizon-build.lock`）会拒绝第二个并发 build；确认没有 build 在运行时才删除陈旧锁文件
 - 关闭 `compile_commands` 不会删除已有的 `compile_commands.json` 或 `.vscode/c_cpp_properties.json`，不再需要时手动删除
 - 配置段或已知段内的未知键会直接报错，不会静默忽略
-- 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时使用 `-Werror`
+- 编译器警告（例如忽略 `[[nodiscard]]` 返回值）不会让构建失败；需要严格模式时设置 `[compiler] werror = true`
 - 多个 bin/test target 的 sources 重叠（递归目录常见）会打印警告；多个 `main` 会链接失败，请用显式文件或独立目录
 - `run`/`test` 启动子进程时自动把编译器 bin 目录置于 PATH 最前，避免旧运行库 DLL 遮蔽（见故障排查）
 
-## 后续改进（未排期与待发布）
+## 后续改进与已知问题
 
-以下问题已识别，但尚未承诺实现；按真实需求与 AGENTS.md 的闸门推进。
+尚未承诺的事项按真实需求与 AGENTS.md 的闸门推进。
 
 ### 调试集成（未排期）
 
@@ -650,26 +652,18 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 - v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
 - 终端内 `cizon run --debug` 不能提供 VSCode 断点，不作为替代方案
 
-### 测试 target（v0.7.1，已发布）
-
-- 已实现：`kind = "test"` + `cizon test`；`build` / `run` 忽略 test；退出码 0 即通过；test 源码剔除 `-DNDEBUG`
-- `extern_links` 仅 test target 可用，只做 `-l<name>` 映射；不探测、不下载、不锁版本
-- v0.7.1 透明化与便利项：per-target `prefix`（推导 `-I`/`-L`）、`[compiler] strict`/`werror`、`sync`、`help <command>`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断
-- 已在真实项目 dogfood（gtest、doctest、Catch2、原生断言）
-- CTest 的 labels / fixtures / parallel / timeout / 报告文件等按真实需求再做
-
 ### 可靠性
 
-- 链接器直接写 exe、锁文件/`cizon.toml` 目前也不是断电级原子写；可增加临时产物替换
-- 没有项目级构建锁；两个终端同时 build 仍不受支持
-- 关闭 `compile_commands` 不清理已生成的 `compile_commands.json` 与 `.vscode/c_cpp_properties.json`
+- exe、构建状态、`cizon.lock` 与 `compile_commands.json` 通过同目录临时文件替换；Unix 为原子 rename，Windows 先删除旧文件再 rename
+- 关闭 `compile_commands` 不清理已生成的 `compile_commands.json` 与 `.vscode/c_cpp_properties.json`；需手动删除
 - 删除依赖后 `cizon.lock`/`deps/` 不自动清理；可能需要独立的 remove 命令（会触发二级闸）
 
 ### 诊断与工程
 
 - 配置结构错误来自 serde，`unknown field` 等提示为英文（低优先级风格项）
-- CI 在 tag 上构建 release；测试在本地跑，缺少编译器/git 时会跳过
+- Windows 测试本地跑；tag 触发的 Linux CI 跑完整套件
 - `rustfmt`/`clippy` 尚未接入
+- CTest 的 labels / fixtures / parallel / timeout / 报告文件等按真实需求再做
 
 ### 等真实需求再开
 
@@ -702,6 +696,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.9.5`）。Windows 测试仍在本地跑。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.9.6`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
