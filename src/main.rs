@@ -151,7 +151,7 @@ cizon2 build — build all bin and library targets (not tests)
 Usage: cizon2 build [--release] [--compiler <spec>] [--quiet]
 
 Options:
-  --release          optimize (-O2); the default debug build uses -g
+  --release          optimize (-O2) and define NDEBUG; debug uses -g (test sources keep asserts)
   --compiler <spec>  use g++, clang++ or a full path for this build
   --quiet            suppress progress lines (errors and warnings still print)
 

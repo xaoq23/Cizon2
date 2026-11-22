@@ -144,11 +144,11 @@ hello/
 
 ### `cizon2 build`
 
-构建配置中规划出的全部 bin、静态库与共享库，只编译过期对象；test target 不参与 `build`。test-only 项目也能正常执行 `build`（构建其库，不产出 exe，不报错）。
+构建配置中规划出的全部 bin、静态库与共享库，只编译过期对象；test target 不参与 `build`。没有 bin 的项目（test-only 或纯库）也能正常执行 `build`：构建其库，不产出 exe，不报错。
 
 | 选项 | 作用 |
 |---|---|
-| `--release` | 使用 `-O2`；默认 debug 使用 `-g` |
+| `--release` | 使用 `-O2 -DNDEBUG`（项目与依赖源码关闭 assert）；默认 debug 使用 `-g`。test 源码始终剥离 NDEBUG |
 | `--compiler <spec>` | 本次构建临时指定编译器 |
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
@@ -421,12 +421,12 @@ kind = "bin"
 规则：
 
 - 不写 `[[target]]` 时就是传统的单可执行项目，源码来自 `[project].sources` 或 `src/`
-- 写了 `[[target]]` 后隐式 bin 消失：每个 target 自己声明源码，`[project].sources` 会被拒绝；至少需要一个 `kind = "bin"` 或 `kind = "test"`
-- 不支持纯库项目：给库加一个 test target（推荐），或加一个 bin；需要 install/export 给其他项目使用的库请交给 CMake
+- 写了 `[[target]]` 后隐式 bin 消失：每个 target 自己声明源码，`[project].sources` 会被拒绝；至少需要一个 target，纯库项目合法
+- 支持纯库项目：`build` 产出声明的库，`run` 明确报告没有 bin，`test` 报告 `no test targets`。需要验证库时建议加 test target；需要 install/export 给其他项目使用的库请交给 CMake
 - `src/` 中未被任何 target 编译的源文件会触发警告，因为隐式构建已不再接管它们
 - 只有一个 bin 时 `name` 可省略并默认项目名；多个 bin 时每个都必须显式命名；test 必须显式命名
-- test target 与 bin 共用编译/链接链路，但只由 `cizon test` 构建和执行；`build` / `run` 忽略它。test-only 项目可以正常 `build`（构建库，不产出 exe）
-- test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；默认 debug 的 `-g` 让 assert 消息可读，`cizon test --release` 使用 `-O2` 但同样不加 NDEBUG
+- test target 与 bin 共用编译/链接链路，但只由 `cizon test` 构建和执行；`build` / `run` 忽略它。没有 bin 的项目（test-only 或纯库）可以正常 `build`：构建库，不产出 exe，也不报错
+- test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；release 构建会为项目与依赖源码定义 NDEBUG，而 `cizon test --release` 仍会从 test 源码中剥离它
 - `extern_links` 只允许 test target；cizon2 不探测、不下载、不锁版本；`-l<name>` 解析失败会给出安装提示
 - `extern_links` 按声明顺序追加；静态库依赖方在前（gtest_main 依赖 gtest，因此写 `["gtest_main", "gtest"]`）
 - `prefix` 声明已安装包根目录（项目内相对路径，必须存在）；cizon2 只为该 target 推导 `-I<prefix>/include` 与 `-L<prefix>/lib`，消费已安装库无需手写搜索路径 flag。它假设标准 `include/` + `lib/` 布局。外部构建/安装产物放在 `deps/.build/<name>` / `deps/.install/<name>`，不要铺在项目根
@@ -602,7 +602,7 @@ cizon2 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PAT
 
 ## 使用注意
 
-- 项目至少有一个 bin 或 test target；`cizon2 run <bin>` 只运行 bin，只有恰好一个 bin 时才能省略名字
+- 项目至少声明一个 target；纯库与 test-only 项目都合法。`cizon2 run <bin>` 只运行 bin，只有恰好一个 bin 时才能省略名字
 - `cizon2 test` 只构建并运行 test target；全部退出 0 时命令返回 0，否则返回 1；没有 test target 时返回 0 并打印 `no test targets`
 - test target 永不定义 `-DNDEBUG`；测试框架由用户提供，外部库通过 `extern_links` 显式接入
 - 不支持 `run --all`；多进程/IPC 编排请放在外部 harness

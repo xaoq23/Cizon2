@@ -207,6 +207,60 @@ mod tests {
     }
 
     #[test]
+    fn library_only_project_has_no_bin_and_no_tests() {
+        if compiler::pick(None).is_err() {
+            return;
+        }
+        let dir = temp_dir("lib-only-behavior");
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib/core.cpp"), "int core(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib/core.cpp\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let err = crate::run::run(&dir, &cfg, false, None, None, &[]).unwrap_err();
+        assert!(err.contains("no bin target"), "got: {err}");
+        assert!(err.contains("cizon2 build"), "got: {err}");
+        assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn release_ndebug_disables_bin_asserts_but_keeps_test_asserts() {
+        if compiler::pick(None).is_err() {
+            return;
+        }
+        let dir = temp_dir("release-assert");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        let source = "#include <cassert>\nint main(){ assert(false); return 0; }\n";
+        fs::write(dir.join("src/main.cpp"), source).unwrap();
+        fs::write(dir.join("tests/assert_test.cpp"), source).unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        assert_eq!(
+            crate::run::run(&dir, &cfg, true, None, None, &[]).unwrap(),
+            0,
+            "release bin must compile assert out"
+        );
+        assert_eq!(
+            test(&dir, &cfg, true, None, &[], &[]).unwrap(),
+            1,
+            "release test target must keep assert live"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn test_command_filters_and_rejects_unknown_names() {
         if compiler::pick(None).is_err() {
             return;

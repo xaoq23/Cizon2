@@ -128,9 +128,15 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 
     let edition = compiler::edition_flag(cfg.edition());
     let optimization = if release { "-O2" } else { "-g" };
-    let mut flags = vec![edition.clone(), optimization.into()];
+    let mut base = vec![edition, optimization.into()];
+    // Release is a real C++ profile: asserts and NDEBUG-gated code follow the standard switch.
+    // Tests strip this definition again so assert-based tests stay live.
+    if release {
+        base.push("-DNDEBUG".into());
+    }
+    let mut flags = base.clone();
     // Convenience warning switches expand to fixed flag bundles; user flags come after so they
-    // can still override (e.g. -Wno-...). These apply to project sources only, never deps.
+    // can still override (e.g. -Wno-... or -UNDEBUG). These apply to project sources only, never deps.
     if cfg.strict() {
         flags.extend(["-Wall", "-Wextra", "-Wpedantic"].map(String::from));
     }
@@ -154,7 +160,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             dep_includes.insert(name.clone(), vec![include, root]);
         }
     }
-    let dep_base = vec![edition, optimization.into()];
+    let dep_base = base;
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);

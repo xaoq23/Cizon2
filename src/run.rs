@@ -47,7 +47,7 @@ pub fn run(
         None if result.execs.len() == 1 => result.execs[0].1.clone(),
         None if result.execs.is_empty() => {
             return Err(
-                "no bin target to run. `cizon2 run` only runs kind = \"bin\" targets; use `cizon2 test` for kind = \"test\"."
+                "no bin target to run. `cizon2 run` only runs kind = \"bin\" targets; use `cizon2 build` for libraries or `cizon2 test` for tests."
                     .into(),
             );
         }

@@ -198,22 +198,9 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         return Err("[project].sources and [[target]] cannot be used together: put the source files in the corresponding target.".into());
     }
 
-    // Tests are executable targets too: a test-only project is valid (build still builds its
-    // libraries; only the test command produces an exe), so the "at least one" rule counts both.
+    // Library-only projects are valid: `build` produces the declared libraries, `run` reports
+    // that there is no bin, and `test` reports that there is no test target.
     let bin_count = targets.iter().filter(|t| t.kind == TargetKind::Bin).count();
-    let exe_count = targets
-        .iter()
-        .filter(|t| matches!(t.kind, TargetKind::Bin | TargetKind::Test))
-        .count();
-    if exe_count == 0 {
-        return Err(
-            "[[target]] must contain at least one kind = \"bin\" or kind = \"test\". \
-Declaring [[target]] disables the implicit single-executable project, so src/ is no longer built on its own: \
-add a bin target, or give a library project a test target. \
-Library-only projects are not supported; use CMake when the library must be installed or exported."
-                .into(),
-        );
-    }
     for target in targets.iter_mut() {
         match target.kind {
             TargetKind::Bin => {
@@ -791,18 +778,24 @@ mod tests {
     }
 
     #[test]
-    fn targets_require_at_least_one_bin_and_names() {
-        let dir = temp_dir("no-bin");
+    fn targets_allow_library_only_and_require_bin_names() {
+        let dir = temp_dir("lib-only");
         std::fs::write(
             dir.join("cizon.toml"),
             target_config("[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n"),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
-        assert!(err.contains("at least one"), "got: {err}");
-        assert!(err.contains("implicit single-executable"), "got: {err}");
-        assert!(err.contains("test target"), "got: {err}");
-        assert!(err.contains("CMake"), "got: {err}");
+        let cfg = load(&dir).unwrap();
+        assert_eq!(cfg.targets().unwrap()[0].kind, TargetKind::StaticLib);
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("shared-only");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config("[[target]]\nname = \"dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\n"),
+        )
+        .unwrap();
+        assert!(load(&dir).is_ok(), "a shared-library-only project is valid");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("two-bin");

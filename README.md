@@ -148,11 +148,11 @@ Initializes a single-executable project in the current directory; the project na
 
 ### `cizon2 build`
 
-Builds every bin, static library, and shared library in the plan, compiling only stale objects; test targets are excluded. A test-only project still builds successfully (its libraries are built, no exe is produced, and no error is raised).
+Builds every bin, static library, and shared library in the plan, compiling only stale objects; test targets are excluded. A project without bins (test-only or library-only) still builds successfully: its libraries are built, no exe is produced, and no error is raised.
 
 | Option | Purpose |
 |---|---|
-| `--release` | Uses `-O2`; the default debug build uses `-g` |
+| `--release` | Uses `-O2 -DNDEBUG` (asserts off for project/dependency sources); the default debug build uses `-g`. Test sources always strip NDEBUG |
 | `--compiler <spec>` | Temporarily selects the compiler for this build |
 
 - `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
@@ -425,12 +425,12 @@ Each target accepts six keys:
 Rules:
 
 - Without `[[target]]`, the project is the traditional single-executable project, with sources from `[project].sources` or `src/`
-- With `[[target]]`, the implicit bin is gone: every target declares its own sources, and `[project].sources` is rejected. At least one `kind = "bin"` or `kind = "test"` is required
-- Library-only projects are not supported: give the library a test target (recommended), or add a bin. A library that must be installed or exported for other projects belongs in CMake
+- With `[[target]]`, the implicit bin is gone: every target declares its own sources, and `[project].sources` is rejected. At least one target is required; a library-only project is valid
+- Library-only projects are supported: `build` produces the declared libraries, `run` reports that there is no bin, and `test` reports `no test targets`. Give the library a test target when you want it verified; a library that must be installed or exported for other projects belongs in CMake
 - Source files left under `src/` that no target compiles trigger a warning, since the implicit build no longer picks them up
 - A single bin may omit `name` and use `[project].name`; with multiple bins every bin must be named explicitly; tests must always be named
-- A test target shares the bin compile/link pipeline but is built and executed only by `cizon test`; `build` / `run` ignore it. A test-only project builds successfully (libraries are built, no exe is produced)
-- Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; the default debug `-g` keeps assert messages readable, while `cizon test --release` uses `-O2` but still never adds NDEBUG
+- A test target shares the bin compile/link pipeline but is built and executed only by `cizon test`; `build` / `run` ignore it. Projects without bins (test-only or library-only) build their libraries successfully and produce no exe
+- Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; release builds define NDEBUG for project and dependency sources, while `cizon test --release` still strips it from test sources
 - `extern_links` is accepted only on test targets; cizon2 does not probe, download, or version-lock them. An unresolved `-l<name>` prints an installation hint
 - `extern_links` is appended in declaration order; static-library dependents come first (`gtest_main` depends on `gtest`, so write `["gtest_main", "gtest"]`)
 - `prefix` declares an installed package root (project-relative, must exist); cizon2 derives `-I<prefix>/include` and `-L<prefix>/lib` for that target only, so consuming an installed library needs no hand-written search-path flags. It assumes the standard `include/` + `lib/` layout. Keep external build/install artifacts under `deps/.build/<name>` / `deps/.install/<name>`, not at the project root
@@ -606,7 +606,7 @@ cizon2 puts the compiler's bin directory first in the child PATH for `run` / `te
 
 ## Usage notes
 
-- A project has at least one bin or test target; `cizon2 run <bin>` runs bins only, and an omitted name is only valid with exactly one bin
+- A project declares at least one target; library-only and test-only projects are valid. `cizon2 run <bin>` runs bins only, and an omitted name is only valid with exactly one bin
 - `cizon2 test` builds and runs test targets only; exit 0 when every test exits 0, otherwise 1; no test targets prints `no test targets` and exits 0
 - Test targets never define `-DNDEBUG`; frameworks are supplied by the user, and external libraries are wired in explicitly through `extern_links`
 - `run --all` is not supported; multi-process/IPC orchestration belongs in an external harness

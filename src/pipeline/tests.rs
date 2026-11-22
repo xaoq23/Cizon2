@@ -87,6 +87,59 @@
     }
 
     #[test]
+    fn library_only_project_builds_its_archive() {
+        if crate::compiler::pick(None).is_err() {
+            return;
+        }
+        let dir = temp_dir("lib-only-build");
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib/core.cpp"), "int core(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib/core.cpp\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let built = build_bins(&dir, &cfg, &p).unwrap();
+        assert!(built.execs.is_empty(), "a library-only build produces no bin");
+        let scope = dir
+            .join("build")
+            .join(format!("{}-{}", p.mode, scope_label(&p.cxx.name)));
+        let archive = scope.join("lib").join("core").join("libcore.a");
+        assert!(archive.is_file(), "missing {}", archive.display());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn release_defines_ndebug_for_project_and_deps_but_not_tests() {
+        let dir = temp_dir("release-ndebug");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let mk = || Cxx {
+            name: "g++".into(),
+            version: "test".into(),
+        };
+        let debug = plan(&dir, &cfg, mk(), false).unwrap();
+        assert!(!debug.flags.iter().any(|f| f == "-DNDEBUG"));
+        assert!(!debug.dep_base.iter().any(|f| f == "-DNDEBUG"));
+
+        let release = plan(&dir, &cfg, mk(), true).unwrap();
+        assert!(release.flags.iter().any(|f| f == "-DNDEBUG"));
+        assert!(release.dep_base.iter().any(|f| f == "-DNDEBUG"));
+        assert!(
+            !release.test_flags.iter().any(|f| f.contains("NDEBUG")),
+            "test sources must never see -DNDEBUG: {:?}",
+            release.test_flags
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn finished_elapsed_keeps_unit_next_to_number() {
         assert_eq!(elapsed_text(0.12, false), "0.12s");
         let colored = elapsed_text(0.12, true);
