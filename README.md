@@ -286,7 +286,8 @@ The layout is a convention, not a hard-coded framework: `sources` may point at a
 
 ### Public and private headers
 
-- `include/` is the only directory added to `-I` automatically; it holds the public API and is visible to both the bin and library targets
+- The project-root `include/` is the only directory added to `-I` automatically; it is optional and is visible to every target
+- Multi-library projects should keep each library's public headers inside that library (for example `libs/net/include`) and point the target's `include` at it. Do not copy or move them into the root `include/`: target `include` propagation preserves ownership and gives consumers the same view
 - Private headers and implementation details belong in `lib/` or next to the implementation files and stay off the include path by default
 - Include private headers with relative paths, e.g. `#include "detail/shape_impl.h"`; never put them in `include/`
 - Do not add `-Ilib` to `[compiler].flags`: flags are global and would expose private directories to the bin as well

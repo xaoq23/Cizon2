@@ -282,7 +282,8 @@ project/
 
 ### 公开头与私有头
 
-- `include/` 是唯一自动加入 `-I` 的目录，只放对外 API；bin 与库 target 都能包含
+- 项目根 `include/` 是唯一自动加入 `-I` 的目录；它可选，对所有 target 可见
+- 多库项目应把各库公共头留在库目录内（例如 `libs/net/include`），用 target 的 `include` 指向它。不要复制或搬到根 `include/`：target include 传播既保留归属，又给消费者同样的视图
 - `lib/` 或实现文件旁边放私有头与实现细节，默认不在 include 路径里
 - 私有头用相对路径包含，如 `#include "detail/shape_impl.h"`；不要放进 `include/`
 - 不要在 `[compiler].flags` 里加 `-Ilib`：flags 是全局的，会把私有目录同时暴露给 bin

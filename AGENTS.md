@@ -35,7 +35,7 @@
 
 ## 项目结构约定
 
-- `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
+- 根 `include/` 只放项目级公开头（唯一自动 `-I`）；多库项目把公共头留在各库自己的 `include/`，用 target `include` 传播，不要复制/搬到根目录；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
