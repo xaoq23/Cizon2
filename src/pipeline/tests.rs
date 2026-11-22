@@ -2187,6 +2187,124 @@
     }
 
     #[test]
+    fn target_include_change_recompiles_library_and_consumer() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("include-change");
+        for sub in ["inc_a", "inc_b", "lib", "src"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("inc_a/core.hpp"),
+            "#pragma once\n#define CORE_VALUE 1\nint core();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("inc_b/core.hpp"),
+            "#pragma once\n#define CORE_VALUE 2\nint core();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("lib/core.cpp"),
+            "#include \"core.hpp\"\nint core(){return CORE_VALUE;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include <cstdio>\n#include \"core.hpp\"\n\
+             int main(){std::printf(\"%d\\n\", CORE_VALUE); return core()==CORE_VALUE?0:1;}\n",
+        )
+        .unwrap();
+        let config = |include: &str| {
+            format!(
+                "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+                 [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\ninclude = \"{include}\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"core\"]\n"
+            )
+        };
+
+        fs::write(dir.join("cizon.toml"), config("inc_a")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert_eq!(run_stdout(&exe).trim(), "1");
+
+        fs::write(dir.join("cizon.toml"), config("inc_b")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(
+            run_stdout(&exe).trim(),
+            "2",
+            "the consumer must be recompiled against the new include path"
+        );
+        assert_eq!(
+            run_code(&exe),
+            0,
+            "changing a target include must recompile both the library and its consumer"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_lib_propagates_public_includes_through_static_deps() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = temp_dir("shared-include");
+        for sub in [
+            "core/include/core",
+            "core/src",
+            "api/include/api",
+            "api/src",
+            "app/src",
+        ] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("core/include/core/core.hpp"),
+            "#pragma once\nint core_value();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("core/src/core.cpp"),
+            "#include \"core/core.hpp\"\nint core_value(){return 5;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("api/include/api/api.hpp"),
+            "#pragma once\n#include \"core/core.hpp\"\nextern \"C\" int api_value();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("api/src/api.cpp"),
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\n\
+             #include \"api/api.hpp\"\nextern \"C\" CZ_EXPORT int api_value(){return core_value()+1;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app/src/main.cpp"),
+            "#include \"api/api.hpp\"\nint main(){return api_value()==6?0:1;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core/src\"]\ninclude = \"core/include\"\n\n\
+             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api/src\"]\ninclude = \"api/include\"\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"api\"]\n",
+        )
+        .unwrap();
+        let exe = build_project(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        shared_dll(&scope, "api");
+        assert_eq!(
+            run_code(&exe),
+            0,
+            "shared_lib must propagate its own and static dependencies' public includes"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn target_include_paths_are_validated_at_plan_time() {
         let dir = temp_dir("target-include-invalid");
         fs::create_dir_all(dir.join("lib")).unwrap();

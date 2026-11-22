@@ -198,6 +198,7 @@ pub fn edition_flag(edition: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
     use std::fs;
 
     #[test]
@@ -228,7 +229,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cizon-exe-path-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("g++.exe");
-        fs::write(&exe, "").unwrap();        assert_eq!(
+        fs::write(&exe, "").unwrap();
+        assert_eq!(
             executable_path(&dir.join("g++").to_string_lossy()).as_deref(),
             Some(exe.as_path())
         );
