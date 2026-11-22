@@ -399,6 +399,13 @@ prefix = "deps/.install/googletest"     # 已安装包根目录；cizon2 由此�
 extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序映射为 -l
 ```
 
+声明第一个 `[[target]]` 会把项目从隐式模式切到显式模式：`src/` 自动生成的 bin 不再存在。最小迁移只需一个块（单个 bin 使用项目名，省略 `sources` 仍扫描 `src/`）：
+
+```toml
+[[target]]
+kind = "bin"
+```
+
 每个 target 支持六个键：
 
 | 键 | 必填 | 说明 |
@@ -413,7 +420,9 @@ extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序�
 规则：
 
 - 不写 `[[target]]` 时就是传统的单可执行项目，源码来自 `[project].sources` 或 `src/`
-- 写了 `[[target]]` 后至少有一个 `kind = "bin"` 或 `kind = "test"`；`[project].sources` 不能再使用
+- 写了 `[[target]]` 后隐式 bin 消失：每个 target 自己声明源码，`[project].sources` 会被拒绝；至少需要一个 `kind = "bin"` 或 `kind = "test"`
+- 不支持纯库项目：给库加一个 test target（推荐），或加一个 bin；需要 install/export 给其他项目使用的库请交给 CMake
+- `src/` 中未被任何 target 编译的源文件会触发警告，因为隐式构建已不再接管它们
 - 只有一个 bin 时 `name` 可省略并默认项目名；多个 bin 时每个都必须显式命名；test 必须显式命名
 - test target 与 bin 共用编译/链接链路，但只由 `cizon test` 构建和执行；`build` / `run` 忽略它。test-only 项目可以正常 `build`（构建库，不产出 exe）
 - test 源码永不定义 `-DNDEBUG`，防止 `assert` 测试被编译掉后静默通过；默认 debug 的 `-g` 让 assert 消息可读，`cizon test --release` 使用 `-O2` 但同样不加 NDEBUG

@@ -38,7 +38,7 @@
 - `include/` 只放公开头（唯一自动 `-I`）；私有头放 `lib/` 或实现文件旁边，默认不暴露
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
-- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 bin 或 test target；多个 bin 必须各自命名；test 必须显式命名且提供 sources；shared_lib 只能链接 static_lib，bin/test 可混合链接静态库与共享库
+- `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 bin 或 test target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目用 test target 充当消费者，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources；shared_lib 只能链接 static_lib，bin/test 可混合链接静态库与共享库
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 - test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `test-obj/<name>/`，`build` / `run` 不构建 test target
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供

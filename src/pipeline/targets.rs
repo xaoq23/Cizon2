@@ -100,6 +100,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("test target {name}"))?,
             });
         }
+        warn_unused_src(dir, &bins, &tests, &libs, &shared);
         (bins, tests, libs, shared)
     } else {
         let explicit = cfg.explicit_sources();
@@ -222,6 +223,67 @@ fn resolve_prefix(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<P
     }
     ensure_dir_inside(dir, &path, &format!("{owner} prefix"))?;
     Ok(Some(path))
+}
+
+/// Explicit target mode drops the implicit single-executable project, so src/ files that no
+/// target compiles would silently stop being built. Warn once with a concrete fix.
+fn warn_unused_src(
+    dir: &Path,
+    bins: &[BinTarget],
+    tests: &[BinTarget],
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+) {
+    let mut used = HashSet::new();
+    for source in bins
+        .iter()
+        .chain(tests.iter())
+        .flat_map(|t| t.sources.iter())
+        .chain(libs.iter().flat_map(|l| l.sources.iter()))
+        .chain(shared.iter().flat_map(|s| s.sources.iter()))
+    {
+        if let Ok(rel) = project_relative(dir, source) {
+            used.insert(rel);
+        }
+    }
+    let unused = unused_src_sources(dir, &used);
+    if unused.is_empty() {
+        return;
+    }
+    let shown = unused
+        .iter()
+        .take(3)
+        .map(|src| rel_display(dir, src))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = unused.len().saturating_sub(3);
+    let suffix = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "Warning: source files under src/ are not compiled by any [[target]]: {shown}{suffix}. \
+Declaring [[target]] disables the implicit single-executable project; add them to a bin/test target \
+(e.g. sources = [\"src\"]), or remove [[target]]."
+    );
+}
+
+pub(super) fn unused_src_sources(dir: &Path, used: &HashSet<PathBuf>) -> Vec<PathBuf> {
+    let src = dir.join("src");
+    if !src.is_dir() {
+        return Vec::new();
+    }
+    let mut scanned = Vec::new();
+    if collect_recursive(&src, &mut scanned).is_err() {
+        return Vec::new();
+    }
+    let mut unused: Vec<PathBuf> = scanned
+        .into_iter()
+        .filter(|path| project_relative(dir, path).map_or(true, |rel| !used.contains(&rel)))
+        .collect();
+    unused.sort();
+    unused
 }
 
 /// Source files compiled into more than one executable target (bin/test). Recursive `sources`

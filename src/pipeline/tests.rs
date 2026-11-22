@@ -1,6 +1,7 @@
     use super::*;
     use super::output::*;
     use super::targets::*;
+    use std::collections::HashSet;
     use std::fs;
     use std::process::Command;
 
@@ -55,6 +56,26 @@
         assert_eq!(p.flags.iter().filter(|f| *f == "-Wall").count(), 1);
         assert!(!p.flags.iter().any(|f| f == "-lm"));
         assert_eq!(p.link_flags, vec!["-lm".to_string()]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unused_src_sources_ignore_files_compiled_by_targets() {
+        let dir = temp_dir("unused-src");
+        fs::create_dir_all(dir.join("src/sub")).unwrap();
+        fs::write(dir.join("src/used.cpp"), "").unwrap();
+        fs::write(dir.join("src/main.cpp"), "").unwrap();
+        fs::write(dir.join("src/sub/helper.cc"), "").unwrap();
+        fs::write(dir.join("src/readme.txt"), "").unwrap();
+        let used: HashSet<PathBuf> = [PathBuf::from("src/used.cpp")].into_iter().collect();
+        let unused = unused_src_sources(&dir, &used);
+        assert_eq!(
+            unused,
+            vec![dir.join("src/main.cpp"), dir.join("src/sub/helper.cc")]
+        );
+
+        let empty = unused_src_sources(&dir.join("missing"), &HashSet::new());
+        assert!(empty.is_empty());
         fs::remove_dir_all(dir).ok();
     }
 

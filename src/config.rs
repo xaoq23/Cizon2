@@ -207,7 +207,11 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         .count();
     if exe_count == 0 {
         return Err(
-            "[[target]] must contain at least one kind = \"bin\" or kind = \"test\".".into(),
+            "[[target]] must contain at least one kind = \"bin\" or kind = \"test\". \
+Declaring [[target]] disables the implicit single-executable project, so src/ is no longer built on its own: \
+add a bin target, or give a library project a test target. \
+Library-only projects are not supported; use CMake when the library must be installed or exported."
+                .into(),
         );
     }
     for target in targets.iter_mut() {
@@ -796,6 +800,9 @@ mod tests {
         .unwrap();
         let err = load(&dir).unwrap_err();
         assert!(err.contains("at least one"), "got: {err}");
+        assert!(err.contains("implicit single-executable"), "got: {err}");
+        assert!(err.contains("test target"), "got: {err}");
+        assert!(err.contains("CMake"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("two-bin");

@@ -403,6 +403,13 @@ prefix = "deps/.install/googletest"     # installed package root; cizon2 derives
 extern_links = ["gtest_main", "gtest"]  # installed external libraries, mapped to -l in declaration order
 ```
 
+Declaring the first `[[target]]` switches the project from implicit to explicit mode: the automatic bin from `src/` is no longer created. The minimal migration is one block (a lone bin takes the project name, and omitting `sources` still scans `src/`):
+
+```toml
+[[target]]
+kind = "bin"
+```
+
 Each target accepts six keys:
 
 | Key | Required | Meaning |
@@ -417,7 +424,9 @@ Each target accepts six keys:
 Rules:
 
 - Without `[[target]]`, the project is the traditional single-executable project, with sources from `[project].sources` or `src/`
-- With `[[target]]`, at least one `kind = "bin"` or `kind = "test"` is required, and `[project].sources` can no longer be used
+- With `[[target]]`, the implicit bin is gone: every target declares its own sources, and `[project].sources` is rejected. At least one `kind = "bin"` or `kind = "test"` is required
+- Library-only projects are not supported: give the library a test target (recommended), or add a bin. A library that must be installed or exported for other projects belongs in CMake
+- Source files left under `src/` that no target compiles trigger a warning, since the implicit build no longer picks them up
 - A single bin may omit `name` and use `[project].name`; with multiple bins every bin must be named explicitly; tests must always be named
 - A test target shares the bin compile/link pipeline but is built and executed only by `cizon test`; `build` / `run` ignore it. A test-only project builds successfully (libraries are built, no exe is produced)
 - Test sources never define `-DNDEBUG`, so assert-based tests cannot be compiled away and silently pass; the default debug `-g` keeps assert messages readable, while `cizon test --release` uses `-O2` but still never adds NDEBUG
