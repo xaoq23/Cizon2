@@ -10,7 +10,15 @@ use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
-    let (bins, tests, libs, shared) = if let Some(targets) = cfg.targets() {
+    let (mut bins, mut tests, mut libs, mut shared) = if let Some(targets) = cfg.targets() {
+        let static_names: HashMap<String, String> = targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::StaticLib)
+            .map(|t| {
+                let name = t.name.as_deref().expect("config resolves lib name");
+                (name.to_lowercase(), name.to_string())
+            })
+            .collect();
         let mut libs = Vec::new();
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
             let name = target.name.as_deref().expect("config resolves lib name");
@@ -22,10 +30,23 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             if lib_sources.is_empty() {
                 return Err(format!("static library target {name} has no source file to compile."));
             }
+            let owner = format!("static library target {name}");
             libs.push(LibTarget {
                 name: name.to_string(),
                 sources: lib_sources,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("static library target {name}"))?,
+                include: resolve_include(dir, target.include.as_deref(), &owner)?,
+                links: target
+                    .links
+                    .iter()
+                    .map(|link| {
+                        static_names
+                            .get(&link.to_lowercase())
+                            .cloned()
+                            .ok_or_else(|| format!("{owner} links a nonexistent static library {link}."))
+                    })
+                    .collect::<Result<_, _>>()?,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                compile_flags: Vec::new(),
             });
         }
         let mut shared = Vec::new();
@@ -41,21 +62,24 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                     "shared library target {name} has no source file to compile."
                 ));
             }
+            let owner = format!("shared library target {name}");
             let shared_links = target
                 .links
                 .iter()
                 .map(|link| {
-                    libs.iter()
-                        .find(|lib| lib.name.to_lowercase() == link.to_lowercase())
-                        .map(|lib| lib.name.clone())
-                        .unwrap_or_else(|| link.clone())
+                    static_names
+                        .get(&link.to_lowercase())
+                        .cloned()
+                        .ok_or_else(|| format!("{owner} links a nonexistent static library {link}."))
                 })
-                .collect();
+                .collect::<Result<_, _>>()?;
             shared.push(SharedTarget {
                 name: name.to_string(),
                 sources: shared_sources,
+                include: resolve_include(dir, target.include.as_deref(), &owner)?,
                 links: shared_links,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("shared library target {name}"))?,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                compile_flags: Vec::new(),
             });
         }
         let mut bins = Vec::new();
@@ -70,13 +94,16 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 return Err(format!("bin target {name} has no source file to compile."));
             }
             let links = resolve_exec_links(target.links.as_slice(), &libs, &shared);
+            let owner = format!("bin target {name}");
             bins.push(BinTarget {
                 name: name.to_string(),
                 sources,
                 links,
                 out_name: exe_name(name),
                 extern_links: Vec::new(),
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("bin target {name}"))?,
+                include: resolve_include(dir, target.include.as_deref(), &owner)?,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                compile_flags: Vec::new(),
             });
         }
         let mut tests = Vec::new();
@@ -91,13 +118,16 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 return Err(format!("test target {name} has no source file to compile."));
             }
             let links = resolve_exec_links(target.links.as_slice(), &libs, &shared);
+            let owner = format!("test target {name}");
             tests.push(BinTarget {
                 name: name.to_string(),
                 sources,
                 links,
                 out_name: exe_name(name),
                 extern_links: target.extern_links.clone(),
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &format!("test target {name}"))?,
+                include: resolve_include(dir, target.include.as_deref(), &owner)?,
+                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                compile_flags: Vec::new(),
             });
         }
         warn_unused_src(dir, &bins, &tests, &libs, &shared);
@@ -121,7 +151,9 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             sources,
             links: Vec::new(),
             extern_links: Vec::new(),
+            include: None,
             prefix: None,
+            compile_flags: Vec::new(),
         }];
         (bins, Vec::new(), Vec::new(), Vec::new())
     };
@@ -164,6 +196,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);
+    finalize_target_graph(&mut bins, &mut tests, &mut libs, &mut shared, &flags, &test_flags)?;
 
     for (src, names) in overlapping_exec_sources(&bins, &tests) {
         eprintln!(
@@ -178,7 +211,6 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         bins,
         tests,
         flags,
-        test_flags,
         link_flags,
         dep_base,
         dep_includes,
@@ -186,6 +218,326 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         shared,
         mode: if release { "release" } else { "debug" },
     })
+}
+
+/// Resolve the include interface and static-library order, then materialize each target's
+/// effective compile flags. Root `include/` and dependency includes are already in `flags`.
+fn finalize_target_graph(
+    bins: &mut [BinTarget],
+    tests: &mut [BinTarget],
+    libs: &mut [LibTarget],
+    shared: &mut [SharedTarget],
+    flags: &[String],
+    test_flags: &[String],
+) -> Result<(), String> {
+    let lib_index: HashMap<String, usize> = libs
+        .iter()
+        .enumerate()
+        .map(|(i, lib)| (lib.name.to_lowercase(), i))
+        .collect();
+    let shared_index: HashMap<String, usize> = shared
+        .iter()
+        .enumerate()
+        .map(|(i, sh)| (sh.name.to_lowercase(), i))
+        .collect();
+    validate_static_graph(libs, &lib_index)?;
+
+    for i in 0..libs.len() {
+        let includes = lib_includes(&libs[i].name, libs, &lib_index);
+        let prefix = libs[i].prefix.clone();
+        libs[i].compile_flags = flags_with_includes(flags, &includes, &prefix);
+    }
+    for i in 0..shared.len() {
+        let includes = shared_includes(&shared[i], libs, &lib_index);
+        let prefix = shared[i].prefix.clone();
+        shared[i].compile_flags = flags_with_includes(flags, &includes, &prefix);
+        let ordered = ordered_static_roots(&shared[i].links, libs, &lib_index)?;
+        shared[i].links = ordered;
+    }
+    for bin in bins.iter_mut() {
+        let includes = exec_includes(
+            bin.include.as_deref(),
+            &bin.links,
+            libs,
+            shared,
+            &lib_index,
+            &shared_index,
+        );
+        let prefix = bin.prefix.clone();
+        bin.compile_flags = flags_with_includes(flags, &includes, &prefix);
+        let ordered = ordered_exec_links(&bin.links, libs, &lib_index)?;
+        bin.links = ordered;
+    }
+    for test in tests.iter_mut() {
+        let includes = exec_includes(
+            test.include.as_deref(),
+            &test.links,
+            libs,
+            shared,
+            &lib_index,
+            &shared_index,
+        );
+        let prefix = test.prefix.clone();
+        test.compile_flags = flags_with_includes(test_flags, &includes, &prefix);
+        let ordered = ordered_exec_links(&test.links, libs, &lib_index)?;
+        test.links = ordered;
+    }
+    Ok(())
+}
+
+fn flags_with_includes(base: &[String], includes: &[PathBuf], prefix: &Option<PathBuf>) -> Vec<String> {
+    let mut flags = base.to_vec();
+    for include in includes {
+        flags.push(format!("-I{}", include.display()));
+    }
+    if let Some(p) = prefix {
+        flags.push(format!("-I{}/include", p.display()));
+    }
+    flags
+}
+
+fn push_include(include: &Option<PathBuf>, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
+    if let Some(path) = include {
+        if seen.insert(path.clone()) {
+            out.push(path.clone());
+        }
+    }
+}
+
+fn lib_includes(
+    start: &str,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut visited = HashSet::new();
+    collect_lib_includes(start, libs, index, &mut visited, &mut out, &mut seen);
+    out
+}
+
+fn collect_lib_includes(
+    name: &str,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+    visited: &mut HashSet<String>,
+    out: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let lower = name.to_lowercase();
+    if !visited.insert(lower.clone()) {
+        return;
+    }
+    let Some(&i) = index.get(&lower) else {
+        return;
+    };
+    push_include(&libs[i].include, out, seen);
+    for dep in &libs[i].links {
+        collect_lib_includes(dep, libs, index, visited, out, seen);
+    }
+}
+
+fn shared_includes(
+    shared: &SharedTarget,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut visited = HashSet::new();
+    push_include(&shared.include, &mut out, &mut seen);
+    for dep in &shared.links {
+        collect_lib_includes(dep, libs, index, &mut visited, &mut out, &mut seen);
+    }
+    out
+}
+
+fn exec_includes(
+    own: Option<&Path>,
+    links: &[LinkTarget],
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+    lib_index: &HashMap<String, usize>,
+    shared_index: &HashMap<String, usize>,
+) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut visited_libs = HashSet::new();
+    let mut visited_shared = HashSet::new();
+    if let Some(path) = own {
+        if seen.insert(path.to_path_buf()) {
+            out.push(path.to_path_buf());
+        }
+    }
+    for link in links {
+        match link {
+            LinkTarget::Static(name) => {
+                collect_lib_includes(name, libs, lib_index, &mut visited_libs, &mut out, &mut seen);
+            }
+            LinkTarget::Shared(name) => {
+                let lower = name.to_lowercase();
+                if !visited_shared.insert(lower.clone()) {
+                    continue;
+                }
+                if let Some(&i) = shared_index.get(&lower) {
+                    push_include(&shared[i].include, &mut out, &mut seen);
+                    for dep in &shared[i].links {
+                        collect_lib_includes(
+                            dep,
+                            libs,
+                            lib_index,
+                            &mut visited_libs,
+                            &mut out,
+                            &mut seen,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Reject static-library cycles globally, including libraries that no executable consumes.
+fn validate_static_graph(
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Result<(), String> {
+    fn visit(
+        name: &str,
+        libs: &[LibTarget],
+        index: &HashMap<String, usize>,
+        state: &mut HashMap<String, u8>,
+        stack: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let lower = name.to_lowercase();
+        match state.get(&lower).copied() {
+            Some(2) => return Ok(()),
+            Some(1) => {
+                let start = stack
+                    .iter()
+                    .position(|n| n.eq_ignore_ascii_case(name))
+                    .unwrap_or(0);
+                let mut chain = stack[start..].to_vec();
+                chain.push(name.to_string());
+                return Err(format!(
+                    "static library link cycle: {}. Break the cycle; cizon2 does not add --start-group.",
+                    chain.join(" -> ")
+                ));
+            }
+            _ => {}
+        }
+        let Some(&i) = index.get(&lower) else {
+            return Err(format!("static library target {name} links a nonexistent static library."));
+        };
+        state.insert(lower.clone(), 1);
+        stack.push(libs[i].name.clone());
+        for dep in &libs[i].links {
+            visit(dep, libs, index, state, stack)?;
+        }
+        stack.pop();
+        state.insert(lower, 2);
+        Ok(())
+    }
+
+    let mut state = HashMap::new();
+    let mut stack = Vec::new();
+    for lib in libs {
+        visit(&lib.name, libs, index, &mut state, &mut stack)?;
+    }
+    Ok(())
+}
+
+/// Dependency-first order for static archives: dependents before dependencies. Independent
+/// libraries keep their first encounter order.
+fn ordered_static_roots(
+    roots: &[String],
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Result<Vec<String>, String> {
+    fn collect(
+        name: &str,
+        libs: &[LibTarget],
+        index: &HashMap<String, usize>,
+        names: &mut Vec<String>,
+        positions: &mut HashMap<String, usize>,
+        edges: &mut Vec<Vec<usize>>,
+    ) -> Result<usize, String> {
+        let lower = name.to_lowercase();
+        if let Some(&i) = positions.get(&lower) {
+            return Ok(i);
+        }
+        let Some(&lib_i) = index.get(&lower) else {
+            return Err(format!("static library target {name} links a nonexistent static library."));
+        };
+        let i = names.len();
+        names.push(libs[lib_i].name.clone());
+        positions.insert(lower, i);
+        edges.push(Vec::new());
+        for dep in &libs[lib_i].links {
+            let d = collect(dep, libs, index, names, positions, edges)?;
+            edges[i].push(d);
+        }
+        Ok(i)
+    }
+
+    let mut names = Vec::new();
+    let mut positions = HashMap::new();
+    let mut edges = Vec::new();
+    for root in roots {
+        collect(root, libs, index, &mut names, &mut positions, &mut edges)?;
+    }
+    let mut indegree = vec![0usize; names.len()];
+    for targets in &edges {
+        for &target in targets {
+            indegree[target] += 1;
+        }
+    }
+    let mut ready: Vec<usize> = (0..names.len()).filter(|&i| indegree[i] == 0).collect();
+    let mut ordered = Vec::with_capacity(names.len());
+    while !ready.is_empty() {
+        ready.sort_unstable();
+        let i = ready.remove(0);
+        ordered.push(names[i].clone());
+        for &target in &edges[i] {
+            indegree[target] -= 1;
+            if indegree[target] == 0 {
+                ready.push(target);
+            }
+        }
+    }
+    if ordered.len() != names.len() {
+        return Err(
+            "static library link cycle detected; break the cycle (cizon2 does not add --start-group)."
+                .into(),
+        );
+    }
+    Ok(ordered)
+}
+
+fn ordered_exec_links(
+    links: &[LinkTarget],
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Result<Vec<LinkTarget>, String> {
+    let roots: Vec<String> = links
+        .iter()
+        .filter_map(|link| match link {
+            LinkTarget::Static(name) => Some(name.clone()),
+            LinkTarget::Shared(_) => None,
+        })
+        .collect();
+    let mut ordered: Vec<LinkTarget> = ordered_static_roots(&roots, libs, index)?
+        .into_iter()
+        .map(LinkTarget::Static)
+        .collect();
+    ordered.extend(
+        links
+            .iter()
+            .filter(|link| matches!(link, LinkTarget::Shared(_)))
+            .cloned(),
+    );
+    Ok(ordered)
 }
 
 /// Remove every `-DNDEBUG` spelling from test-source flags. Tests must not silently compile out
@@ -220,14 +572,46 @@ fn resolve_prefix(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<P
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let path = resolve_source_path(dir, raw, &format!("{owner} prefix"))?;
+    if raw.trim().is_empty() {
+        return Err(format!("{owner} prefix path must not be empty."));
+    }
+    let path = resolve_project_path(dir, raw, owner, "prefix path")?;
     if !path.is_dir() {
         return Err(format!(
             "{owner} prefix {} is not a directory. Install the package there first (e.g. cmake --install), or remove the prefix.",
             rel_display(dir, &path)
         ));
     }
-    ensure_dir_inside(dir, &path, &format!("{owner} prefix"))?;
+    ensure_dir_inside(dir, &path, &format!("{owner} prefix path"))?;
+    Ok(Some(path))
+}
+
+/// Resolve an optional target include root at plan time: a missing or misplaced directory is a
+/// configuration typo and must fail before the compiler ever sees an include.
+fn resolve_include(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<PathBuf>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.trim().is_empty() {
+        return Err(format!("{owner} include path must not be empty."));
+    }
+    let path = resolve_project_path(dir, raw, owner, "include path")?;
+    if !path.is_dir() {
+        return Err(format!(
+            "{owner} include path {} is not a directory. Create it or fix the path.",
+            rel_display(dir, &path)
+        ));
+    }
+    ensure_dir_inside(dir, &path, &format!("{owner} include path"))?;
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Cannot resolve project root {}: {e}", dir.display()))?;
+    let real = std::fs::canonicalize(&path)
+        .map_err(|e| format!("Cannot resolve include directory {}: {e}", path.display()))?;
+    if real == root {
+        return Err(format!(
+            "{owner} include path must not be the project root; use include/ or a library-specific public directory."
+        ));
+    }
     Ok(Some(path))
 }
 
@@ -343,6 +727,15 @@ pub(super) fn resolve_source_path(dir: &Path, raw: &str, owner: &str) -> Result<
     if raw.trim().is_empty() {
         return Err(format!("{owner} sources must not contain an empty path."));
     }
+    resolve_project_path(dir, raw, owner, "sources")
+}
+
+fn resolve_project_path(
+    dir: &Path,
+    raw: &str,
+    owner: &str,
+    what: &str,
+) -> Result<PathBuf, String> {
     let rel = Path::new(raw);
     let bad_component = rel.components().any(|c| {
         !matches!(
@@ -352,7 +745,7 @@ pub(super) fn resolve_source_path(dir: &Path, raw: &str, owner: &str) -> Result<
     });
     if rel.is_absolute() || bad_component {
         return Err(format!(
-            "{owner} sources must be project-relative paths (no absolute path, no ..): {raw}"
+            "{owner} {what} must be a project-relative path (no absolute path, no ..): {raw}"
         ));
     }
     Ok(dir.join(rel))
@@ -651,7 +1044,9 @@ mod tests {
             links: vec![],
             out_name: format!("{name}.exe"),
             extern_links: vec![],
+            include: None,
             prefix: None,
+            compile_flags: vec![],
         };
         let bins = vec![mk("app", "src/main.cpp")];
         let tests = vec![mk("t1", "tests/a.cpp"), mk("t2", "tests/a.cpp")];

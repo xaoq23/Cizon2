@@ -43,8 +43,14 @@ use targets::{exec_obj_dir, lib_obj_dir, lib_obj_for, obj_for};
 struct LibTarget {
     name: String,
     sources: Vec<PathBuf>,
+    /// Public include root; inherited by consumers through `links`.
+    include: Option<PathBuf>,
+    /// Direct static-library dependencies.
+    links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include for this target.
     prefix: Option<PathBuf>,
+    /// Base flags + own/propagated include paths + prefix include.
+    compile_flags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,19 +62,27 @@ pub(super) struct BinTarget {
     /// Test targets only: external library names mapped verbatim to `-l<name>` at link time.
     /// Bins always keep this empty (config validation enforces it).
     pub(super) extern_links: Vec<String>,
+    /// Optional project-relative include root used by this target only.
+    pub(super) include: Option<PathBuf>,
     /// Optional installed-package prefix; expands to -I<prefix>/include (compile) and
     /// -L<prefix>/lib (link) for this target only.
     pub(super) prefix: Option<PathBuf>,
+    /// Base flags + own/propagated include paths + prefix include.
+    pub(super) compile_flags: Vec<String>,
 }
 
 #[derive(Debug)]
 struct SharedTarget {
     name: String,
     sources: Vec<PathBuf>,
-    /// Static libraries built into this DLL, in declaration order.
+    /// Public include root; inherited by consumers through `links`.
+    include: Option<PathBuf>,
+    /// Static libraries built into this DLL, in dependency order.
     links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include and -L<prefix>/lib.
     prefix: Option<PathBuf>,
+    /// Base flags + own/propagated include paths + prefix include.
+    compile_flags: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -100,9 +114,6 @@ pub struct Plan {
     tests: Vec<BinTarget>,
     /// compile-time flags (edition + optimization level + user flags + dependency include paths)
     flags: Vec<String>,
-    /// test-source compile flags: `flags` with every `-DNDEBUG` definition removed, so a test
-    /// project that adds it cannot silently disable assert-based tests.
-    test_flags: Vec<String>,
     /// extra link-time flags (user link_flags; user flags already live in flags, not passed twice)
     link_flags: Vec<String>,
     /// base compile flags for dependency sources (edition + optimization level; user flags are
@@ -249,10 +260,6 @@ fn build_execs(
     // treat every unselected test as removed and delete its exe/link state.
     let wanted_execs = execs_state_text(execs_state_label, all);
     let multi = plan.bins.len() > 1;
-    let exec_flags = match set {
-        ExecSet::Bins => &plan.flags,
-        ExecSet::Tests => &plan.test_flags,
-    };
     if !state_current(&project_state, &wanted_project)? {
         clear_project_objects(&obj_dir)?;
         reset_dir(&test_obj_root)?;
@@ -341,7 +348,7 @@ fn build_execs(
     let mut jobs: Vec<Job> = Vec::new(); // project sources
     for bin in &execs {
         let bin_obj = exec_obj_dir(&scope_dir, &bin.name, multi, set);
-        let flags = compile_flags_with_prefix(exec_flags, &bin.prefix);
+        let flags = bin.compile_flags.clone();
         for src in &bin.sources {
             let obj = obj_for(dir, src, &bin_obj)?;
             if needs_recompile(src, &obj) {
@@ -363,7 +370,7 @@ fn build_execs(
         }
     }
     for lib in &plan.libs {
-        let mut flags = compile_flags_with_prefix(&plan.flags, &lib.prefix);
+        let mut flags = lib.compile_flags.clone();
         if pic_shared {
             flags.push("-fPIC".to_string());
         }
@@ -379,7 +386,7 @@ fn build_execs(
         }
     }
     for shared in &plan.shared {
-        let mut flags = compile_flags_with_prefix(&plan.flags, &shared.prefix);
+        let mut flags = shared.compile_flags.clone();
         if pic_shared {
             flags.push("-fPIC".to_string());
         }
@@ -686,16 +693,6 @@ fn build_execs(
         );
     }
     Ok(BuildResult { execs: result_bins })
-}
-
-/// Append a target's prefix include path to its base compile flags. The prefix is the installed
-/// package root; cizon2 assumes the standard `<prefix>/include` layout.
-fn compile_flags_with_prefix(base: &[String], prefix: &Option<PathBuf>) -> Vec<String> {
-    let mut flags = base.to_vec();
-    if let Some(p) = prefix {
-        flags.push(format!("-I{}/include", p.display()));
-    }
-    flags
 }
 
 /// When a `extern_links` entry cannot be resolved (`cannot find -l<name>`), add a plain-language

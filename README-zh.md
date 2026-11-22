@@ -15,8 +15,8 @@
 - 一个 `cizon.toml` 描述项目，没有构建脚本语言
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
-- 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`
-- 多个 bin、静态库、共享库 target；`links` 控制归档与 import lib 的顺序
+- 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
+- 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，include 与归档顺序由依赖图解析
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon2 run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
@@ -372,6 +372,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
+include = "lib/shape/include" # 可选公共头根目录；消费者自动继承
 
 [[target]]
 name = "shape_dll"
@@ -407,14 +408,15 @@ extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序�
 kind = "bin"
 ```
 
-每个 target 支持六个键：
+每个 target 支持七个键：
 
 | 键 | 必填 | 说明 |
 |---|---|---|
 | `name` | 视情况 | 单个 bin 可省略，默认项目名；库、test 和多个 bin 必须显式命名 |
 | `kind` | 是 | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | 视情况 | bin 可省略并扫描 `src/`；库和 test 必填且不能为空 |
-| `links` | 否 | bin/test 链接的项目内库，或共享库打包的静态库 |
+| `include` | 否 | 项目内公共头根目录；库会沿 `links` 传播给消费者，bin/test 只作用于自身 |
+| `links` | 否 | bin/test 链接的项目内库、共享库打包的静态库，或静态库的公共静态依赖 |
 | `prefix` | 否 | 已安装包根目录；cizon2 为该 target 展开 `-I<prefix>/include`（编译）与 `-L<prefix>/lib`（链接） |
 | `extern_links` | 否 | 仅 test target：外部库名，链接时映射为 `-l<name>` |
 
@@ -433,9 +435,13 @@ kind = "bin"
 - test target 的产物为 `build/<mode>-<compiler>/<name>.exe`，对象在 `test-obj/<name>/`，与 bin 的 `obj/` 完全隔离
 - target 名大小写不敏感且不能重复，还必须满足文件名校验：不能是 `obj` / `lib` / `deps-obj`、不能以 `.` 开头、不能使用 Windows 设备名等；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - `sources` 必须是项目内相对路径（不能是绝对路径或包含 `..`）；文件或目录均可，目录递归扫描；允许跨目录同名源文件
-- `static_lib` 不支持 `links`；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
+- `include` 在自动的项目根 `include/` 之上增加 target 自己的公共头根目录；路径必须存在、是目录、在项目内，且不能是项目根。缺失路径在 plan 阶段直接报错，不拖到编译
+- 对 `static_lib` / `shared_lib`，`include` 是 PUBLIC：库自己的源码使用它，所有通过 `links` 直接/间接链接它的消费者也继承；对 bin/test 只作用于自身
+- `static_lib` 可以链接已存在的 `static_lib`（公共依赖）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
+- 静态依赖图内的链接顺序按“依赖方在前”自动推导，消费者无需手排归档顺序；出现环直接报错（cizon2 不加 `--start-group`）
 - `links` 必须引用配置中已存在的 target，重复条目会报错；共享库不能链接其他共享库，DLL 之间的传递依赖交给 CMake
-- 公共头放 `include/`（自动 `-I`）；库的私有头可放在源文件旁边
+- `include` 与 `prefix` 方向相反：`prefix` 是消费已安装包的输入（只给该 target 加 `-I`/`-L`，不传播）；`include` 是 target 自己的公共输出，沿 `links` 传播
+- 公共头放项目根 `include/` 或 target 的 `include` 根；库的私有头可放在源文件旁边
 - 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - 共享库在 Windows 产 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`；在 Linux 产 `build/<mode>-<compiler>/lib<name>.so`
 - Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon2 显式传 import lib 参数
@@ -609,7 +615,7 @@ cizon2 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PAT
 - 静态库产物是 `.a`（GNU 归档）；`shared_lib` 产出 DLL 与 import lib
 - 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
 - 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
-- `include/` 是唯一自动 `-I` 的目录；私有头不要放进去，也不要用全局 `-Ilib` 暴露
+- `include/` 是唯一自动 `-I` 的目录；target 的 `include` 是显式声明并沿 `links` 传播。私有头不要放进这两处，也不要用全局 `-Ilib` 暴露
 - `sources` 必须是项目内相对路径；旧对象布局首次构建会全量重编一次
 - `[project].version` 当前仅作元数据，不参与编译或产物命名
 - 同一项目不支持并发构建；请勿在多个终端同时运行 `cizon2 build`
@@ -658,7 +664,7 @@ cizon2 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PAT
 
 ### 等真实需求再开
 
-- target 间传递依赖、per-target flags/include
+- per-target 编译 flags/宏定义、条件化 target 选择
 - install/export、一次性 CMake 导出命令
 - MSVC、交叉编译、外部包管理
 - `[project].version` 的生成头/编译宏消费者
@@ -666,9 +672,9 @@ cizon2 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PAT
 
 ## 什么时候该用 CMake
 
-Cizon2 面向中小型项目（一个或多个 bin，可带静态库/共享库 target）。出现以下需求时，请直接使用 CMake：
+Cizon2 面向中小型项目（一个或多个 bin，可带静态库/共享库 target，支持无环的静态库公共依赖及其 include 传播）。出现以下需求时，请直接使用 CMake：
 
-- 嵌套 target 图、库之间的传递依赖、per-target flags/include
+- 条件化或非常庞大的 target 图、per-target 编译 flags/宏定义、生成源码
 - install/export/find_package/打包发布、DLL 版本号/SONAME
 - 共享库依赖共享库、直接分发 C++ ABI
 - 代码生成（protobuf、Qt moc）、自定义构建步骤

@@ -116,9 +116,14 @@
     #[test]
     fn release_defines_ndebug_for_project_and_deps_but_not_tests() {
         let dir = temp_dir("release-ndebug");
-        fs::create_dir_all(dir.join("src")).unwrap();
-        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
-        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::write(dir.join("tests/main.cpp"), "int main(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        )
+        .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let mk = || Cxx {
             name: "g++".into(),
@@ -132,9 +137,12 @@
         assert!(release.flags.iter().any(|f| f == "-DNDEBUG"));
         assert!(release.dep_base.iter().any(|f| f == "-DNDEBUG"));
         assert!(
-            !release.test_flags.iter().any(|f| f.contains("NDEBUG")),
+            !release.tests[0]
+                .compile_flags
+                .iter()
+                .any(|f| f.contains("NDEBUG")),
             "test sources must never see -DNDEBUG: {:?}",
-            release.test_flags
+            release.tests[0].compile_flags
         );
         fs::remove_dir_all(dir).ok();
     }
@@ -243,7 +251,6 @@
             bins: vec![],
             tests: vec![],
             flags: vec![],
-            test_flags: vec![],
             link_flags: vec![],
             dep_base: vec!["-std=c++23".to_string()],
             dep_includes: includes,
@@ -2040,9 +2047,12 @@
             "user flags must still reach normal targets"
         );
         assert!(
-            !p.test_flags.iter().any(|f| f.contains("NDEBUG")),
+            !p.tests[0]
+                .compile_flags
+                .iter()
+                .any(|f| f.contains("NDEBUG")),
             "test sources must never see -DNDEBUG: {:?}",
-            p.test_flags
+            p.tests[0].compile_flags
         );
         let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
         assert_ne!(
@@ -2081,6 +2091,135 @@
     }
 
     #[test]
+    fn target_include_propagates_transitively_and_links_static_deps() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("target-include");
+        for path in [
+            "libs/net/include/downflux/net",
+            "libs/net/src",
+            "libs/storage/include/downflux/storage",
+            "libs/storage/src",
+            "app/src",
+            "tests",
+        ] {
+            fs::create_dir_all(dir.join(path)).unwrap();
+        }
+        fs::write(
+            dir.join("libs/net/include/downflux/net/http_client.hpp"),
+            "#pragma once\nint net_ping();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("libs/net/src/http_client.cpp"),
+            "#include \"downflux/net/http_client.hpp\"\nint net_ping(){return 7;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("libs/storage/include/downflux/storage/file_writer.hpp"),
+            "#pragma once\nint storage_write();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("libs/storage/src/file_writer.cpp"),
+            "#include \"downflux/net/http_client.hpp\"\n\
+             #include \"downflux/storage/file_writer.hpp\"\n\
+             int storage_write(){return net_ping()+5;}\n",
+        )
+        .unwrap();
+        let main_source = "#include \"downflux/net/http_client.hpp\"\n\
+                           #include \"downflux/storage/file_writer.hpp\"\n\
+                           int main(){return net_ping()+storage_write()==19?0:1;}\n";
+        fs::write(dir.join("app/src/main.cpp"), main_source).unwrap();
+        fs::write(dir.join("tests/main.cpp"), main_source).unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"downflux\"\ncompile_commands = true\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"libs/net/src\"]\ninclude = \"libs/net/include\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"libs/storage/src\"]\ninclude = \"libs/storage/include\"\nlinks = [\"net\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"storage\"]\n\n\
+             [[target]]\nname = \"storage_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"storage\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let result = super::build_bins(&dir, &cfg, &p).unwrap();
+        assert_eq!(result.execs.len(), 1);
+        assert_eq!(
+            run_code(&result.execs[0].1),
+            0,
+            "includes and static link closure must propagate transitively"
+        );
+        let tests = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
+        assert_eq!(
+            run_code(&tests.execs[0].1),
+            0,
+            "test targets must inherit the same include interface"
+        );
+        let db = fs::read_to_string(dir.join("compile_commands.json"))
+            .unwrap()
+            .replace("\\\\", "/");
+        assert!(db.contains("libs/net/include"), "compile db must carry propagated includes");
+        assert!(db.contains("libs/storage/include"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_include_paths_are_validated_at_plan_time() {
+        let dir = temp_dir("target-include-invalid");
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib/x.cpp"), "int x(){return 0;}").unwrap();
+        fs::write(dir.join("inc.txt"), "").unwrap();
+        let mk = || Cxx {
+            name: "g++".into(),
+            version: "test".into(),
+        };
+        let check = |include: &str, needle: &str| {
+            fs::write(
+                dir.join("cizon.toml"),
+                format!(
+                    "[project]\nname = \"t\"\n\n\
+                     [[target]]\nname = \"x\"\nkind = \"static_lib\"\nsources = [\"lib/x.cpp\"]\ninclude = \"{include}\"\n"
+                ),
+            )
+            .unwrap();
+            let cfg = crate::config::load(&dir).unwrap();
+            let err = plan(&dir, &cfg, mk(), false).unwrap_err();
+            assert!(err.contains(needle), "include {include}: got {err}");
+        };
+        check("missing", "not a directory");
+        check("inc.txt", "not a directory");
+        check(".", "project root");
+        check("../outside", "project-relative");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn static_library_cycle_is_rejected_at_plan_time() {
+        let dir = temp_dir("static-cycle");
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib/a.cpp"), "int a(){return 0;}").unwrap();
+        fs::write(dir.join("lib/b.cpp"), "int b(){return 0;}").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"a\"\nkind = \"static_lib\"\nsources = [\"lib/a.cpp\"]\nlinks = [\"b\"]\n\n\
+             [[target]]\nname = \"b\"\nkind = \"static_lib\"\nsources = [\"lib/b.cpp\"]\nlinks = [\"a\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load(&dir).unwrap();
+        let cxx = Cxx {
+            name: "g++".into(),
+            version: "test".into(),
+        };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("cycle"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn prefix_provides_include_path_transparently() {
         if !have_compiler() {
             return;
@@ -2088,27 +2227,37 @@
         let dir = temp_dir("prefix");
         fs::create_dir_all(dir.join("tests")).unwrap();
         fs::create_dir_all(dir.join("pkg/include")).unwrap();
+        fs::create_dir_all(dir.join("own/include")).unwrap();
         fs::write(
             dir.join("pkg/include/mylib.h"),
             "#pragma once\ninline int answer(){return 42;}\n",
         )
         .unwrap();
         fs::write(
+            dir.join("own/include/own.h"),
+            "#pragma once\ninline int own(){return 1;}\n",
+        )
+        .unwrap();
+        fs::write(
             dir.join("tests/t.cpp"),
-            "#include <mylib.h>\nint main(){return answer()==42?0:1;}\n",
+            "#include <mylib.h>\n#include <own.h>\nint main(){return answer()+own()==43?0:1;}\n",
         )
         .unwrap();
         fs::write(
             dir.join("cizon.toml"),
             "[project]\nname = \"t\"\n\n\
-             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"pkg\"\n",
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\ninclude = \"own/include\"\nprefix = \"pkg\"\n",
         )
         .unwrap();
         let cfg = crate::config::load(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
-        assert_eq!(run_code(&result.execs[0].1), 0, "prefix include path must resolve");
+        assert_eq!(
+            run_code(&result.execs[0].1),
+            0,
+            "target include and prefix include must both resolve"
+        );
         fs::remove_dir_all(dir).ok();
     }
 

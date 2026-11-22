@@ -62,9 +62,9 @@ pub struct Target {
     /// required for static_lib/shared_lib.
     #[serde(default)]
     pub sources: Option<Vec<String>>,
-    /// Bin: static/shared library target names, linked in this order within each artifact kind.
+    /// Bin/test: static/shared library target names, linked in declaration order.
     /// Shared library: static library target names, built into the DLL.
-    /// Test: same as bin.
+    /// Static library: public static dependencies; their includes and archives propagate.
     #[serde(default)]
     pub links: Vec<String>,
     /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
@@ -72,6 +72,11 @@ pub struct Target {
     /// compiler's default include path (non-default prefixes go through [compiler] flags).
     #[serde(default)]
     pub extern_links: Vec<String>,
+    /// Optional project-relative public include directory. For libraries it is part of the
+    /// target's public interface and is inherited through `links`; bins/tests use it only for
+    /// their own sources. The project-root include/ remains automatic for every target.
+    #[serde(default)]
+    pub include: Option<String>,
     /// Optional installed-package prefix (project-relative directory). cizon2 expands it to
     /// `-I<prefix>/include` for this target's sources and `-L<prefix>/lib` at link time, so
     /// consuming an installed library never requires hand-written search-path flags.
@@ -251,11 +256,6 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
             TargetKind::Bin => {}
             TargetKind::StaticLib => {
                 libs.insert(name.to_lowercase());
-                if !target.links.is_empty() {
-                    return Err(format!(
-                        "static library target {name} does not support links; put implementation dependencies in the bin or a shared library."
-                    ));
-                }
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err(format!("static library target {name} must provide sources."));
                 }
@@ -298,7 +298,26 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         let name = target.name.as_deref().expect("name resolved");
         let mut seen = HashSet::new();
         match target.kind {
-            TargetKind::StaticLib => continue,
+            TargetKind::StaticLib => {
+                for link in &target.links {
+                    let lower = link.to_lowercase();
+                    if !libs.contains(&lower) {
+                        if shared.contains(&lower) {
+                            return Err(format!(
+                                "static library target {name} cannot link shared library {link}; static libraries can only depend on static libraries."
+                            ));
+                        }
+                        return Err(format!(
+                            "static library target {name} links a nonexistent static library {link}."
+                        ));
+                    }
+                    if !seen.insert(lower) {
+                        return Err(format!(
+                            "duplicate entry {link} in the links of static library target {name}."
+                        ));
+                    }
+                }
+            }
             TargetKind::SharedLib => {
                 for link in &target.links {
                     let lower = link.to_lowercase();
@@ -838,7 +857,7 @@ mod tests {
         assert!(load(&dir).unwrap_err().contains("nonexistent"));
         std::fs::remove_dir_all(dir).ok();
 
-        let dir = temp_dir("lib-links");
+        let dir = temp_dir("lib-links-missing");
         std::fs::write(
             dir.join("cizon.toml"),
             target_config(
@@ -847,7 +866,33 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("does not support links"));
+        assert!(load(&dir).unwrap_err().contains("nonexistent static library"));
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("lib-links");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+                 [[target]]\nname = \"bar\"\nkind = \"static_lib\"\nsources = [\"lib/bar.cpp\"]\nlinks = [\"foo\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).is_ok(), "static libraries may depend on static libraries");
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("lib-links-shared");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\nlinks = [\"dll\"]\n\n\
+                 [[target]]\nname = \"dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load(&dir).unwrap_err().contains("cannot link shared library"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("lib-no-sources");
@@ -984,10 +1029,14 @@ mod tests {
     fn parse_strict_werror_and_prefix() {
         let (dir, cfg) = write_config(
             "[project]\nname = \"t\"\n\n[compiler]\nstrict = true\nwerror = true\n\n\
-             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"third_party/pkg\"\n",
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\ninclude = \"libs/test/include\"\nprefix = \"third_party/pkg\"\n",
         );
         assert!(cfg.strict());
         assert!(cfg.werror());
+        assert_eq!(
+            cfg.targets().unwrap()[0].include.as_deref(),
+            Some("libs/test/include")
+        );
         assert_eq!(
             cfg.targets().unwrap()[0].prefix.as_deref(),
             Some("third_party/pkg")

@@ -19,8 +19,8 @@ Current version: **v0.8.3**. Allows library-only projects and makes release a re
 - One `cizon.toml` describes the project; there is no build-script language
 - Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
-- Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically
-- Multiple bins, static libraries, and shared libraries through `[[target]]`; `links` controls archive/import-library order
+- Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
+- Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with includes and archive order resolved from the graph
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon2 run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
@@ -376,6 +376,7 @@ A project may carry static and shared library targets plus one or more bin and t
 name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # required; file or directory (recursive)
+include = "lib/shape/include" # optional public header root; inherited by consumers
 
 [[target]]
 name = "shape_dll"
@@ -411,14 +412,15 @@ Declaring the first `[[target]]` switches the project from implicit to explicit 
 kind = "bin"
 ```
 
-Each target accepts six keys:
+Each target accepts seven keys:
 
 | Key | Required | Meaning |
 |---|---|---|
 | `name` | Depends | A single bin may omit it and use the project name; libraries, tests, and multiple bins must name it |
 | `kind` | Yes | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | Depends | A bin may omit it and scan `src/`; libraries and tests must provide it and it cannot be empty |
-| `links` | No | Project libraries linked by a bin/test, or static libraries packed into a shared library |
+| `include` | No | Project-relative public header root. Libraries propagate it through `links`; bins/tests use it only for themselves |
+| `links` | No | Project libraries linked by a bin/test, static libraries packed into a shared library, or public static dependencies of a static library |
 | `prefix` | No | Installed-package root; cizon2 expands it to `-I<prefix>/include` (compile) and `-L<prefix>/lib` (link) for this target only |
 | `extern_links` | No | Test targets only: external library names mapped to `-l<name>` at link time |
 
@@ -437,9 +439,13 @@ Rules:
 - Test artifacts are `build/<mode>-<compiler>/<name>.exe` and their objects live in `test-obj/<name>/`, fully isolated from the bin `obj/` tree
 - Target names are case-insensitive and unique, and must pass file-name validation: not `obj` / `lib` / `deps-obj`, no leading dot, and no Windows device names. A target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); files and directories are accepted and directories are scanned recursively; same-named sources in different directories are allowed
-- `static_lib` does not support `links`; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
+- `include` adds a target-owned public header root on top of the automatic project-root `include/`; it must exist, be a directory, stay inside the project, and must not be the project root. Missing paths fail during planning, before compilation
+- For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
+- `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
+- Link order inside the static dependency graph is derived dependency-first, so consumers do not hand-order archives; cycles are an error (cizon2 does not add `--start-group`)
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
-- Public headers go in `include/` (automatic `-I`); a library's private headers may sit next to its sources
+- `include` and `prefix` point in opposite directions: `prefix` is an input for consuming an installed package (target-local `-I`/`-L`, never propagated); `include` is the target's public output, propagated through `links`
+- Public headers go in the project-root `include/` or a target's `include` root; a library's private headers may sit next to its sources
 - Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` on Windows, or `build/<mode>-<compiler>/lib<name>.so` on Linux
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
@@ -613,7 +619,7 @@ cizon2 puts the compiler's bin directory first in the child PATH for `run` / `te
 - Static library artifacts are `.a` (GNU archives); `shared_lib` produces a DLL plus an import library
 - Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
 - Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
-- `include/` is the only automatic `-I` directory; keep private headers out of it and do not expose them with a global `-Ilib`
+- `include/` is the only automatic `-I` directory; a target's `include` is explicit and propagates through `links`. Keep private headers out of both and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; a build with an older object layout does one full rebuild
 - `[project].version` is metadata only; it does not affect compilation or artifact names
 - Concurrent builds of one project are unsupported; never run `cizon2 build` in multiple terminals
@@ -662,7 +668,7 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 ### Wait for real demand
 
-- Transitive target dependencies, per-target flags/include
+- Per-target compile flags/definitions and conditional target selection
 - install/export, a one-shot CMake export command
 - MSVC, cross-compilation, external package managers
 - Consumers of a generated header/compile macro for `[project].version`
@@ -670,9 +676,9 @@ The goal is first-class breakpoint debugging, but **cizon2 does not implement a 
 
 ## When to use CMake
 
-Cizon2 targets small-to-medium projects with one or more bins (optionally with static/shared library targets). Reach for CMake when you need:
+Cizon2 targets small-to-medium projects with one or more bins (optionally with static/shared library targets, including acyclic static-library dependencies and their public includes). Reach for CMake when you need:
 
-- Nested target graphs, transitive target dependencies, per-target flags/include
+- Conditional or very large target graphs, per-target compile flags/definitions, generated sources
 - install/export/find_package/packaging, DLL versioning/SONAME
 - Shared libraries depending on other shared libraries, direct C++ ABI distribution
 - Code generation (protobuf, Qt moc), custom build steps

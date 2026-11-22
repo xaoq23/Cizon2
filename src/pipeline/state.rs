@@ -52,22 +52,33 @@ pub(super) fn project_state_text(plan: &Plan) -> String {
         s.push_str(f);
         s.push('\n');
     }
-    // Per-target prefixes change compile search paths; record them so any prefix change
-    // invalidates project objects (coarse but correct — prefixes rarely change).
-    s.push_str("prefixes:\n");
-    for bin in plan.bins.iter().chain(plan.tests.iter()) {
-        if let Some(p) = &bin.prefix {
-            s.push_str(&format!("{} {}\n", bin.name, p.display()));
+    // Effective per-target flags capture include propagation, includes and prefixes: a change
+    // to any link edge that affects search paths invalidates project objects (coarse but correct).
+    s.push_str("targets:\n");
+    for (label, target) in plan
+        .bins
+        .iter()
+        .map(|t| ("bin", t))
+        .chain(plan.tests.iter().map(|t| ("test", t)))
+    {
+        s.push_str(&format!("{label} {}:\n", target.name));
+        for f in &target.compile_flags {
+            s.push_str(f);
+            s.push('\n');
         }
     }
     for lib in &plan.libs {
-        if let Some(p) = &lib.prefix {
-            s.push_str(&format!("{} {}\n", lib.name, p.display()));
+        s.push_str(&format!("lib {}:\n", lib.name));
+        for f in &lib.compile_flags {
+            s.push_str(f);
+            s.push('\n');
         }
     }
     for shared in &plan.shared {
-        if let Some(p) = &shared.prefix {
-            s.push_str(&format!("{} {}\n", shared.name, p.display()));
+        s.push_str(&format!("shared {}:\n", shared.name));
+        for f in &shared.compile_flags {
+            s.push_str(f);
+            s.push('\n');
         }
     }
     s

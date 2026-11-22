@@ -21,21 +21,27 @@ pub(super) fn write_compile_db(
         flags
     };
     for bin in &plan.bins {
-        let flags = super::compile_flags_with_prefix(&plan.flags, &bin.prefix);
-        owned.extend(bin.sources.iter().map(|s| (s.clone(), flags.clone())));
+        owned.extend(
+            bin.sources
+                .iter()
+                .map(|s| (s.clone(), bin.compile_flags.clone())),
+        );
     }
     // Test sources use their own flags (NDEBUG stripped) so IntelliSense matches what
     // `cizon test` compiles even though `build` never compiles them.
     for test in &plan.tests {
-        let flags = super::compile_flags_with_prefix(&plan.test_flags, &test.prefix);
-        owned.extend(test.sources.iter().map(|s| (s.clone(), flags.clone())));
+        owned.extend(
+            test.sources
+                .iter()
+                .map(|s| (s.clone(), test.compile_flags.clone())),
+        );
     }
     for lib in &plan.libs {
-        let flags = with_pic(super::compile_flags_with_prefix(&plan.flags, &lib.prefix));
+        let flags = with_pic(lib.compile_flags.clone());
         owned.extend(lib.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     for shared in &plan.shared {
-        let flags = with_pic(super::compile_flags_with_prefix(&plan.flags, &shared.prefix));
+        let flags = with_pic(shared.compile_flags.clone());
         owned.extend(shared.sources.iter().map(|s| (s.clone(), flags.clone())));
     }
     owned.extend(
