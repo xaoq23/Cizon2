@@ -3,6 +3,7 @@
 //! See AGENTS.md for scope: single crate, recursive src/ sources, g++/clang++; git deps since v0.2.
 //! Hand-written argument dispatch to avoid clap (dependency whitelist: serde, toml).
 
+mod atomic;
 mod compiler;
 mod config;
 mod deps;
@@ -73,7 +74,7 @@ Rules:
     run reports no bin, and test reports no test targets.
   - include is added to the target's own compile; library includes propagate transitively through
     links. The project-root include/ remains automatic for every target.
-  - Static dependencies are ordered dependency-first automatically; cycles are errors.
+  - Static dependencies are ordered dependent-first (consumers before dependencies); cycles are errors.
   - shared_lib may link only static_lib; bin/test may link both; shared -> shared is not supported.
   - extern_links is accepted only on test targets; framework discovery/download is not handled.
   - Test targets are built and run only by `cizon test`; test sources never define NDEBUG.

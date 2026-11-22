@@ -57,7 +57,7 @@ pub(super) fn write_compile_db(
     let path = dir.join("compile_commands.json");
     let unchanged = std::fs::read_to_string(&path).map_or(false, |old| old == json);
     if !unchanged {
-        std::fs::write(&path, json)
+        crate::atomic::write(&path, json.as_bytes())
             .map_err(|e| format!("Failed to write {}: {e}", rel_display(dir, &path)))?;
     }
     Ok(())

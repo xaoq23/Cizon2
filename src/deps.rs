@@ -61,14 +61,14 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         }
     };
     if let Err(e) = append_entry(&dir, &name, &url, tag.as_deref()) {
-        let toml_ok = std::fs::write(&toml_path, &original_toml).is_ok();
+        let toml_ok = crate::atomic::write(&toml_path, original_toml.as_bytes()).is_ok();
         let dep_ok = remove_dep_dir(&dep_dir);
         return Err(rollback_error(e, toml_ok && dep_ok, &name));
     }
     if let Err(e) = write_lock_entry(&dir, &name, &url, tag.as_deref(), &commit) {
-        let toml_ok = std::fs::write(&toml_path, &original_toml).is_ok();
+        let toml_ok = crate::atomic::write(&toml_path, original_toml.as_bytes()).is_ok();
         let lock_ok = match &original_lock {
-            Some(text) => std::fs::write(&lock_path, text).is_ok(),
+            Some(text) => crate::atomic::write(&lock_path, text.as_bytes()).is_ok(),
             None => remove_file_if_exists(&lock_path),
         };
         let dep_ok = remove_dep_dir(&dep_dir);
@@ -293,7 +293,7 @@ fn append_entry(dir: &Path, name: &str, url: &str, tag: Option<&str>) -> Result<
             "failed to register {name} in cizon.toml's [dependencies] (file not modified). Check that section's format."
         ));
     }
-    std::fs::write(&path, out).map_err(|e| format!("failed to write cizon.toml: {e}"))
+    crate::atomic::write(&path, out.as_bytes()).map_err(|e| format!("failed to write cizon.toml: {e}"))
 }
 
 /// The lock file is a machine file: read the original table → insert/update the entry →
@@ -321,7 +321,8 @@ fn write_lock_entry(
     entry.insert("commit".into(), commit.into());
     table.insert(name.into(), entry.into());
     let text = toml::to_string(&table).map_err(|e| format!("failed to serialize the lock: {e}"))?;
-    std::fs::write(&lock_path, text).map_err(|e| format!("failed to write {CIZON_LOCK}: {e}"))
+    crate::atomic::write(&lock_path, text.as_bytes())
+        .map_err(|e| format!("failed to write {CIZON_LOCK}: {e}"))
 }
 
 /// Best-effort add deps/ to .gitignore (create it if missing; leave it alone if a deps/

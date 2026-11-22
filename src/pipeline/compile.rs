@@ -74,14 +74,7 @@ pub(super) fn temp_sibling(path: &Path) -> PathBuf {
 }
 
 pub(super) fn replace_file(tmp: &Path, dest: &Path) -> Result<(), String> {
-    if dest.exists() {
-        std::fs::remove_file(dest)
-            .map_err(|e| format!("Failed to delete old file before replacing {}: {e}", dest.display()))?;
-    }
-    std::fs::rename(tmp, dest).map_err(|e| {
-        let _ = std::fs::remove_file(tmp);
-        format!("Failed to replace {}: {e}", dest.display())
-    })
+    crate::atomic::replace(tmp, dest)
 }
 
 /// Parse a gcc/clang depfile (`target: dep dep dep ...`): all inputs after the first-line target;

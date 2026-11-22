@@ -2187,6 +2187,163 @@
     }
 
     #[test]
+    fn build_lock_rejects_a_second_build() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("build-lock");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        let lock = dir.join("build").join(".cizon-build.lock");
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, "pid 0\n").unwrap();
+
+        let err = build_project(&dir).unwrap_err();
+        assert!(err.contains("another cizon build"), "got: {err}");
+        assert!(lock.exists(), "a second build must not remove the active lock");
+
+        fs::remove_file(&lock).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert!(!lock.exists(), "the lock must disappear after a successful build");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn static_link_change_relinks_with_new_archive() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("link-change");
+        for sub in ["one", "two", "src"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("one/value.cpp"), "int value(){return 1;}\n").unwrap();
+        fs::write(dir.join("two/value.cpp"), "int value(){return 2;}\n").unwrap();
+        fs::write(
+            dir.join("src/main.cpp"),
+            "#include <cstdio>\nint value();\nint main(){std::printf(\"%d\\n\", value()); return 0;}\n",
+        )
+        .unwrap();
+        let config = |link: &str| {
+            format!(
+                "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+                 [[target]]\nname = \"one\"\nkind = \"static_lib\"\nsources = [\"one\"]\n\n\
+                 [[target]]\nname = \"two\"\nkind = \"static_lib\"\nsources = [\"two\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"{link}\"]\n"
+            )
+        };
+
+        fs::write(dir.join("cizon.toml"), config("one")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_stdout(&exe).trim(), "1");
+
+        fs::write(dir.join("cizon.toml"), config("two")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(
+            run_stdout(&exe).trim(),
+            "2",
+            "changing links must relink against the new archive"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn removing_static_target_cleans_archive_and_state() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("remove-lib");
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("lib/core.cpp"), "int core(){return 0;}\n").unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"core\"]\n",
+        )
+        .unwrap();
+        build_project(&dir).unwrap();
+        let archive = find_named(&dir.join("build"), "libcore.a").expect("archive");
+        assert!(archive.is_file());
+
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        assert_eq!(run_code(&build_project(&dir).unwrap()), 0);
+        assert!(
+            find_named(&dir.join("build"), "libcore.a").is_none(),
+            "removing a static target must delete its archive"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shared_include_change_recompiles_shared_and_consumer() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = temp_dir("shared-include-change");
+        for sub in ["inc_a", "inc_b", "api/src", "app/src"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(
+            dir.join("inc_a/api.hpp"),
+            "#pragma once\n#define API_VALUE 1\nextern \"C\" int api_value();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("inc_b/api.hpp"),
+            "#pragma once\n#define API_VALUE 2\nextern \"C\" int api_value();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("api/src/api.cpp"),
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\n\
+             #include \"api.hpp\"\nextern \"C\" CZ_EXPORT int api_value(){return API_VALUE;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app/src/main.cpp"),
+            "#include <cstdio>\n#include \"api.hpp\"\n\
+             int main(){std::printf(\"%d\\n\", API_VALUE); return api_value()==API_VALUE?0:1;}\n",
+        )
+        .unwrap();
+        let config = |include: &str| {
+            format!(
+                "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
+                 [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api/src\"]\ninclude = \"{include}\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"api\"]\n"
+            )
+        };
+
+        fs::write(dir.join("cizon.toml"), config("inc_a")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_stdout(&exe).trim(), "1");
+        assert_eq!(run_code(&exe), 0);
+
+        fs::write(dir.join("cizon.toml"), config("inc_b")).unwrap();
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(
+            run_stdout(&exe).trim(),
+            "2",
+            "changing a shared target include must recompile its consumer"
+        );
+        assert_eq!(
+            run_code(&exe),
+            0,
+            "changing a shared target include must rebuild the shared library and consumer"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn target_include_change_recompiles_library_and_consumer() {
         if !have_compiler() {
             return;

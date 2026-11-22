@@ -190,6 +190,44 @@ pub enum ExecSet {
     Tests,
 }
 
+const BUILD_LOCK_FILE: &str = ".cizon-build.lock";
+
+struct BuildLock {
+    path: PathBuf,
+}
+
+impl BuildLock {
+    fn acquire(dir: &Path) -> Result<Self, String> {
+        let build = dir.join("build");
+        std::fs::create_dir_all(&build)
+            .map_err(|e| format!("Cannot create {}: {e}", build.display()))?;
+        let path = build.join(BUILD_LOCK_FILE);
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "another cizon build is already running in this project (lock: {BUILD_LOCK_FILE}). \
+                     If no build is running, delete {} and retry.",
+                    path.display()
+                ));
+            }
+            Err(e) => return Err(format!("Cannot create build lock {}: {e}", path.display())),
+        };
+        let _ = writeln!(file, "pid {}", std::process::id());
+        Ok(Self { path })
+    }
+}
+
+impl Drop for BuildLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn build_execs(
     dir: &Path,
     cfg: &Config,
@@ -197,6 +235,7 @@ fn build_execs(
     set: ExecSet,
     filter: &[String],
 ) -> Result<BuildResult, String> {
+    let _build_lock = BuildLock::acquire(dir)?;
     let all: &[BinTarget] = match set {
         ExecSet::Bins => &plan.bins,
         ExecSet::Tests => &plan.tests,
@@ -295,18 +334,12 @@ fn build_execs(
         std::fs::create_dir_all(&bin_obj)
             .map_err(|e| format!("Cannot create {}: {e}", bin_obj.display()))?;
     }
-    std::fs::write(&project_state, &wanted_project)
-        .map_err(|e| format!("Failed to write {}: {e}", project_state.display()))?;
-    std::fs::write(&deps_state, &wanted_deps)
-        .map_err(|e| format!("Failed to write {}: {e}", deps_state.display()))?;
-    std::fs::write(&libs_state, &wanted_libs)
-        .map_err(|e| format!("Failed to write {}: {e}", libs_state.display()))?;
-    std::fs::write(&shared_state, &wanted_shared)
-        .map_err(|e| format!("Failed to write {}: {e}", shared_state.display()))?;
-    std::fs::write(&layout_marker, layout)
-        .map_err(|e| format!("Failed to write {}: {e}", layout_marker.display()))?;
-    std::fs::write(&marker, &plan.cxx.version)
-        .map_err(|e| format!("Failed to write {}: {e}", marker.display()))?;
+    crate::atomic::write(&project_state, wanted_project.as_bytes())?;
+    crate::atomic::write(&deps_state, wanted_deps.as_bytes())?;
+    crate::atomic::write(&libs_state, wanted_libs.as_bytes())?;
+    crate::atomic::write(&shared_state, wanted_shared.as_bytes())?;
+    crate::atomic::write(&layout_marker, layout.as_bytes())?;
+    crate::atomic::write(&marker, plan.cxx.version.as_bytes())?;
     let mut stale_exes = stale_exec_paths(&scope_dir, &old_execs, all);
     if set == ExecSet::Bins && !multi && !plan.bins.is_empty() {
         stale_exes.extend(stale_exe_paths(
@@ -581,8 +614,7 @@ fn build_execs(
                 } else {
                     adopt(&tmp_import, &import_lib)?
                 };
-                std::fs::write(&state_path, &wanted_state)
-                    .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
+                crate::atomic::write(&state_path, wanted_state.as_bytes())?;
                 shared_rebuilt = true;
             }
             shared_artifacts.push(SharedArtifact {
@@ -653,16 +685,17 @@ fn build_execs(
             continue;
         }
         step_line("Linking", &rel_display(dir, &exe));
-        link(
+        let tmp_exe = temp_sibling(&exe);
+        if let Err(e) = link(
             &plan.cxx.name,
             &objs,
             &archives,
-            &exe,
+            &tmp_exe,
             &plan.flags,
             &plan.link_flags,
             &extra_flags,
-        )
-        .map_err(|e| {
+        ) {
+            let _ = std::fs::remove_file(&tmp_exe);
             let mut msg = format!(
                 "Link failed: {}\n{}",
                 rel_display(dir, &exe),
@@ -673,16 +706,15 @@ fn build_execs(
                     msg.push_str(&hint);
                 }
             }
-            msg
-        })?;
-        std::fs::write(&link_state, &wanted_link)
-            .map_err(|e| format!("Failed to write {}: {e}", link_state.display()))?;
+            return Err(msg);
+        }
+        replace_file(&tmp_exe, &exe)?;
+        crate::atomic::write(&link_state, wanted_link.as_bytes())?;
         any_bin_linked = true;
         result_bins.push((bin.name.clone(), exe));
     }
 
-    std::fs::write(&execs_state, &wanted_execs)
-        .map_err(|e| format!("Failed to write {}: {e}", execs_state.display()))?;
+    crate::atomic::write(&execs_state, wanted_execs.as_bytes())?;
     remove_artifacts(&stale_exes);
 
     let did_work = recompiled > 0 || libs_rebuilt || shared_rebuilt || any_bin_linked;
