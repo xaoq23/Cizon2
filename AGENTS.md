@@ -24,7 +24,7 @@
 | CI 原语：`sync --check`（只校验）、`--quiet` | `init --ci`、企业级 CI |
 | `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
 | test target 的 `extern_links`（仅 `-l<name>`）+ per-target `prefix`（推导 `-I`/`-L`） | vcpkg / Conan / conda / CMake provision |
-| `[compiler] strict`/`werror` 警告开关；`help <command>` 详细帮助；target `include` 公共传播 | 完整 per-target 编译 flags/宏定义作用域 |
+| `[compiler] strict`/`werror` 警告开关；`help <command>\|toml` 详细帮助；target `include` 公共传播 | 完整 per-target 编译 flags/宏定义作用域 |
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | 交叉编译 / 复杂工具链 |

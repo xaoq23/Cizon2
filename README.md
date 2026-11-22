@@ -130,7 +130,7 @@ Except for `new`, every command runs in the directory containing `cizon.toml`; c
 | `cizon add <git-url> [--tag <tag>]` | Add a git dependency and write the lock file |
 | `cizon update <dependency>` | Align the lock with the intent in `cizon.toml` (upgrade or downgrade) |
 | `cizon sync [--check]` | Restore deps from `cizon.lock`, or verify them without writing |
-| `cizon help [<command>]` / `cizon version` | General or per-command help / version |
+| `cizon help [<command>\|toml]` / `cizon version` | General, per-command, or cizon.toml reference / version |
 
 `--quiet` on `build` / `run` / `test` suppresses cizon's own progress lines; errors, compiler warnings and the program/test output still print.
 
@@ -251,7 +251,7 @@ cizon sync --check
 
 ### `cizon help` / `cizon version`
 
-`cizon help` prints general usage; `cizon help <command>` (or `cizon <command> --help` / `-h`) prints detailed per-command help. `cizon version` prints the version; aliases `--version`, `-V`, `-v`.
+`cizon help` prints general usage; `cizon help <command>` (or `cizon <command> --help` / `-h`) prints detailed per-command help. `cizon help toml` prints an offline reference for every `cizon.toml` key, including defaults and constraints. `cizon version` prints the version; aliases `--version`, `-V`, `-v`.
 
 ## Build output
 
@@ -301,6 +301,8 @@ The layout is a convention, not a hard-coded framework: `sources` may point at a
 - Future install/export will publish only `include/` and library artifacts, never `lib/` sources or private headers
 
 ## cizon.toml
+
+Run `cizon help toml` for a terminal-local reference of every configuration key.
 
 cizon recognizes exactly four top-level sections: `[project]`, `[compiler]`, `[dependencies]`, and `[[target]]`. Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
 

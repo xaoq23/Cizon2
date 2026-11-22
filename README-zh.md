@@ -126,7 +126,7 @@ hello/
 | `cizon add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
 | `cizon update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
 | `cizon sync [--check]` | 从 `cizon.lock` 恢复依赖，或只校验不写 |
-| `cizon help [<命令>]` / `cizon version` | 总览或单命令详细帮助 / 版本 |
+| `cizon help [<命令>\|toml]` / `cizon version` | 总览、单命令帮助或 cizon.toml 参考 / 版本 |
 
 `--quiet` 用于 `build` / `run` / `test`：关闭 cizon 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。
 
@@ -247,7 +247,7 @@ cizon sync --check
 
 ### `cizon help` / `cizon version`
 
-`cizon help` 打印总览；`cizon help <命令>`（或 `cizon <命令> --help` / `-h`）打印该命令的详细帮助。`cizon version` 打印版本；别名 `--version`、`-V`、`-v`。
+`cizon help` 打印总览；`cizon help <命令>`（或 `cizon <命令> --help` / `-h`）打印该命令的详细帮助。`cizon help toml` 打印所有 `cizon.toml` 配置项的离线参考，包括默认值与约束。`cizon version` 打印版本；别名 `--version`、`-V`、`-v`。
 
 ## 构建输出
 
@@ -297,6 +297,8 @@ project/
 - 将来 install/export 只发布 `include/` 与库产物，不发布 `lib/` 源码与私有头
 
 ## cizon.toml
+
+终端内可用 `cizon help toml` 查看所有配置项的离线参考。
 
 cizon 只识别四个顶层配置段：`[project]`、`[compiler]`、`[dependencies]` 和 `[[target]]`。未知配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
 

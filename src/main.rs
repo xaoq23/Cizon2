@@ -28,11 +28,57 @@ Usage:
   cizon build [--release] [--compiler <spec>] [--quiet]
   cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
   cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
-  cizon help [<command>]            # general or per-command help
+  cizon help [<command>|toml]       # general, per-command, or cizon.toml reference
   cizon version                     # print version
 
-Run `cizon help <command>` for details. Only reads the [project], [dependencies], \
-[compiler] and [[target]] sections of cizon.toml; any other section is a hard error.";
+Run `cizon help <command>` or `cizon help toml` for details. Only reads the [project], \
+[dependencies], [compiler] and [[target]] sections of cizon.toml; any other section is a hard error.";
+
+const TOML_HELP: &str = r#"cizon.toml — configuration reference
+
+[project]
+  name = "app"                 # optional; defaults to the directory name
+  version = "0.1.0"            # optional metadata only
+  edition = "c++23"            # optional; default c++23; validated before compilation
+  sources = ["src"]            # optional; only without [[target]]; files/dirs recursive
+  compile_commands = false     # optional; write compile_commands.json + missing VS Code config
+
+  edition values: 98/03/11/14/17/20/23/26, optionally c++ or gnu++ prefixed;
+  0x/1y/1z/2a/2b/2c aliases are also accepted.
+
+[compiler]
+  cpp = "g++"                  # optional; g++, clang++, or a full path; --compiler overrides
+  strict = false               # -Wall -Wextra -Wpedantic for project sources
+  werror = false               # -Werror for project sources
+  flags = ["-Wall"]            # global compile flags for project sources, not dependencies
+  link_flags = ["-lm"]         # extra link flags
+
+[dependencies]
+  fmt = { git = "https://...", tag = "11.0.2" }
+  # key = dependency name and deps/<name> directory; git is required, tag is optional.
+  # flat layout: include/ headers plus src/*.cpp; cizon checks out git sources but does not build them.
+
+[[target]]
+  name = "app"                 # optional for a single bin; required for libs, tests, multiple bins
+  kind = "bin"                 # bin | static_lib | shared_lib | test
+  sources = ["src"]            # bin defaults to scanning src/; libraries and tests must provide it
+  include = "libs/net/include" # optional public include root; libraries propagate it through links
+  links = ["storage"]          # project libraries; static_lib may publicly depend on static_lib
+  prefix = "deps/.install/pkg" # optional installed package root; target-local -I/-L, not propagated
+  extern_links = ["gtest_main", "gtest"] # test only; mapped to -l in declaration order
+
+Rules:
+  - The first [[target]] disables the implicit src/ bin; [project].sources is then rejected.
+  - At least one target is required. A library-only project is valid: build produces libraries,
+    run reports no bin, and test reports no test targets.
+  - include is added to the target's own compile; library includes propagate transitively through
+    links. The project-root include/ remains automatic for every target.
+  - Static dependencies are ordered dependency-first automatically; cycles are errors.
+  - shared_lib may link only static_lib; bin/test may link both; shared -> shared is not supported.
+  - extern_links is accepted only on test targets; framework discovery/download is not handled.
+  - Test targets are built and run only by `cizon test`; test sources never define NDEBUG.
+  - Unknown sections and unknown keys inside known sections are hard errors.
+"#;
 
 fn main() {
     pipeline::output::init_color();
@@ -212,13 +258,15 @@ Usage: cizon sync [--check]
 Restores every dependency checkout from cizon.lock without building or changing
 cizon.toml. With --check it only verifies the lock and checkouts (no network, no
 writes) and exits non-zero on drift — the CI gate for a locked build.",
+        "toml" => TOML_HELP,
         "help" => "\
 cizon help — show help
 
-Usage: cizon help [<command>]
+Usage: cizon help [<command>|toml]
 
 Without a command, prints general usage. With a command, prints its detailed help.
-`cizon <command> --help` is equivalent.",
+`cizon help toml` prints a reference for every cizon.toml key.
+`cizon <command> --help` is equivalent to `cizon help <command>`.",
         "version" => "\
 cizon version — print the version
 
@@ -504,6 +552,11 @@ mod tests {
         assert_eq!(dispatch(&args(&["--version"])), 0);
         assert_eq!(dispatch(&args(&["-V"])), 0);
         assert_eq!(dispatch(&args(&["help", "build"])), 0);
+        assert_eq!(dispatch(&args(&["help", "toml"])), 0);
+        let toml = command_usage("toml").expect("toml reference");
+        for needle in ["[project]", "[compiler]", "[dependencies]", "[[target]]", "edition", "extern_links"] {
+            assert!(toml.contains(needle), "toml help is missing {needle}");
+        }
         assert_eq!(dispatch(&args(&["build", "--help"])), 0);
         assert_eq!(dispatch(&args(&["test", "-h"])), 0);
         assert_eq!(dispatch(&args(&["help", "nope"])), 2);
