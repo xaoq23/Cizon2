@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.8.1**。在 v0.8.0 的 Linux 共享库（`.so`）、`sync --check` 与 `--quiet` 之上，补齐显式 target 诊断：库-only 报错与 `src/` 未被任何 target 编译的警告。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.8.2**。修复输出体验：输出被重定向时按流自动关闭 ANSI 颜色，计时单位紧贴数字（`0.12s`）；在此前 v0.8.1 的显式 target 诊断与 v0.8.0 的 Linux 共享库（`.so`）、`sync --check`、`--quiet` 之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 本项目仅个人维护，仍在开发中，切勿用于真实项目。
 
@@ -46,21 +46,21 @@ cargo install --path .
 
 在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-- Windows：`cizon2-v0.8.1-windows-x86_64.exe`
-- Linux：`cizon2-v0.8.1-linux-x86_64`
+- Windows：`cizon2-v0.8.2-windows-x86_64.exe`
+- Linux：`cizon2-v0.8.2-linux-x86_64`
 
 Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon2-v0.8.1-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon2-v0.8.1-windows-x86_64.exe.sha256
+Get-FileHash .\cizon2-v0.8.2-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon2-v0.8.2-windows-x86_64.exe.sha256
 ```
 
 Linux 校验：
 
 ```bash
-sha256sum -c cizon2-v0.8.1-linux-x86_64.sha256
-chmod +x cizon2-v0.8.1-linux-x86_64
+sha256sum -c cizon2-v0.8.2-linux-x86_64.sha256
+chmod +x cizon2-v0.8.2-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
@@ -78,7 +78,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon2-v0.8.1-linux-x86_64 ~/.local/bin/cizon2
+install -Dm755 cizon2-v0.8.2-linux-x86_64 ~/.local/bin/cizon2
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -687,6 +687,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon2-v<version>-windows-x86_64.exe` 与 `cizon2-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.8.1`）。Windows 测试仍在本地跑。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon2-v<version>-windows-x86_64.exe` 与 `cizon2-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.8.2`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
