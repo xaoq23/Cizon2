@@ -49,7 +49,8 @@
 ## 输出约定
 
 - 用户面路径用项目相对路径；编译器诊断保留行号与文本，只把项目绝对路径前缀替换为相对路径
-- 构建/运行状态写 stderr，程序 stdout 保持纯净
+- 构建/运行状态写 stderr，程序 stdout 保持纯净；ANSI 颜色按流判断 TTY，重定向时自动关闭
+- 计时单位紧贴数字（`0.12s`），RESET 不能夹在数字与单位之间，避免剥离转义码后出现 `ms` 假象
 - 警告按源文件分组：金色上下分隔线 + 黄色 `Warning` 头
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
 - `cizon test` 的测试进程输出统一转发到 stderr；cizon2 汇总 `passed/failed/total`，任一失败退出 1

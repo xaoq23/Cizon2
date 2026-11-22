@@ -8,6 +8,7 @@ use std::io::Write;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
+use crate::pipeline::output::{style_err, CYAN, DIM, GOLD, RED};
 
 /// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
 pub fn run(
@@ -65,10 +66,11 @@ pub fn run(
 
     if !pipeline::output::quiet() {
         eprintln!(
-            "\x1b[36m     Running\x1b[0m {}",
+            "{} {}",
+            style_err("     Running", CYAN),
             pipeline::rel_display(dir, &exe)
         );
-        eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+        eprintln!("{}", style_err(&format!("  {}", "─".repeat(44)), GOLD));
     }
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(app_args);
@@ -93,11 +95,12 @@ pub fn run(
     if let Some(hint) = hint {
         let _ = writeln!(
             err,
-            "\n\x1b[0m\x1b[31m    Crash\x1b[0m Process exit code: {code} ({code:#x})"
+            "\n{} Process exit code: {code} ({code:#x})",
+            style_err("    Crash", RED)
         );
-        let _ = writeln!(err, "\x1b[2m    {hint}\x1b[0m");
+        let _ = writeln!(err, "{}", style_err(&format!("    {hint}"), DIM));
     } else {
-        let _ = writeln!(err, "\n\x1b[0m    Exit code: {code} ({code:#x})");
+        let _ = writeln!(err, "\n    Exit code: {code} ({code:#x})");
     }
     Ok(code)
 }

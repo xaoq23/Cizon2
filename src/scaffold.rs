@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::config;
+use crate::pipeline::output::{style_out, DIM, GREEN};
 
 const TOML_TEMPLATE: &str = r#"[project]
 name = "{name}"
@@ -56,7 +57,10 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
         return Err(e);
     }
     print_summary(&project);
-    println!("\x1b[32m      Next\x1b[0m cd \"{name}\" && cizon2 build");
+    println!(
+        "{} cd \"{name}\" && cizon2 build",
+        style_out("      Next", GREEN)
+    );
     Ok(0)
 }
 
@@ -84,7 +88,7 @@ pub fn init_in(dir: &Path) -> Result<i32, String> {
     config::validate_project_name(&project)?;
     scaffold(dir, &project)?;
     print_summary(&project);
-    println!("\x1b[32m      Next\x1b[0m cizon2 build");
+    println!("{} cizon2 build", style_out("      Next", GREEN));
     Ok(0)
 }
 
@@ -221,9 +225,18 @@ fn ensure_gitignore(dir: &Path) -> Result<(), String> {
 }
 
 fn print_summary(project: &str) {
-    println!("\x1b[32m      Ready\x1b[0m the project {project} is ready");
-    println!("\x1b[2m   cizon.toml   → project configuration");
-    println!("   src/main.cpp → program entry point (start writing here)\x1b[0m");
+    println!(
+        "{} the project {project} is ready",
+        style_out("      Ready", GREEN)
+    );
+    println!(
+        "{}",
+        style_out("   cizon.toml   → project configuration", DIM)
+    );
+    println!(
+        "{}",
+        style_out("   src/main.cpp → program entry point (start writing here)", DIM)
+    );
 }
 
 #[cfg(test)]

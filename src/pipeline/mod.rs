@@ -679,7 +679,10 @@ fn build_execs(
     } else {
         step_line(
             "Finished",
-            &format!("up to date ({:.2}s)", started.elapsed().as_secs_f32()),
+            &format!(
+                "up to date ({})",
+                output::elapsed_text(started.elapsed().as_secs_f32(), output::stderr_color())
+            ),
         );
     }
     Ok(BuildResult { execs: result_bins })

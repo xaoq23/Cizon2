@@ -87,6 +87,14 @@
     }
 
     #[test]
+    fn finished_elapsed_keeps_unit_next_to_number() {
+        assert_eq!(elapsed_text(0.12, false), "0.12s");
+        let colored = elapsed_text(0.12, true);
+        assert!(colored.starts_with("\x1b[2m0.12s"), "got: {colored:?}");
+        assert!(!colored.contains("\x1b[0ms"), "reset must follow the unit: {colored:?}");
+    }
+
+    #[test]
     fn warning_section_has_gold_divider_and_header() {
         let dir = Path::new("proj");
         let cxx = Cxx { name: "g++".into(), version: "g++ 14.2.0".into() };

@@ -250,6 +250,7 @@ cizon2 sync --check
 - 编译器警告会按源文件分组：金色上下分隔线 + 黄色 `Warning <相对路径> (编译器 版本)` 头；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
 - 警告不会让构建失败；需要严格模式时使用 `[compiler].flags = ["-Werror"]`
 - 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon2 run > out.txt` 只包含程序输出
+- ANSI 颜色按流判断：stdout 或 stderr 被重定向（管道、文件、CI）时该流自动关色；计时单位始终紧贴数字（`0.12s`），剥离转义码后的日志不会变成 `ms`
 - `cizon test` 逐项打印 `Running` / `Passed` / `Failed`，最后输出 `test result: ok` 或 `FAILED`；任一 test 失败时命令退出 1，全部通过退出 0
 - 开启 `compile_commands` 且 VS Code 配置缺失时，会输出一次 `Writing .vscode/c_cpp_properties.json`（stderr）并生成该文件
 - `Finished` 的状态：

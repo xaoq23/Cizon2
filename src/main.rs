@@ -11,6 +11,8 @@ mod run;
 mod scaffold;
 mod test;
 
+use pipeline::output::{style_err, GREEN, RED};
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = env!("CARGO_PKG_NAME");
 
@@ -33,6 +35,7 @@ Run `cizon2 help <command>` for details. Only reads the [project], [dependencies
 [compiler] and [[target]] sections of cizon.toml; any other section is a hard error.";
 
 fn main() {
+    pipeline::output::init_color();
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(dispatch(&args));
 }
@@ -103,7 +106,8 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
             eprintln!("no dependencies to check");
         } else {
             eprintln!(
-                "\x1b[32m  Finished\x1b[0m dependencies in sync ({n} checked, no changes made)"
+                "{} dependencies in sync ({n} checked, no changes made)",
+                style_err("  Finished", GREEN)
             );
         }
         return Ok(0);
@@ -112,7 +116,10 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
     if n == 0 {
         eprintln!("no dependencies to sync");
     } else {
-        eprintln!("\x1b[32m  Finished\x1b[0m synced {n} dependencies from cizon.lock");
+        eprintln!(
+            "{} synced {n} dependencies from cizon.lock",
+            style_err("  Finished", GREEN)
+        );
     }
     Ok(0)
 }
@@ -385,7 +392,7 @@ fn top_err(result: Result<i32, String>) -> i32 {
 fn eprint_top(msg: &str) {
     let mut err = std::io::stderr();
     use std::io::Write;
-    let _ = writeln!(err, "\x1b[31m   cizon2:\x1b[0m {msg}");
+    let _ = writeln!(err, "{} {msg}", style_err("   cizon2:", RED));
 }
 
 #[cfg(test)]

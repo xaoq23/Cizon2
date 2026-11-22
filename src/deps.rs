@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config;
+use crate::pipeline::output::{style_err, style_out, GREEN};
 
 const CIZON_LOCK: &str = "cizon.lock";
 const DEP_EXTS: &[&str] = &["cpp", "cc", "cxx"];
@@ -78,7 +79,10 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         eprintln!("{warning}");
     }
 
-    println!("\x1b[32m      Added\x1b[0m {name} → deps/{name} (locked commit {commit})");
+    println!(
+        "{} {name} → deps/{name} (locked commit {commit})",
+        style_out("      Added", GREEN)
+    );
     Ok(0)
 }
 
@@ -423,7 +427,7 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
             "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon2 update {name}."
         ));
     }
-    println!("\x1b[32m   Updated\x1b[0m {name} @ {commit}");
+    println!("{} {name} @ {commit}", style_out("   Updated", GREEN));
     Ok(0)
 }
 
@@ -591,7 +595,7 @@ fn restore_dep(
     } else {
         clone_pinned(dir, &info.git, info.tag.as_deref(), &commit, name)?;
         if !crate::pipeline::output::quiet() {
-            eprintln!("\x1b[32m   Restoring\x1b[0m {name} @ {commit}");
+            eprintln!("{} {name} @ {commit}", style_err("   Restoring", GREEN));
         }
     }
     Ok(())

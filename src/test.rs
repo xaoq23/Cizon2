@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
+use crate::pipeline::output::{style_err, CYAN, DIM, GOLD, GREEN, RED};
 use crate::run;
 
 /// Execute `test [name...] [-- <args>]`; returns the exit code for main.
@@ -62,10 +63,11 @@ pub fn test(
     for (name, exe) in &result.execs {
         if !pipeline::output::quiet() {
             eprintln!(
-                "\x1b[36m     Running\x1b[0m {}",
+                "{} {}",
+                style_err("     Running", CYAN),
                 pipeline::rel_display(dir, exe)
             );
-            eprintln!("\x1b[38;2;255;241;168m  {}\x1b[0m", "─".repeat(44));
+            eprintln!("{}", style_err(&format!("  {}", "─".repeat(44)), GOLD));
         }
         let start = std::time::Instant::now();
         let mut cmd = std::process::Command::new(exe);
@@ -89,19 +91,21 @@ pub fn test(
         if status.success() {
             passed += 1;
             if !pipeline::output::quiet() {
-                eprintln!("\x1b[32m   Passed\x1b[0m {name} ({elapsed:.2}s)");
+                eprintln!("{} {name} ({elapsed:.2}s)", style_err("   Passed", GREEN));
             }
         } else {
             let code = run::exit_code(status);
             failed.push(name.clone());
             if let Some(hint) = run::describe_exit_code(code) {
                 eprintln!(
-                    "\x1b[0m\x1b[31m   Failed\x1b[0m {name} — exit code {code} ({code:#x}, {elapsed:.2}s)"
+                    "{} {name} — exit code {code} ({code:#x}, {elapsed:.2}s)",
+                    style_err("   Failed", RED)
                 );
-                eprintln!("\x1b[2m    {hint}\x1b[0m");
+                eprintln!("{}", style_err(&format!("    {hint}"), DIM));
             } else {
                 eprintln!(
-                    "\x1b[0m\x1b[31m   Failed\x1b[0m {name} — exit code {code} ({code:#x}, {elapsed:.2}s)"
+                    "{} {name} — exit code {code} ({code:#x}, {elapsed:.2}s)",
+                    style_err("   Failed", RED)
                 );
             }
         }
@@ -110,15 +114,19 @@ pub fn test(
     let total = result.execs.len();
     if failed.is_empty() {
         if !pipeline::output::quiet() {
-            eprintln!("\x1b[32m  Finished\x1b[0m test result: ok. {passed} passed; {total} total");
+            eprintln!(
+                "{} test result: ok. {passed} passed; {total} total",
+                style_err("  Finished", GREEN)
+            );
         }
         Ok(0)
     } else {
         eprintln!(
-            "\x1b[31m  Finished\x1b[0m test result: FAILED. {passed} passed; {} failed; {total} total",
+            "{} test result: FAILED. {passed} passed; {} failed; {total} total",
+            style_err("  Finished", RED),
             failed.len()
         );
-        eprintln!("\x1b[31m     Failed\x1b[0m {}", failed.join(", "));
+        eprintln!("{} {}", style_err("     Failed", RED), failed.join(", "));
         Ok(1)
     }
 }

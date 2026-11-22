@@ -254,6 +254,7 @@ cizon2 sync --check
 - Compiler warnings are grouped per source file: gold top and bottom rules plus a yellow `Warning <relative path> (compiler version)` header; project absolute path prefixes in diagnostic bodies are replaced with relative paths, while line numbers and message text stay untouched
 - Warnings do not fail the build; for strict mode use `[compiler].flags = ["-Werror"]`
 - Build and `Running` status go to stderr, keeping program stdout clean: `cizon2 run > out.txt` contains only program output
+- ANSI color is decided per stream and turns off automatically when stdout or stderr is redirected (pipes, files, CI); timings keep the unit attached to the number (`0.12s`), so escape-stripped logs cannot turn them into `ms`
 - `cizon test` prints `Running` / `Passed` / `Failed` per target and a final `test result: ok` or `FAILED`; any failure exits 1, all-pass exits 0
 - With `compile_commands` enabled, a missing VS Code config prints `Writing .vscode/c_cpp_properties.json` once (stderr) and is then created
 - `Finished` states:
