@@ -122,8 +122,8 @@ Except for `new`, every command runs in the directory containing `cizon.toml`; c
 
 | Command | Purpose |
 |---|---|
-| `cizon2 new <path>` | Create a project skeleton |
-| `cizon2 init` | Initialize in the current directory (existing files are not overwritten) |
+| `cizon2 new <path> [--kind <kind>]` | Create a project skeleton (`bin`, `static_lib`, or `shared_lib`) |
+| `cizon2 init [--kind <kind>]` | Initialize in the current directory (existing files are not overwritten) |
 | `cizon2 build [--release] [--compiler <spec>] [--quiet]` | Build every bin and library target (not tests) |
 | `cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]` | Build bins and their dependencies, then run and forward arguments |
 | `cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]` | Build and run test targets one by one |
@@ -134,17 +134,22 @@ Except for `new`, every command runs in the directory containing `cizon.toml`; c
 
 `--quiet` on `build` / `run` / `test` suppresses cizon2's own progress lines; errors, compiler warnings and the program/test output still print.
 
-### `cizon2 new <path>`
+### `cizon2 new <path> [--kind bin|static_lib|shared_lib]`
 
-Creates a directory containing `cizon.toml`, `src/main.cpp`, and `.gitignore`. The project name is the last path segment (`cizon2 new apps/hello` produces the project name `hello`).
+Creates a directory containing `cizon.toml` and `.gitignore`. The project name is the last path segment (`cizon2 new apps/hello` produces the project name `hello`).
 
+- Default `--kind bin` keeps the zero-config implicit single-executable template: `src/main.cpp`
+- `--kind static_lib|shared_lib` generates a target-based library project:
+  - `include/<name>/<name>.hpp` (public header; the shared template uses C ABI)
+  - `src/<name>.cpp`, `tests/<name>_test.cpp` (native assert)
+  - `cizon.toml` declares the library target and a test target that links it
 - The path cannot contain `.` or `..` components and cannot start with `-`
 - Refuses to run when the directory already exists; existing files are never overwritten
 - Does not run `git init`
 
-### `cizon2 init`
+### `cizon2 init [--kind bin|static_lib|shared_lib]`
 
-Initializes a single-executable project in the current directory; the project name is the directory name. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists anywhere below the directory, so user code is never overwritten. It accepts no arguments.
+Initializes a project in the current directory; the project name is the directory name. The default `bin` template writes `src/main.cpp`; library kinds write the `include/<name>/`, `src/`, and `tests/` layout described above. It refuses to run when `cizon.toml` already exists or any `main.cpp` / `main.cc` / `main.cxx` exists anywhere below the directory, so user code is never overwritten.
 
 ### `cizon2 build`
 
@@ -457,7 +462,7 @@ Rules:
 - `run --all` is not supported: cizon2 does not supervise multiple processes. Use a shell/Python harness for IPC or multi-process tests
 - Object paths mirror source paths: a single bin uses `obj/<project-relative-path>.o`; multiple bins use `obj/<bin>/<project-relative-path>.o`; static libraries use `lib/<name>/obj/...`, shared libraries `.shared/<name>/obj/...`, dependencies `deps-obj/<dep>/`
 - Same stem in the same directory (e.g. `util.cpp` + `util.cc`) is still an error; rename one
-- `new` / `init` only generate the traditional single-executable skeleton; target projects need manually created sources and `[[target]]` entries
+- `new` / `init` default to the implicit single-executable skeleton; `--kind static_lib|shared_lib` generate target-based library projects with `include/<name>/`, `src/`, and `tests/`, so public headers keep their library ownership
 
 ### Test framework recipes
 

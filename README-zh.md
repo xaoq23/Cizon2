@@ -118,8 +118,8 @@ hello/
 
 | 命令 | 作用 |
 |---|---|
-| `cizon2 new <路径>` | 创建项目骨架 |
-| `cizon2 init` | 在当前目录初始化（已有文件不覆盖） |
+| `cizon2 new <路径> [--kind <kind>]` | 创建项目骨架（`bin`、`static_lib` 或 `shared_lib`） |
+| `cizon2 init [--kind <kind>]` | 在当前目录初始化（已有文件不覆盖） |
 | `cizon2 build [--release] [--compiler <spec>] [--quiet]` | 构建全部 bin 与库 target（不构建 test） |
 | `cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
 | `cizon2 test [--release] [--compiler <spec>] [--quiet] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
@@ -130,17 +130,22 @@ hello/
 
 `--quiet` 用于 `build` / `run` / `test`：关闭 cizon2 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。
 
-### `cizon2 new <路径>`
+### `cizon2 new <路径> [--kind bin|static_lib|shared_lib]`
 
-创建目录并写入 `cizon.toml`、`src/main.cpp`、`.gitignore`。项目名取路径的最后一段（`cizon2 new apps/hello` 得到项目名 `hello`）。
+创建目录并写入 `cizon.toml`、`.gitignore`。项目名取路径的最后一段（`cizon2 new apps/hello` 得到项目名 `hello`）。
 
+- 默认 `--kind bin` 保持零配置的隐式单可执行模板：`src/main.cpp`
+- `--kind static_lib|shared_lib` 生成 target 模式的库项目：
+  - `include/<name>/<name>.hpp`（公共头；shared 模板使用 C ABI）
+  - `src/<name>.cpp`、`tests/<name>_test.cpp`（原生 assert）
+  - `cizon.toml` 声明库 target 与链接它的 test target
 - 路径不能包含 `.` 或 `..` 组件，也不能以 `-` 开头
 - 目录已存在时拒绝执行；不会覆盖已有文件
 - 不执行 `git init`
 
-### `cizon2 init`
+### `cizon2 init [--kind bin|static_lib|shared_lib]`
 
-在当前目录初始化单可执行项目，项目名取目录名。若当前目录已有 `cizon.toml`，或任意层级已存在 `main.cpp` / `main.cc` / `main.cxx`，则拒绝执行，避免覆盖用户代码。不接受参数。
+在当前目录初始化项目，项目名取目录名。默认 `bin` 模板写 `src/main.cpp`；库模板写上面描述的 `include/<name>/`、`src/`、`tests/` 结构。若当前目录已有 `cizon.toml`，或任意层级已存在 `main.cpp` / `main.cc` / `main.cxx`，则拒绝执行，避免覆盖用户代码。
 
 ### `cizon2 build`
 
@@ -453,7 +458,7 @@ kind = "bin"
 - 不支持 `run --all`：cizon2 不做多进程监督；IPC/多进程测试请用 shell/Python harness
 - 对象路径镜像源相对路径：单 bin 为 `obj/<项目相对路径>.o`；多 bin 为 `obj/<bin>/<项目相对路径>.o`；静态库为 `lib/<name>/obj/...`，共享库为 `.shared/<name>/obj/...`，依赖对象在 `deps-obj/<dep>/`
 - 同一目录下同名 stem（如 `util.cpp` + `util.cc`）仍会报错；改名即可
-- `new` / `init` 只生成传统单可执行骨架；target 项目需手动创建源码并添加 `[[target]]`
+- `new` / `init` 默认生成隐式单可执行骨架；`--kind static_lib|shared_lib` 生成 target 模式的库项目（`include/<name>/`、`src/`、`tests/`），公共头保持库内归属
 
 ### 测试框架接入
 

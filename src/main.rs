@@ -20,8 +20,8 @@ const USAGE: &str = "\
 cizon2 — declarative C++ build & run manager
 
 Usage:
-  cizon2 new <dir-name>              # create a new project
-  cizon2 init                        # initialize in place in the current directory
+  cizon2 new <dir-name> [--kind bin|static_lib|shared_lib]  # create a new project
+  cizon2 init [--kind bin|static_lib|shared_lib]            # initialize in place
   cizon2 add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
   cizon2 update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
   cizon2 sync [--check]              # restore deps from the lock, or verify without writing
@@ -130,21 +130,29 @@ fn command_usage(cmd: &str) -> Option<&'static str> {
         "new" => "\
 cizon2 new — create a new project
 
-Usage: cizon2 new <dir-name>
+Usage: cizon2 new <dir-name> [--kind bin|static_lib|shared_lib]
 
-Creates <dir-name>/ with cizon.toml, src/main.cpp and .gitignore. The project name is
-the last path segment. Refuses an existing directory; does not run git init.
+Creates <dir-name>/ with cizon.toml and .gitignore plus the chosen template. The
+project name is the last path segment. Refuses an existing directory; does not run
+git init.
 
-Example:
-  cizon2 new hello && cd hello && cizon2 run",
+Kinds:
+  bin         implicit single executable (default): src/main.cpp
+  static_lib  target-based library: include/<name>/<name>.hpp, src, tests
+  shared_lib  C ABI DLL/.so: include/<name>/<name>.hpp, src, tests
+
+Examples:
+  cizon2 new hello && cd hello && cizon2 run
+  cizon2 new calc --kind static_lib && cd calc && cizon2 test",
         "init" => "\
 cizon2 init — initialize a project in the current directory
 
-Usage: cizon2 init
+Usage: cizon2 init [--kind bin|static_lib|shared_lib]
 
-Writes cizon.toml, src/main.cpp and .gitignore into the current directory; the project
-name is the directory name. Refuses when cizon.toml or any main.cpp already exists.
-Accepts no arguments.",
+Writes cizon.toml and .gitignore plus the chosen template; the project name is the
+directory name. The default bin template writes src/main.cpp. Library templates write
+include/<name>/<name>.hpp, src and tests. Refuses when cizon.toml or any main.cpp
+already exists.",
         "build" => "\
 cizon2 build — build all bin and library targets (not tests)
 

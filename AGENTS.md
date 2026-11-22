@@ -40,6 +40,7 @@
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
 - target `include` 是项目内公共头根目录：库的 include 沿 `links` PUBLIC 传播（可传递），bin/test 只作用于自身；与根 `include/` 叠加；路径必须在 plan 阶段校验存在、是目录、在项目内且不是项目根。`prefix` 是消费已安装包的输入，只作用于当前 target，不传播
+- `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
 - `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 - release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `test-obj/<name>/`，`build` / `run` 不构建 test target
