@@ -150,7 +150,7 @@ mod tests {
 
     fn temp(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-implib-{tag}-{}",
+            "cizon-implib-{tag}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

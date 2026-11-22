@@ -1,4 +1,4 @@
-//! `cizon2 add <git-url> [--tag <tag>]`: the minimal correct implementation of git
+//! `cizon add <git-url> [--tag <tag>]`: the minimal correct implementation of git
 //! dependencies (v0.2 route).
 //!
 //! Design boundaries:
@@ -21,7 +21,7 @@ use crate::pipeline::output::{style_err, style_out, GREEN};
 const CIZON_LOCK: &str = "cizon.lock";
 const DEP_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
-/// `cizon2 add <git-url> [--tag <tag>]`
+/// `cizon add <git-url> [--tag <tag>]`
 pub fn add_cmd(args: &[String]) -> Result<i32, String> {
     let dir = std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
     add_in(&dir, args)
@@ -38,7 +38,7 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let dep_dir = dir.join("deps").join(&name);
     if dep_dir.exists() {
         return Err(format!(
-            "deps/{name} exists but is not managed by cizon2. Confirm it is unneeded, delete the directory, then rerun add."
+            "deps/{name} exists but is not managed by cizon. Confirm it is unneeded, delete the directory, then rerun add."
         ));
     }
 
@@ -106,11 +106,11 @@ fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
         .unwrap_or(false);
     if !has_sources {
         return Some(format!(
-            "Note: deps/{name} has no include/ and no flat src/*.cpp, so cizon2 compiles nothing from it. If it is header-only (e.g. doctest), its headers may already be reachable through the automatic -Ideps/{name} include path — just write a test target. If it must be compiled (e.g. googletest, Catch2), build/install it with its own build system and link it through a test target's extern_links (e.g. extern_links = [\"gtest_main\", \"gtest\"])."
+            "Note: deps/{name} has no include/ and no flat src/*.cpp, so cizon compiles nothing from it. If it is header-only (e.g. doctest), its headers may already be reachable through the automatic -Ideps/{name} include path — just write a test target. If it must be compiled (e.g. googletest, Catch2), build/install it with its own build system and link it through a test target's extern_links (e.g. extern_links = [\"gtest_main\", \"gtest\"])."
         ));
     }
     Some(format!(
-        "Warning: deps/{name} is missing include/, which does not match the cizon2 dependency layout (include/ + flat src/*.cpp). Build it with its own build system; compiled test libraries belong in a test target's extern_links, header-only frameworks can be vendored under include/."
+        "Warning: deps/{name} is missing include/, which does not match the cizon dependency layout (include/ + flat src/*.cpp). Build it with its own build system; compiled test libraries belong in a test target's extern_links, header-only frameworks can be vendored under include/."
     ))
 }
 
@@ -133,7 +133,7 @@ fn rollback_error(err: String, ok: bool, name: &str) -> String {
 }
 
 fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
-    let usage = "Usage: cizon2 add <git-url> [--tag <tag>]";
+    let usage = "Usage: cizon add <git-url> [--tag <tag>]";
     let mut iter = args.iter();
     let url = match iter.next() {
         Some(u) if !u.is_empty() => u.clone(),
@@ -356,7 +356,7 @@ fn ignore_deps_dir(dir: &Path) {
 // never chasing new wishes in the toml.
 // ─────────────────────────────────────────────────────────────
 
-/// `cizon2 update <dependency-name>`: align the lock and deps with cizon.toml's tag intent
+/// `cizon update <dependency-name>`: align the lock and deps with cizon.toml's tag intent
 /// (upgrade and downgrade are symmetric).
 pub fn update_cmd(args: &[String]) -> Result<i32, String> {
     let dir = std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
@@ -365,14 +365,14 @@ pub fn update_cmd(args: &[String]) -> Result<i32, String> {
 
 pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     if args.len() != 1 || args[0].is_empty() {
-        return Err("Usage: cizon2 update <dependency-name>".into());
+        return Err("Usage: cizon update <dependency-name>".into());
     }
     let name = &args[0];
     let cfg = config::load(dir)?;
     let info = cfg
         .dependencies()
         .and_then(|m| m.get(name))
-        .ok_or_else(|| format!("{name} is not in [dependencies]. Run cizon2 add first, or check the spelling."))?;
+        .ok_or_else(|| format!("{name} is not in [dependencies]. Run cizon add first, or check the spelling."))?;
 
     let deps_dir = dir.join("deps");
     std::fs::create_dir_all(&deps_dir)
@@ -424,7 +424,7 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     }
     if let Err(e) = write_lock_entry(dir, name, &info.git, info.tag.as_deref(), &commit) {
         return Err(format!(
-            "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon2 update {name}."
+            "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon update {name}."
         ));
     }
     println!("{} {name} @ {commit}", style_out("   Updated", GREEN));
@@ -484,7 +484,7 @@ fn is_commit_hash(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-/// `cizon2 sync`: restore/verify every dependency checkout from cizon.lock without compiling or
+/// `cizon sync`: restore/verify every dependency checkout from cizon.lock without compiling or
 /// changing cizon.toml intent. A fresh clone of the project materializes its deps from the lock.
 pub fn sync(dir: &Path, cfg: &config::Config) -> Result<usize, String> {
     let Some(map) = cfg.dependencies() else {
@@ -506,7 +506,7 @@ fn read_lock(dir: &Path) -> Result<toml::Table, String> {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon2 update <dependency-name> to rebuild the lock from cizon.toml."
+                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon update <dependency-name> to rebuild the lock from cizon.toml."
             ));
         }
         Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
@@ -527,26 +527,26 @@ fn lock_commit(
         .get(name)
         .and_then(|v| v.as_table())
         .ok_or_else(|| {
-            format!("no lock for {name} in {CIZON_LOCK}. Run cizon2 update {name} to create the lock.")
+            format!("no lock for {name} in {CIZON_LOCK}. Run cizon update {name} to create the lock.")
         })?;
     if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
         return Err(format!(
-            "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon2 update {name} to align."
+            "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon update {name} to align."
         ));
     }
     if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
         return Err(format!(
-            "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon2 update {name} to align."
+            "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon update {name} to align."
         ));
     }
     let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {
         return Err(format!(
-            "{name} in {CIZON_LOCK} is missing a commit. Run cizon2 update {name} to rebuild the lock."
+            "{name} in {CIZON_LOCK} is missing a commit. Run cizon update {name} to rebuild the lock."
         ));
     };
     if !is_commit_hash(commit) {
         return Err(format!(
-            "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon2 update {name} to rebuild the lock."
+            "{name}'s commit in {CIZON_LOCK} is not a 40/64-character hex string. Run cizon update {name} to rebuild the lock."
         ));
     }
     Ok(commit.to_ascii_lowercase())
@@ -575,7 +575,7 @@ fn restore_dep(
         )?;
         if head != commit {
             return Err(format!(
-                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). If a local commit must be kept, push to the remote and update cizon.toml's tag first; otherwise run cizon2 update {name} to align, or delete the directory and let sync restore from the lock."
+                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). If a local commit must be kept, push to the remote and update cizon.toml's tag first; otherwise run cizon update {name} to align, or delete the directory and let sync restore from the lock."
             ));
         }
         let status = git_cmd(
@@ -616,7 +616,7 @@ pub fn check(dir: &Path, cfg: &config::Config) -> Result<usize, String> {
         let dep_dir = dir.join("deps").join(name);
         if !dep_dir.exists() {
             return Err(format!(
-                "deps/{name} is missing; run cizon2 sync to restore it from the lock (check mode never clones)."
+                "deps/{name} is missing; run cizon sync to restore it from the lock (check mode never clones)."
             ));
         }
         let head = git_cmd(
@@ -630,7 +630,7 @@ pub fn check(dir: &Path, cfg: &config::Config) -> Result<usize, String> {
         )?;
         if head != commit {
             return Err(format!(
-                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). Run cizon2 sync to restore from the lock, or cizon2 update {name} to align the lock."
+                "deps/{name}'s HEAD ({head}) mismatches the lock ({commit}). Run cizon sync to restore from the lock, or cizon update {name} to align the lock."
             ));
         }
         let status = git_cmd(
@@ -674,7 +674,7 @@ fn clone_pinned(
                     git_cmd(dir, &["-C".into(), rel.clone(), "rev-parse".into(), "HEAD".into()])?;
                 if head != commit {
                     return Err(format!(
-                        "tag {t} now points to {head}, which mismatches the lock {commit} (the tag was moved). Run cizon2 update {name} to refresh the lock."
+                        "tag {t} now points to {head}, which mismatches the lock {commit} (the tag was moved). Run cizon update {name} to refresh the lock."
                     ));
                 }
             }
@@ -685,7 +685,7 @@ fn clone_pinned(
                     git_cmd(dir, &["-C".into(), rel, "rev-parse".into(), "HEAD".into()])?;
                 if head != commit {
                     return Err(format!(
-                        "after checkout {commit}, HEAD is {head}, which mismatches the lock. Run cizon2 update {name} to rebuild the lock."
+                        "after checkout {commit}, HEAD is {head}, which mismatches the lock. Run cizon update {name} to rebuild the lock."
                     ));
                 }
             }
@@ -759,7 +759,7 @@ mod tests {
 
     fn temp(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "cizon2-deps-{tag}-{}",
+            "cizon-deps-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

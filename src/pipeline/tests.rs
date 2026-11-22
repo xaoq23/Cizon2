@@ -7,7 +7,7 @@
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-bl-{tag}-{}",
+            "cizon-bl-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -156,7 +156,7 @@
     }
 
     #[test]
-    fn warning_section_has_gold_divider_and_header() {
+    fn warning_section_has_header_and_blank_separation() {
         let dir = Path::new("proj");
         let cxx = Cxx { name: "g++".into(), version: "g++ 14.2.0".into() };
         let warnings = vec![(
@@ -164,8 +164,9 @@
             "main.cpp:54: warning: ignored\n".to_string(),
         )];
         let text = warning_section_text(dir, &cxx, &warnings);
-        assert!(text.starts_with("  \x1b[38;2;255;241;168m"));
-        assert_eq!(text.matches('─').count(), 88, "two 44-wide gold dividers, top and bottom");
+        assert!(text.starts_with('\n'), "got: {text:?}");
+        assert!(!text.contains('─'), "decorative divider must be gone: {text:?}");
+        assert!(!text.contains("\x1b[38;2;255;241;168m"));
         assert!(text.contains("Warning"), "got: {text}");
         assert!(text.contains("main.cpp"), "got: {text}");
         assert!(text.contains("g++ 14.2.0"), "got: {text}");

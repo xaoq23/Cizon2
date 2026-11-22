@@ -1,4 +1,4 @@
-//! cizon2 — declarative C++ build & run.
+//! cizon — declarative C++ build & run.
 //!
 //! See AGENTS.md for scope: single crate, recursive src/ sources, g++/clang++; git deps since v0.2.
 //! Hand-written argument dispatch to avoid clap (dependency whitelist: serde, toml).
@@ -17,21 +17,21 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = env!("CARGO_PKG_NAME");
 
 const USAGE: &str = "\
-cizon2 — declarative C++ build & run manager
+cizon — declarative C++ build & run manager
 
 Usage:
-  cizon2 new <dir-name> [--kind bin|static_lib|shared_lib]  # create a new project
-  cizon2 init [--kind bin|static_lib|shared_lib]            # initialize in place
-  cizon2 add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
-  cizon2 update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
-  cizon2 sync [--check]              # restore deps from the lock, or verify without writing
-  cizon2 build [--release] [--compiler <spec>] [--quiet]
-  cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
-  cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
-  cizon2 help [<command>]            # general or per-command help
-  cizon2 version                     # print version
+  cizon new <dir-name> [--kind bin|static_lib|shared_lib]  # create a new project
+  cizon init [--kind bin|static_lib|shared_lib]            # initialize in place
+  cizon add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
+  cizon update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
+  cizon sync [--check]              # restore deps from the lock, or verify without writing
+  cizon build [--release] [--compiler <spec>] [--quiet]
+  cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
+  cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
+  cizon help [<command>]            # general or per-command help
+  cizon version                     # print version
 
-Run `cizon2 help <command>` for details. Only reads the [project], [dependencies], \
+Run `cizon help <command>` for details. Only reads the [project], [dependencies], \
 [compiler] and [[target]] sections of cizon.toml; any other section is a hard error.";
 
 fn main() {
@@ -70,7 +70,7 @@ fn dispatch(args: &[String]) -> i32 {
         }
         _ => {}
     }
-    // Per-command help: `cizon2 <command> --help` / `-h`.
+    // Per-command help: `cizon <command> --help` / `-h`.
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h")) {
         if let Some(text) = command_usage(cmd) {
             println!("{text}");
@@ -97,7 +97,7 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
     let check = match args {
         [] => false,
         [arg] if arg == "--check" => true,
-        _ => return Err("Usage: cizon2 sync [--check]".into()),
+        _ => return Err("Usage: cizon sync [--check]".into()),
     };
     let (dir, cfg) = load_config()?;
     if check {
@@ -124,13 +124,13 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// Detailed per-command help for `cizon2 help <command>` and `<command> --help`.
+/// Detailed per-command help for `cizon help <command>` and `<command> --help`.
 fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
         "new" => "\
-cizon2 new — create a new project
+cizon new — create a new project
 
-Usage: cizon2 new <dir-name> [--kind bin|static_lib|shared_lib]
+Usage: cizon new <dir-name> [--kind bin|static_lib|shared_lib]
 
 Creates <dir-name>/ with cizon.toml and .gitignore plus the chosen template. The
 project name is the last path segment. Refuses an existing directory; does not run
@@ -142,21 +142,21 @@ Kinds:
   shared_lib  C ABI DLL/.so: include/<name>/<name>.hpp, src, tests
 
 Examples:
-  cizon2 new hello && cd hello && cizon2 run
-  cizon2 new calc --kind static_lib && cd calc && cizon2 test",
+  cizon new hello && cd hello && cizon run
+  cizon new calc --kind static_lib && cd calc && cizon test",
         "init" => "\
-cizon2 init — initialize a project in the current directory
+cizon init — initialize a project in the current directory
 
-Usage: cizon2 init [--kind bin|static_lib|shared_lib]
+Usage: cizon init [--kind bin|static_lib|shared_lib]
 
 Writes cizon.toml and .gitignore plus the chosen template; the project name is the
 directory name. The default bin template writes src/main.cpp. Library templates write
 include/<name>/<name>.hpp, src and tests. Refuses when cizon.toml or any main.cpp
 already exists.",
         "build" => "\
-cizon2 build — build all bin and library targets (not tests)
+cizon build — build all bin and library targets (not tests)
 
-Usage: cizon2 build [--release] [--compiler <spec>] [--quiet]
+Usage: cizon build [--release] [--compiler <spec>] [--quiet]
 
 Options:
   --release          optimize (-O2) and define NDEBUG; debug uses -g (test sources keep asserts)
@@ -164,65 +164,65 @@ Options:
   --quiet            suppress progress lines (errors and warnings still print)
 
 Compiles only stale objects; artifacts live under build/<mode>-<compiler>/.
-Test targets are ignored — use `cizon2 test` for those.",
+Test targets are ignored — use `cizon test` for those.",
         "run" => "\
-cizon2 run — build, then run a bin target
+cizon run — build, then run a bin target
 
-Usage: cizon2 run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
+Usage: cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
 
 The bin name is optional only when the project has exactly one bin. Everything after
 -- is passed to the program, and the program's exit code is forwarded.
 
 Examples:
-  cizon2 run
-  cizon2 run worker -- --port 8080",
+  cizon run
+  cizon run worker -- --port 8080",
         "test" => "\
-cizon2 test — build and run test targets
+cizon test — build and run test targets
 
-Usage: cizon2 test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
+Usage: cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
 
 Runs the selected test targets (all when none are named), in declaration order. A test
 passes iff its process exits 0; any failure exits 1. Test output goes to stderr.
 
 Examples:
-  cizon2 test
-  cizon2 test calc_test -- --gtest_filter=Add*",
+  cizon test
+  cizon test calc_test -- --gtest_filter=Add*",
         "add" => "\
-cizon2 add — add a git dependency
+cizon add — add a git dependency
 
-Usage: cizon2 add <git-url> [--tag <tag>]
+Usage: cizon add <git-url> [--tag <tag>]
 
 Shallow-clones into deps/<name>, appends to [dependencies] and writes cizon.lock. The
 name is the last URL segment minus .git. --tag pins a tag or branch.
 
 Example:
-  cizon2 add https://github.com/fmtlib/fmt --tag 11.0.2",
+  cizon add https://github.com/fmtlib/fmt --tag 11.0.2",
         "update" => "\
-cizon2 update — align the lock with cizon.toml
+cizon update — align the lock with cizon.toml
 
-Usage: cizon2 update <dep-name>
+Usage: cizon update <dep-name>
 
 Re-resolves a dependency from its git/tag in cizon.toml (upgrade or downgrade). Refuses
 a dirty deps/<name>. Change the tag in cizon.toml first, then run update.",
         "sync" => "\
-cizon2 sync — restore dependencies from the lock
+cizon sync — restore dependencies from the lock
 
-Usage: cizon2 sync [--check]
+Usage: cizon sync [--check]
 
 Restores every dependency checkout from cizon.lock without building or changing
 cizon.toml. With --check it only verifies the lock and checkouts (no network, no
 writes) and exits non-zero on drift — the CI gate for a locked build.",
         "help" => "\
-cizon2 help — show help
+cizon help — show help
 
-Usage: cizon2 help [<command>]
+Usage: cizon help [<command>]
 
 Without a command, prints general usage. With a command, prints its detailed help.
-`cizon2 <command> --help` is equivalent.",
+`cizon <command> --help` is equivalent.",
         "version" => "\
-cizon2 version — print the version
+cizon version — print the version
 
-Usage: cizon2 version
+Usage: cizon version
 
 Aliases: --version, -V, -v.",
         _ => return None,
@@ -234,7 +234,7 @@ Aliases: --version, -V, -v.",
 struct Flags {
     release: bool,
     cc: Option<String>,
-    /// Suppress cizon2's own progress lines (errors, warnings and program output still print).
+    /// Suppress cizon's own progress lines (errors, warnings and program output still print).
     quiet: bool,
 }
 
@@ -286,7 +286,7 @@ fn parse_run_args<'a>(
             other if !other.starts_with('-') => {
                 if bin.is_some() {
                     return Err(format!(
-                        "run accepts at most one bin name, got both {} and {other}. Usage: cizon2 run <bin-name> [-- <args>].",
+                        "run accepts at most one bin name, got both {} and {other}. Usage: cizon run <bin-name> [-- <args>].",
                         bin.as_deref().unwrap_or("")
                     ));
                 }
@@ -294,7 +294,7 @@ fn parse_run_args<'a>(
             }
             other => {
                 return Err(format!(
-                    "Unknown flag {other}.\n\n{USAGE}\n\nTo pass arguments to your program, use `cizon2 run <bin-name> -- <args>`; a PowerShell function wrapper may swallow a bare `--`, so call the exe directly or use Set-Alias."
+                    "Unknown flag {other}.\n\n{USAGE}\n\nTo pass arguments to your program, use `cizon run <bin-name> -- <args>`; a PowerShell function wrapper may swallow a bare `--`, so call the exe directly or use Set-Alias."
                 ));
             }
         }
@@ -364,7 +364,7 @@ fn parse_test_args<'a>(
             other if !other.starts_with('-') => names.push(other.to_string()),
             other => {
                 return Err(format!(
-                    "Unknown flag {other}.\n\n{USAGE}\n\nTo pass arguments to your test binary, use `cizon2 test <name> -- <args>`."
+                    "Unknown flag {other}.\n\n{USAGE}\n\nTo pass arguments to your test binary, use `cizon test <name> -- <args>`."
                 ));
             }
         }
@@ -400,7 +400,7 @@ fn top_err(result: Result<i32, String>) -> i32 {
 fn eprint_top(msg: &str) {
     let mut err = std::io::stderr();
     use std::io::Write;
-    let _ = writeln!(err, "{} {msg}", style_err("   cizon2:", RED));
+    let _ = writeln!(err, "{} {msg}", style_err("   cizon:", RED));
 }
 
 #[cfg(test)]
@@ -452,7 +452,7 @@ mod tests {
     fn run_unknown_flag_mentions_powershell_wrapper() {
         let err = parse_run_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
-        assert!(err.contains("cizon2 run"), "got: {err}");
+        assert!(err.contains("cizon run"), "got: {err}");
         assert!(err.contains("Set-Alias"), "got: {err}");
     }
 
@@ -495,7 +495,7 @@ mod tests {
     fn parse_test_args_rejects_unknown_flag() {
         let err = parse_test_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
-        assert!(err.contains("cizon2 test"), "got: {err}");
+        assert!(err.contains("cizon test"), "got: {err}");
     }
 
     #[test]

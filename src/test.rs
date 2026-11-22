@@ -1,4 +1,4 @@
-//! `cizon2 test`: build and run test targets.
+//! `cizon test`: build and run test targets.
 //!
 //! Framework-agnostic upper layer aligned with CTest: the only pass contract is the process
 //! exit code (0 = pass). Test output is replayed untouched on stderr; no framework parsing, no
@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
-use crate::pipeline::output::{style_err, CYAN, DIM, GOLD, GREEN, RED};
+use crate::pipeline::output::{style_err, CYAN, DIM, GREEN, RED};
 use crate::run;
 
 /// Execute `test [name...] [-- <args>]`; returns the exit code for main.
@@ -51,7 +51,7 @@ pub fn test(
     for name in names {
         if !test_names.iter().any(|t| t.eq_ignore_ascii_case(name)) {
             return Err(format!(
-                "unknown test target {name}. Available tests: {}. Usage: cizon2 test [name...] [-- <args>].",
+                "unknown test target {name}. Available tests: {}. Usage: cizon test [name...] [-- <args>].",
                 test_names.join(", ")
             ));
         }
@@ -67,7 +67,7 @@ pub fn test(
                 style_err("     Running", CYAN),
                 pipeline::rel_display(dir, exe)
             );
-            eprintln!("{}", style_err(&format!("  {}", "─".repeat(44)), GOLD));
+            eprintln!();
         }
         let start = std::time::Instant::now();
         let mut cmd = std::process::Command::new(exe);
@@ -138,7 +138,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-test-{tag}-{}",
+            "cizon-test-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -223,7 +223,7 @@ mod tests {
         let cfg = crate::config::load(&dir).unwrap();
         let err = crate::run::run(&dir, &cfg, false, None, None, &[]).unwrap_err();
         assert!(err.contains("no bin target"), "got: {err}");
-        assert!(err.contains("cizon2 build"), "got: {err}");
+        assert!(err.contains("cizon build"), "got: {err}");
         assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
         fs::remove_dir_all(dir).ok();
     }

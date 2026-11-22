@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::compiler::Cxx;
 
-/// `--quiet` (build/run/test): suppress cizon2's own progress lines (Compiling/Linking/
+/// `--quiet` (build/run/test): suppress cizon's own progress lines (Compiling/Linking/
 /// Finished/Running/Passed) while keeping errors, warnings and the executed program's own
 /// output. Process-global because the progress sites are spread across the pipeline, run and
 /// test drivers; set once from the CLI flags.
@@ -47,7 +47,6 @@ pub(crate) const GREEN: &str = "\x1b[32m";
 pub(crate) const YELLOW: &str = "\x1b[33m";
 pub(crate) const CYAN: &str = "\x1b[36m";
 pub(crate) const RED: &str = "\x1b[31m";
-pub(crate) const GOLD: &str = "\x1b[38;2;255;241;168m";
 pub(crate) const DIM: &str = "\x1b[2m";
 const RESET: &str = "\x1b[0m";
 
@@ -74,11 +73,10 @@ pub(super) fn step_line(label: &str, detail: &str) {
     eprintln!("{} {detail}", style_err(&format!("{label:>12}"), GREEN));
 }
 
-/// Compiler warning section: gold top/bottom dividers + source file/compiler header, original
-/// diagnostics are not rewritten.
+/// Compiler warning section: a blank line separates it from build status, then the source
+/// file/compiler header and the untouched diagnostics. No decorative divider lines.
 pub(super) fn warning_section_text(dir: &Path, cxx: &Cxx, warnings: &[(PathBuf, String)]) -> String {
-    let sep = format!("  {}\n", style_err(&"─".repeat(44), GOLD));
-    let mut out = sep.clone();
+    let mut out = String::from("\n");
     for (src, text) in warnings {
         out.push_str(&format!(
             "{} {} ({} {})\n",
@@ -92,7 +90,7 @@ pub(super) fn warning_section_text(dir: &Path, cxx: &Cxx, warnings: &[(PathBuf, 
             out.push('\n');
         }
     }
-    out.push_str(&sep);
+    out.push('\n');
     out
 }
 

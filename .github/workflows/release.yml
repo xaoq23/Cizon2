@@ -78,8 +78,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $asset = "cizon2-v$env:VERSION-windows-x86_64.exe"
-          Copy-Item target/release/cizon2.exe $asset
+          $asset = "cizon-v$env:VERSION-windows-x86_64.exe"
+          Copy-Item target/release/cizon.exe $asset
           $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
           "$hash  $asset" | Set-Content "$asset.sha256" -Encoding ascii
           "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -88,8 +88,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          asset="cizon2-v${VERSION}-linux-x86_64"
-          cp target/release/cizon2 "$asset"
+          asset="cizon-v${VERSION}-linux-x86_64"
+          cp target/release/cizon "$asset"
           chmod +x "$asset"
           sha256sum "$asset" > "$asset.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"

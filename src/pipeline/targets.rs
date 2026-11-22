@@ -421,7 +421,7 @@ fn validate_static_graph(
                 let mut chain = stack[start..].to_vec();
                 chain.push(name.to_string());
                 return Err(format!(
-                    "static library link cycle: {}. Break the cycle; cizon2 does not add --start-group.",
+                    "static library link cycle: {}. Break the cycle; cizon does not add --start-group.",
                     chain.join(" -> ")
                 ));
             }
@@ -508,7 +508,7 @@ fn ordered_static_roots(
     }
     if ordered.len() != names.len() {
         return Err(
-            "static library link cycle detected; break the cycle (cizon2 does not add --start-group)."
+            "static library link cycle detected; break the cycle (cizon does not add --start-group)."
                 .into(),
         );
     }
@@ -566,7 +566,7 @@ fn without_ndebug(flags: &[String]) -> Vec<String> {
 }
 
 /// Resolve an optional installed-package prefix to an absolute directory inside the project.
-/// cizon2 later expands it to -I<prefix>/include (compile) and -L<prefix>/lib (link) for the
+/// cizon later expands it to -I<prefix>/include (compile) and -L<prefix>/lib (link) for the
 /// owning target, so consuming an installed library needs no hand-written search-path flags.
 fn resolve_prefix(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<PathBuf>, String> {
     let Some(raw) = raw else {

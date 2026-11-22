@@ -701,7 +701,7 @@ fn build_execs(
 }
 
 /// When a `extern_links` entry cannot be resolved (`cannot find -l<name>`), add a plain-language
-/// hint: cizon2 neither downloads nor locates external libraries; installation is the user's move.
+/// hint: cizon neither downloads nor locates external libraries; installation is the user's move.
 fn missing_extern_lib_hint(stderr_text: &str, extern_links: &[String]) -> Option<String> {
     if extern_links.is_empty() {
         return None;
@@ -715,7 +715,7 @@ fn missing_extern_lib_hint(stderr_text: &str, extern_links: &[String]) -> Option
         {
             if extern_links.iter().any(|link| link.eq_ignore_ascii_case(name)) {
                 return Some(format!(
-                    "\nHint: library -l{name} was not found. cizon2 does not download or install libraries; install it with your system package manager (e.g. `pacman -S mingw-w64-ucrt-x86_64-gtest`, `apt install libgtest-dev`), or check the extern_links entry in cizon.toml."
+                    "\nHint: library -l{name} was not found. cizon does not download or install libraries; install it with your system package manager (e.g. `pacman -S mingw-w64-ucrt-x86_64-gtest`, `apt install libgtest-dev`), or check the extern_links entry in cizon.toml."
                 ));
             }
         }
@@ -724,7 +724,7 @@ fn missing_extern_lib_hint(stderr_text: &str, extern_links: &[String]) -> Option
     // library. Keep the same guidance instead of losing it entirely.
     if stderr_text.contains("ld returned") && !stderr_text.contains("undefined reference") {
         return Some(format!(
-            "\nHint: the link failed. cizon2 does not download or install external libraries; verify that these extern_links are installed and discoverable by the compiler: {}.",
+            "\nHint: the link failed. cizon does not download or install external libraries; verify that these extern_links are installed and discoverable by the compiler: {}.",
             extern_links.join(", ")
         ));
     }

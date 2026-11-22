@@ -68,7 +68,7 @@ pub struct Target {
     #[serde(default)]
     pub links: Vec<String>,
     /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
-    /// link time. cizon2 neither downloads nor locates them; headers must already be on the
+    /// link time. cizon neither downloads nor locates them; headers must already be on the
     /// compiler's default include path (non-default prefixes go through [compiler] flags).
     #[serde(default)]
     pub extern_links: Vec<String>,
@@ -77,7 +77,7 @@ pub struct Target {
     /// their own sources. The project-root include/ remains automatic for every target.
     #[serde(default)]
     pub include: Option<String>,
-    /// Optional installed-package prefix (project-relative directory). cizon2 expands it to
+    /// Optional installed-package prefix (project-relative directory). cizon expands it to
     /// `-I<prefix>/include` for this target's sources and `-L<prefix>/lib` at link time, so
     /// consuming an installed library never requires hand-written search-path flags.
     #[serde(default)]
@@ -121,7 +121,7 @@ const FUTURE_SECTIONS: &[&str] = &[
 
 /// Configuration sections that were never supported — their presence counts as a typo.
 const UNKNOWN_HINT: &str =
-    "cizon2 only recognizes [project], [dependencies], [compiler] and [[target]]";
+    "cizon only recognizes [project], [dependencies], [compiler] and [[target]]";
 
 /// A dependency name is also the directory name under `deps/`, so only characters that are safe
 /// in the intersection with TOML bare keys are allowed.
@@ -359,13 +359,30 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
     Ok(())
 }
 
+fn validate_edition(edition: &str) -> Result<(), String> {
+    let version = edition
+        .strip_prefix("c++")
+        .or_else(|| edition.strip_prefix("gnu++"))
+        .unwrap_or(edition);
+    const VALID: &[&str] = &[
+        "98", "03", "11", "14", "17", "20", "23", "26", "0x", "1y", "1z", "2a", "2b", "2c",
+    ];
+    if VALID.contains(&version) {
+        return Ok(());
+    }
+    Err(format!(
+        "invalid [project].edition \"{edition}\". Use a C++ standard such as \"17\", \"c++20\" or \"gnu++23\" \
+         (versions: 98, 03, 11, 14, 17, 20, 23, 26; aliases: 0x, 1y, 1z, 2a, 2b, 2c)."
+    ))
+}
+
 pub fn load(dir: &Path) -> Result<Config, String> {
     let path = dir.join("cizon.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "not found {}: this directory is not a cizon2 project. Run `cizon2 new <name>` first or write cizon.toml by hand.",
+                "not found {}: this directory is not a cizon project. Run `cizon new <name>` first or write cizon.toml by hand.",
                 path.display()
             ));
         }
@@ -419,6 +436,9 @@ pub fn load(dir: &Path) -> Result<Config, String> {
         if version.chars().any(|c| c.is_control()) {
             return Err("[project].version must not contain control characters.".into());
         }
+    }
+    if let Some(edition) = cfg.edition() {
+        validate_edition(edition)?;
     }
     if let Some(deps) = &cfg.dependencies {
         for name in deps.keys() {
@@ -505,7 +525,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-cfg-{tag}-{}",
+            "cizon-cfg-{tag}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1026,6 +1046,24 @@ mod tests {
     }
 
     #[test]
+    fn invalid_edition_is_rejected_before_the_compiler() {
+        let dir = temp_dir("bad-edition");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nedition = \"23x\"\n",
+        )
+        .unwrap();
+        let err = load(&dir).unwrap_err();
+        assert!(err.contains("[project].edition"), "got: {err}");
+        assert!(err.contains("invalid"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        let (dir, cfg) = write_config("[project]\nname = \"t\"\nedition = \"2b\"\n");
+        assert_eq!(cfg.edition(), Some("2b"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn parse_strict_werror_and_prefix() {
         let (dir, cfg) = write_config(
             "[project]\nname = \"t\"\n\n[compiler]\nstrict = true\nwerror = true\n\n\
@@ -1167,7 +1205,7 @@ mod tests {
         let dir = temp_dir("missing-proj");
         let err = load(&dir).unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
-        assert!(err.contains("not a cizon2 project"), "got: {err}");
+        assert!(err.contains("not a cizon project"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 

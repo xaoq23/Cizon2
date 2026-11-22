@@ -79,7 +79,7 @@ pub fn pick_with_note(explicit: Option<&str>) -> Result<(Cxx, Option<String>), S
         return probe(name)
             .map(|cxx| (cxx, None))
             .ok_or_else(|| {
-                format!("The specified compiler {name} is not available in PATH. Check the spelling, or drop --compiler to let cizon2 auto-detect.")
+                format!("The specified compiler {name} is not available in PATH. Check the spelling, or drop --compiler to let cizon auto-detect.")
             });
     }
     let mut missing = Vec::new();
@@ -225,7 +225,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn executable_path_appends_exe_for_explicit_path() {
-        let dir = std::env::temp_dir().join(format!("cizon2-exe-path-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cizon-exe-path-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let exe = dir.join("g++.exe");
         fs::write(&exe, "").unwrap();        assert_eq!(
@@ -275,12 +275,12 @@ mod tests {
 
     #[test]
     fn probe_rejects_missing_binary() {
-        assert!(probe("cizon2-not-a-compiler-xyz").is_none());
+        assert!(probe("cizon-not-a-compiler-xyz").is_none());
     }
 
     #[test]
     fn pick_rejects_bad_explicit_spec() {
-        assert!(pick(Some("cizon2-not-a-compiler-xyz")).is_err());
+        assert!(pick(Some("cizon-not-a-compiler-xyz")).is_err());
     }
 
     #[test]

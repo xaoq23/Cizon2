@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "cizon2"
+name = "cizon"
 version = "0.9.2"
 dependencies = [
  "serde",

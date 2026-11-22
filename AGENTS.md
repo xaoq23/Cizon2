@@ -1,14 +1,14 @@
-# Cizon2 — Agent Instructions
+# Cizon — Agent Instructions
 
 ## 定位
 
-个人开发者的声明式、渐进式现代 C++ 构建工具。使命：`cizon2 build && cizon2 run`，达到 cargo/uv 级的开箱即用。
+个人开发者的声明式、渐进式现代 C++ 构建工具。使命：`cizon build && cizon run`，达到 cargo/uv 级的开箱即用。
 
 ### 设计哲学
 
 1. 面向中小型项目的声明式、渐进式构建工具：封装编译器差异与复杂参数，只暴露最简 CLI，降低认知负担。
 2. 开发边界取决于我对 C++ 的认知，绝不做认知以外的东西，除非有真实用户提出需求。
-3. 不做 CMake 的替代品。CMake 的生态是二十年积累的结果；需要条件化/大型 target 图、install/export、代码生成时，由 CMake 接手，cizon2 全身而退；不要试图用 TOML 模仿图灵完备的 DSL。
+3. 不做 CMake 的替代品。CMake 的生态是二十年积累的结果；需要条件化/大型 target 图、install/export、代码生成时，由 CMake 接手，cizon 全身而退；不要试图用 TOML 模仿图灵完备的 DSL。
 4. 做现代 C++ 的布道者，全面面向新的现代 C++ 项目。
 5. 做 agent 友好的工具：文本声明、CLI 输出，尽量减少 AI 手写 CMakeLists 导致的构建失败。
 
@@ -47,16 +47,16 @@
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
-- `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath，带无版本 SONAME `lib<name>.so`；带版本的 SONAME/SOVERSION 属于 install/export，交给 CMake）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon2
+- `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath，带无版本 SONAME `lib<name>.so`；带版本的 SONAME/SOVERSION 属于 install/export，交给 CMake）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon
 
 ## 输出约定
 
 - 用户面路径用项目相对路径；编译器诊断保留行号与文本，只把项目绝对路径前缀替换为相对路径
 - 构建/运行状态写 stderr，程序 stdout 保持纯净；ANSI 颜色按流判断 TTY，重定向时自动关闭
 - 计时单位紧贴数字（`0.12s`），RESET 不能夹在数字与单位之间，避免剥离转义码后出现 `ms` 假象
-- 警告按源文件分组：金色上下分隔线 + 黄色 `Warning` 头
+- 警告按源文件分组：黄色 `Warning` 头；警告段与构建状态之间空一行，不打印装饰分割线
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
-- `cizon test` 的测试进程输出统一转发到 stderr；cizon2 汇总 `passed/failed/total`，任一失败退出 1
+- `cizon test` 的测试进程输出统一转发到 stderr；cizon 汇总 `passed/failed/total`，任一失败退出 1
 - `run` / `test` 子进程 PATH 前置编译器 bin 目录，规避旧运行库 DLL 遮蔽；退出码表覆盖 `0xC0000139`（入口点缺失）
 - 依赖布局提示仅在 `add` / `update` 打印一次（区分 header-only 与需编译库）；bin/test target 的 sources 重叠会警告
 
@@ -83,7 +83,7 @@
 - 源码注释、文档注释和用户面字符串一律使用英文；`README-zh.md` 保留中文文档。
 - `README.md` 是英文主文档，`README-zh.md` 是中文版；修改文档时两份同步。
 - 单 crate；手写参数解析，不用 clap，不引入 rayon / sha2。
-- 用户不明确要求时，默认 debug 构建（`cizon2 build`）。
+- 用户不明确要求时，默认 debug 构建（`cizon build`）。
 
 ## 已知待办（未排期）
 

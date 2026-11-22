@@ -1,4 +1,4 @@
-//! `cizon2 run`: build, then execute directly and forward arguments.
+//! `cizon run`: build, then execute directly and forward arguments.
 //!
 //! Ships the exit-code translation table migrated from Cizon1 — the part genuinely useful to beginners:
 //! crashes like segfault / heap corruption / missing DLL are explained in plain terms on the spot.
@@ -8,7 +8,7 @@ use std::io::Write;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
-use crate::pipeline::output::{style_err, CYAN, DIM, GOLD, RED};
+use crate::pipeline::output::{style_err, CYAN, DIM, RED};
 
 /// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
 pub fn run(
@@ -47,7 +47,7 @@ pub fn run(
         None if result.execs.len() == 1 => result.execs[0].1.clone(),
         None if result.execs.is_empty() => {
             return Err(
-                "no bin target to run. `cizon2 run` only runs kind = \"bin\" targets; use `cizon2 build` for libraries or `cizon2 test` for tests."
+                "no bin target to run. `cizon run` only runs kind = \"bin\" targets; use `cizon build` for libraries or `cizon test` for tests."
                     .into(),
             );
         }
@@ -59,7 +59,7 @@ pub fn run(
                 .collect::<Vec<_>>()
                 .join(", ");
             return Err(format!(
-                "multiple bin targets; choose one: {available}. Usage: cizon2 run <bin-name> [-- <args>]."
+                "multiple bin targets; choose one: {available}. Usage: cizon run <bin-name> [-- <args>]."
             ));
         }
     };
@@ -70,7 +70,7 @@ pub fn run(
             style_err("     Running", CYAN),
             pipeline::rel_display(dir, &exe)
         );
-        eprintln!("{}", style_err(&format!("  {}", "─".repeat(44)), GOLD));
+        eprintln!();
     }
     let mut cmd = std::process::Command::new(&exe);
     cmd.args(app_args);
@@ -178,7 +178,7 @@ mod tests {
             return;
         }
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-run-{}",
+            "cizon-run-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -229,7 +229,7 @@ mod tests {
             return;
         }
         let dir = std::env::temp_dir().join(format!(
-            "cizon2-run-test-only-{}",
+            "cizon-run-test-only-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -246,7 +246,7 @@ mod tests {
         let cfg = crate::config::load(&dir).unwrap();
         let err = run(&dir, &cfg, false, None, None, &[]).unwrap_err();
         assert!(err.contains("no bin target"), "got: {err}");
-        assert!(err.contains("cizon2 test"), "got: {err}");
+        assert!(err.contains("cizon test"), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
 

@@ -1,4 +1,4 @@
-//! `cizon2 new <directory>` / `cizon2 init [--kind ...]`: generate the project skeleton.
+//! `cizon new <directory>` / `cizon init [--kind ...]`: generate the project skeleton.
 //!
 //! The default template stays the zero-config implicit single-bin project. Library templates are
 //! target-based because a library must declare a `[[target]]`; their public include root nests a
@@ -117,19 +117,19 @@ const GITIGNORE_TEMPLATE: &str =
 
 fn new_usage() -> String {
     format!(
-        "Usage: cizon2 new <directory name> [--kind {}]",
+        "Usage: cizon new <directory name> [--kind {}]",
         ProjectKind::OPTIONS
     )
 }
 
 fn init_usage() -> String {
     format!(
-        "Usage: cizon2 init [--kind {}]",
+        "Usage: cizon init [--kind {}]",
         ProjectKind::OPTIONS
     )
 }
 
-/// `cizon2 new <directory name> [--kind ...]`: create a new project in the current directory.
+/// `cizon new <directory name> [--kind ...]`: create a new project in the current directory.
 pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     let mut kind = ProjectKind::Bin;
     let mut name: Option<String> = None;
@@ -167,7 +167,7 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(format!(
-                "the directory {name} already exists. Pick another name, or cd into it and use `cizon2 init`."
+                "the directory {name} already exists. Pick another name, or cd into it and use `cizon init`."
             ));
         }
         Err(e) => return Err(format!("cannot create the directory {name}: {e}")),
@@ -181,7 +181,7 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// `cizon2 init [--kind ...]`: initialize the current directory in place.
+/// `cizon init [--kind ...]`: initialize the current directory in place.
 pub fn init_cmd(args: &[String]) -> Result<i32, String> {
     let mut kind = ProjectKind::Bin;
     let mut i = 0;
@@ -227,7 +227,7 @@ fn init_with_kind(dir: &Path, kind: ProjectKind) -> Result<i32, String> {
 /// cleanup only ever removes the leaf directory this run created.
 fn validate_new_path(path: &Path) -> Result<(), String> {
     if path.as_os_str().is_empty() {
-        return Err("Usage: cizon2 new <directory name>".into());
+        return Err("Usage: cizon new <directory name>".into());
     }
     for component in path.components() {
         if matches!(
@@ -451,9 +451,9 @@ fn print_next(created: Option<&str>, kind: ProjectKind) {
         .map(|name| format!("cd \"{name}\" && "))
         .unwrap_or_default();
     let command = if kind.is_library() {
-        "cizon2 build && cizon2 test"
+        "cizon build && cizon test"
     } else {
-        "cizon2 build"
+        "cizon build"
     };
     println!("{} {prefix}{command}", style_out("      Next", GREEN));
 }
@@ -470,7 +470,7 @@ mod tests {
 
     fn temp(tag: &str) -> String {
         std::env::temp_dir()
-            .join(format!("cizon2-scaffold-{tag}-{}", std::time::SystemTime::now()
+            .join(format!("cizon-scaffold-{tag}-{}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos()))
             .to_string_lossy()
             .into_owned()
@@ -579,7 +579,7 @@ mod tests {
 
     #[test]
     fn new_rejects_option_like_name() {
-        let name = "-cizon2-option-like-name".to_string();
+        let name = "-cizon-option-like-name".to_string();
         assert!(!Path::new(&name).exists());
         assert!(new_cmd(&[name.clone()]).is_err());
         assert!(!Path::new(&name).exists(), "a rejected name must not leave a directory behind");
