@@ -60,10 +60,16 @@ pub(super) fn link_shared(
     flags: &[String],
     link_flags: &[String],
     import_arg: &str,
+    soname: Option<&str>,
     static_runtime: bool,
 ) -> Result<(), String> {
     let mut cmd = Command::new(cxx);
     cmd.arg("-shared");
+    // ELF only: give the library a stable DT_SONAME instead of relying on the file name used
+    // by each consumer. Versioned SONAMEs / SOVERSION remain an install/export concern.
+    if let Some(name) = soname {
+        cmd.arg(format!("-Wl,-soname,{name}"));
+    }
     for obj in objs {
         cmd.arg(obj);
     }

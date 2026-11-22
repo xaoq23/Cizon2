@@ -456,6 +456,7 @@ Rules:
 - A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` on Windows, or `build/<mode>-<compiler>/lib<name>.so` on Linux
 - On Windows, MinGW uses `lib<name>.dll.a` and clang++ (MSVC target) uses `<name>.lib`; cizon2 passes the import-library flag explicitly
 - On Linux, objects that may land in a `.so` (dependency objects, static libraries, the shared target itself) compile with `-fPIC`; consumers link the `.so` by name with `-Wl,-rpath,$ORIGIN`, so the executable finds it next to itself with no `LD_LIBRARY_PATH`
+- Linux `.so` files carry an unversioned SONAME (`lib<name>.so`), so consumers do not depend on how they spelled the path; versioned SONAMEs / SOVERSION remain an install/export concern for CMake
 - Exports are explicit C ABI: write `extern "C" __declspec(dllexport)`. cizon2 does not auto-export symbols, generate bindings, or guarantee the C++ ABI
 - On MinGW, `shared_lib` links its runtime statically by default, so the DLL has no `libstdc++`/`libgcc`/`libwinpthread` dependency; Python `ctypes` can load it without touching PATH. Keep the boundary C ABI: with separate static runtimes, do not pass C++ objects or exceptions across the DLL boundary
 - Every bin produces `build/<mode>-<compiler>/<name>.exe`; `cizon2 run <bin>` builds all bins and runs the selected one; an omitted name is only valid when the project has exactly one bin

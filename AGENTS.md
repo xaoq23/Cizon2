@@ -47,7 +47,7 @@
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
-- `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon2
+- `shared_lib`：Windows 产 DLL + import lib，Linux 产 `.so`（对象 `-fPIC`，消费者按名链接并带 `$ORIGIN` rpath，带无版本 SONAME `lib<name>.so`；带版本的 SONAME/SOVERSION 属于 install/export，交给 CMake）；导出必须使用 C ABI；产物与 exe 同目录，import lib 在 `.shared/<name>/`（仅 Windows），内部目录保留给 cizon2
 
 ## 输出约定
 

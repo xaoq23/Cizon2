@@ -552,6 +552,10 @@ fn build_execs(
                 if let Some(p) = &shared.prefix {
                     shared_link_flags.push(format!("-L{}/lib", p.display()));
                 }
+                // Linux has no import library; the .so itself is the link artifact. Give it an
+                // unversioned SONAME so consumers do not depend on how they spelled the path.
+                let soname = matches!(flavor, ImportLibFlavor::Elf)
+                    .then(|| dll.file_name().unwrap().to_string_lossy().into_owned());
                 step_line("Linking", &rel_display(dir, &dll));
                 let link_result = link_shared(
                     &plan.cxx.name,
@@ -561,6 +565,7 @@ fn build_execs(
                     &plan.flags,
                     &shared_link_flags,
                     &import_arg,
+                    soname.as_deref(),
                     matches!(flavor, ImportLibFlavor::Gnu),
                 );
                 if let Err(e) = link_result {

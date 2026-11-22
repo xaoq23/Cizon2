@@ -452,6 +452,7 @@ kind = "bin"
 - 共享库在 Windows 产 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`；在 Linux 产 `build/<mode>-<compiler>/lib<name>.so`
 - Windows 下 MinGW 使用 `lib<name>.dll.a`，clang++（MSVC target）使用 `<name>.lib`；cizon2 显式传 import lib 参数
 - Linux 下可能进入 `.so` 的对象（依赖对象、静态库、共享库自身）以 `-fPIC` 编译；消费者按名链接 `.so` 并带 `-Wl,-rpath,$ORIGIN`，exe 在自身目录找到它，无需 `LD_LIBRARY_PATH`
+- Linux `.so` 带无版本 SONAME（`lib<name>.so`），消费者不依赖链接时的路径拼写；带版本的 SONAME / SOVERSION 仍属于 install/export，交给 CMake
 - 导出使用显式 C ABI：`extern "C" __declspec(dllexport)`。cizon2 不自动导出符号、不生成绑定，也不保证 C++ ABI
 - MinGW 下 `shared_lib` 默认静态链接运行库，DLL 不依赖 `libstdc++`/`libgcc`/`libwinpthread`，Python `ctypes` 无需改 PATH。保持 C ABI 边界：DLL 与 exe 各有一套静态运行库时，不要跨边界传 C++ 对象或异常
 - 每个 bin 产出 `build/<mode>-<compiler>/<name>.exe`；`cizon2 run <bin>` 会构建全部 bin 后运行指定项，只有项目恰好一个 bin 时才能省略名字

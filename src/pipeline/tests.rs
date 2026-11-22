@@ -1570,10 +1570,29 @@
         let dir = shared_project("shared-build");
         let exe = build_project(&dir).unwrap();
         let scope = scope_of(&dir, &exe);
-        shared_dll(&scope, "core_dll");
+        let so = shared_dll(&scope, "core_dll");
+        #[cfg(not(target_os = "linux"))]
+        let _ = so;
         // Linux has no import library: the .so itself is the link artifact.
         if cfg!(windows) {
             shared_import_lib(&scope, "core_dll");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(out) = Command::new("readelf")
+                .env("LC_ALL", "C")
+                .arg("-d")
+                .arg(&so)
+                .output()
+            {
+                assert!(out.status.success(), "readelf failed on {}", so.display());
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    text.contains("SONAME") && text.contains("libcore_dll.so"),
+                    "missing unversioned SONAME in {}:\n{text}",
+                    so.display()
+                );
+            }
         }
         assert_eq!(run_code(&exe), 0);
         fs::remove_dir_all(dir).ok();
