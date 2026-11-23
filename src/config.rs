@@ -409,6 +409,14 @@ fn toml_label(root: &Path, dir: &Path) -> String {
     }
 }
 
+/// A directory path for error messages, relative to the project root and slash-normalized.
+fn dir_label(root: &Path, dir: &Path) -> String {
+    match dir.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.to_string_lossy().replace('\\', "/"),
+        _ => dir.display().to_string(),
+    }
+}
+
 fn validate_edition(edition: &str) -> Result<(), String> {
     let version = edition
         .strip_prefix("c++")
@@ -704,8 +712,16 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
     validate_target_links(&targets, &root)?;
     // Error labels above use canonical paths; the plan below must use the caller's spelling.
     for target in &mut targets {
-        let rel = target.base_dir.strip_prefix(&root).unwrap_or(Path::new(""));
-        target.base_dir = root_input.join(rel);
+        let name = target.name.as_deref().expect("config resolves target names");
+        let rel = target
+            .base_dir
+            .strip_prefix(&root)
+            .map_err(|_| format!("internal: target {name} base path is outside the project root"))?;
+        target.base_dir = if rel.as_os_str().is_empty() {
+            root_input.clone()
+        } else {
+            root_input.join(rel)
+        };
     }
     if !targets.is_empty() {
         merged.targets = Some(targets);
@@ -811,25 +827,28 @@ fn collect_subproject(
         if sub_dir.is_file() {
             return Err(format!(
                 "subproject {sub_name} at {} is a file, not a directory (declared in {}).",
-                sub_dir.display(),
+                dir_label(root, &sub_dir),
                 toml_label(root, &canonical)
             ));
         }
         if !sub_dir.join("cizon.toml").is_file() {
             return Err(format!(
                 "subproject {sub_name} at {} has no cizon.toml (declared in {}).",
-                sub_dir.display(),
+                dir_label(root, &sub_dir),
                 toml_label(root, &canonical)
             ));
         }
         let sub_canonical = std::fs::canonicalize(&sub_dir).map_err(|e| {
-            format!("Cannot resolve subproject {sub_name} directory {}: {e}", sub_dir.display())
+            format!(
+                "Cannot resolve subproject {sub_name} directory {}: {e}",
+                dir_label(root, &sub_dir)
+            )
         })?;
         if !sub_canonical.starts_with(root) {
             return Err(format!(
                 "subproject {sub_name} at {} resolves outside the project ({}). Subprojects must live inside the project directory.",
-                sub_dir.display(),
-                sub_canonical.display()
+                dir_label(root, &sub_dir),
+                dir_label(root, &sub_canonical)
             ));
         }
         collect_subproject(&sub_dir, root, Some(sub_name), seen, stack, out)?;
