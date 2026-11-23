@@ -36,6 +36,9 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     if cfg.dependencies().map_or(false, |m| m.contains_key(&name)) {
         return Err(format!("[dependencies] already contains {name} (in cizon.toml or one of its subprojects). Delete that entry and retry."));
     }
+    if cfg.subprojects().map_or(false, |m| m.contains_key(&name)) {
+        return Err(format!("[subproject] already contains {name} (in cizon.toml). A dependency name must not collide with a subproject name; rename the subproject or add a different dependency."));
+    }
     let dep_dir = dir.join("deps").join(&name);
     if dep_dir.exists() {
         return Err(format!(
@@ -1407,6 +1410,88 @@ mod tests {
         let err = add_in(&proj, &args).unwrap_err();
         assert!(err.contains("already contains"), "got: {err}");
         fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn add_rejects_dependency_name_declared_by_subproject() {
+        if !has_git() {
+            return;
+        }
+        let origin = temp("subdep-add-origin");
+        let proj = temp("subdep-add-proj");
+        make_origin(&origin, false);
+        let name = origin.file_name().unwrap().to_string_lossy().into_owned();
+        // Only the subproject declares the dependency; the root has no [dependencies].
+        // The resolved load merges it, so add must refuse the same name at the root.
+        fs::create_dir_all(proj.join("libs/net/src")).unwrap();
+        fs::write(proj.join("libs/net/src/net.cpp"), "int net() { return 1; }\n").unwrap();
+        fs::write(
+            proj.join("libs/net/cizon.toml"),
+            format!(
+                "[project]\nname = \"net\"\n\n[dependencies]\n{name} = {{ git = \"{}\" }}\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+                esc(&origin.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        let root_toml = "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n";
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::write(
+            proj.join("src/main.cpp"),
+            "int net();\nint main() { return net(); }\n",
+        )
+        .unwrap();
+        fs::write(proj.join("cizon.toml"), root_toml).unwrap();
+        let err = add_in(&proj, &add_args(&origin)).unwrap_err();
+        assert!(err.contains("already contains"), "got: {err}");
+        assert_eq!(
+            fs::read_to_string(proj.join("cizon.toml")).unwrap(),
+            root_toml,
+            "a refused add must not touch the root cizon.toml"
+        );
+        assert!(!proj.join("deps").exists(), "a refused add must not clone anything");
+        assert!(!proj.join("cizon.lock").exists(), "a refused add must not write a lock");
+        fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn add_rejects_dependency_name_taken_by_subproject() {
+        if !has_git() {
+            return;
+        }
+        // The git repo is named "net", same as the subproject declared in the
+        // root toml; add must refuse the collision instead of creating
+        // [dependencies] net alongside [subproject] net.
+        let parent = temp("subname-add-parent");
+        let origin = parent.join("net");
+        make_origin(&origin, false);
+        let proj = temp("subname-add-proj");
+        fs::create_dir_all(proj.join("libs/net/src")).unwrap();
+        fs::write(proj.join("libs/net/src/net.cpp"), "int net() { return 1; }\n").unwrap();
+        fs::write(
+            proj.join("libs/net/cizon.toml"),
+            "[project]\nname = \"net\"\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        let root_toml = "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n";
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::write(
+            proj.join("src/main.cpp"),
+            "int net();\nint main() { return net(); }\n",
+        )
+        .unwrap();
+        fs::write(proj.join("cizon.toml"), root_toml).unwrap();
+        let err = add_in(&proj, &add_args(&origin)).unwrap_err();
+        assert!(err.contains("[subproject] already contains net"), "got: {err}");
+        assert_eq!(
+            fs::read_to_string(proj.join("cizon.toml")).unwrap(),
+            root_toml,
+            "a refused add must not touch the root cizon.toml"
+        );
+        assert!(!proj.join("deps").exists(), "a refused add must not clone anything");
+        assert!(!proj.join("cizon.lock").exists(), "a refused add must not write a lock");
+        fs::remove_dir_all(parent).ok();
         fs::remove_dir_all(proj).ok();
     }
 

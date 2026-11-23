@@ -565,7 +565,8 @@ impl ResolvedFile {
 /// Load the root project and recursively merge its `[subproject]` graph into one Config:
 /// every subproject's targets join the root's target list (each keeping its own `base_dir`),
 /// and every subproject's `[dependencies]` join the root's dependency set. The root
-/// project's `[compiler]` wins; a subproject's `[compiler]` is ignored (with a warning).
+/// project's `[compiler]` and `[project].edition` win; a subproject's `[compiler]` or a
+/// differing `[project].edition` is ignored (with a warning).
 /// This is what `build` / `run` / `test` / `sync` plan from, so a broken subproject graph
 /// fails every command before any compilation starts, with the offending file named.
 /// For a project without subprojects this is exactly parse plus link validation.
@@ -579,6 +580,8 @@ impl ResolvedFile {
 /// - the same directory reached through different path spellings is included once.
 /// - a dependency name used with a different git URL or tag is an error; identical
 ///   declarations deduplicate.
+/// - a subproject's `[project].edition` that differs from the root's effective edition
+///   is ignored, with a warning; the root's edition applies to every target.
 /// - `[subproject]` requires `[[target]]` in the declaring file, and a subproject must
 ///   declare at least one target; a subproject directory must sit inside the root project.
 pub fn load_resolved(dir: &Path) -> Result<Config, String> {
@@ -619,6 +622,9 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
         .keys()
         .map(|k| (k.clone(), "cizon.toml".to_string()))
         .collect();
+    // The root's effective edition (c++23 when undeclared) is what every target
+    // compiles with; a subproject's differing edition is warned about, not applied.
+    let root_edition = merged.edition().unwrap_or("c++23").to_string();
     for file in iter {
         let label = file.label(&root);
         if file.cfg.compiler.is_some() {
@@ -626,6 +632,14 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
                 "Warning: subproject {} ({label}) declares [compiler], which is ignored; the root project's compiler and flags apply.",
                 file.name.as_deref().unwrap_or("?")
             );
+        }
+        if let Some(warning) = subproject_edition_warning(
+            file.name.as_deref().unwrap_or("?"),
+            &label,
+            &file.cfg,
+            &root_edition,
+        ) {
+            eprintln!("{warning}");
         }
         if let Some(list) = file.cfg.targets() {
             for target in list {
@@ -670,11 +684,11 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
         for target in &targets {
             let name = target.name.as_deref().expect("config resolves target names");
             let label = toml_label(&root, &target.base_dir);
-            if let Some((first_name, first_label)) =
+            if let Some((_, first_label)) =
                 seen_names.insert(name.to_lowercase(), (name.to_string(), label.clone()))
             {
                 return Err(format!(
-                    "duplicate target name {name:?}: {first_name:?} is declared in {first_label} and {name:?} in {label}. Target names must be unique across the root project and its subprojects (case-insensitive)."
+                    "duplicate target name {name:?}: declared in {first_label} and in {label}. Target names must be unique across the root project and its subprojects (case-insensitive)."
                 ));
             }
         }
@@ -695,6 +709,45 @@ fn describe_dep(info: &DepInfo) -> String {
         Some(tag) => format!("git = {:?}, tag = {tag:?}", info.git),
         None => format!("git = {:?}", info.git),
     }
+}
+
+/// Canonical C++ version for an edition spelling: "c++17"/"17" -> "17", and the
+/// pre-release aliases map to their standard ("2b" -> "23"). Used only to decide
+/// whether a subproject's edition differs from the root's effective edition.
+fn edition_version(edition: &str) -> &str {
+    let version = edition
+        .strip_prefix("c++")
+        .or_else(|| edition.strip_prefix("gnu++"))
+        .unwrap_or(edition);
+    match version {
+        "0x" => "11",
+        "1y" => "14",
+        "1z" => "17",
+        "2a" => "20",
+        "2b" => "23",
+        "2c" => "26",
+        other => other,
+    }
+}
+
+/// Warning for a subproject that declares [project].edition: the merged build
+/// compiles every target with the root project's edition, so a differing
+/// subproject edition would otherwise be silently dropped. None when the
+/// subproject declares no edition, or one equal to the root's effective edition
+/// (spelling- and alias-insensitive: "17" == "c++17", "2b" == "c++23").
+fn subproject_edition_warning(
+    name: &str,
+    label: &str,
+    cfg: &Config,
+    root_edition: &str,
+) -> Option<String> {
+    let edition = cfg.edition()?;
+    if edition_version(edition) == edition_version(root_edition) {
+        return None;
+    }
+    Some(format!(
+        "Warning: subproject {name} ({label}) declares [project].edition = {edition:?}, which is ignored; the root project's edition ({root_edition:?}) applies."
+    ))
 }
 
 /// Depth-first walk of the subproject graph, in inclusion order (a file is recorded before
@@ -741,6 +794,15 @@ fn collect_subproject(
     stack.push(canonical.clone());
     out.push(ResolvedFile { dir: canonical.clone(), name, cfg });
     for (sub_name, sub_dir) in subs {
+        // `sub_dir.join("cizon.toml").is_file()` is also false when the path is a file
+        // (ENOTDIR), so name that case first instead of blaming a missing cizon.toml.
+        if sub_dir.is_file() {
+            return Err(format!(
+                "subproject {sub_name} at {} is a file, not a directory (declared in {}).",
+                sub_dir.display(),
+                toml_label(root, &canonical)
+            ));
+        }
         if !sub_dir.join("cizon.toml").is_file() {
             return Err(format!(
                 "subproject {sub_name} at {} has no cizon.toml (declared in {}).",
@@ -1764,6 +1826,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn load_resolved_dedups_same_dir_by_symlink() {
+        // The same directory reached through a symlink inside the project is
+        // included once: canonicalize feeds the `seen` set, so the second entry
+        // is a diamond, not a second copy of the target.
+        let dir = temp_dir("sub-symlink-dedup");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nnet2 = \"libs/alias\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml", &lib_toml("net"));
+        std::os::unix::fs::symlink(dir.join("libs/net"), dir.join("libs/alias")).unwrap();
+        let resolved = load_resolved(&dir).unwrap();
+        let count = resolved
+            .targets()
+            .unwrap()
+            .iter()
+            .filter(|t| t.name.as_deref() == Some("net"))
+            .count();
+        assert_eq!(count, 1, "the same directory must be included once");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn load_resolved_rejects_bin_in_subproject() {
         let dir = temp_dir("sub-bin");
         write_file(&dir, "cizon.toml", &format!(
@@ -1795,6 +1881,50 @@ mod tests {
         ));
         let resolved = load_resolved(&dir).unwrap();
         assert_eq!(resolved.explicit_compiler(), None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_edition_warning_fires_only_on_difference() {
+        let (dir, cfg) = write_config("[project]\nname = \"net\"\nedition = \"c++17\"\n");
+        let warning =
+            subproject_edition_warning("net", "libs/net/cizon.toml", &cfg, "c++23").unwrap();
+        assert!(warning.contains("[project].edition"), "got: {warning}");
+        assert!(warning.contains("\"c++17\""), "got: {warning}");
+        assert!(warning.contains("\"c++23\""), "got: {warning}");
+        assert!(warning.contains("libs/net/cizon.toml"), "got: {warning}");
+        // Same edition under a different spelling: no warning.
+        assert!(subproject_edition_warning("net", "libs/net/cizon.toml", &cfg, "17").is_none());
+        std::fs::remove_dir_all(dir).ok();
+
+        let (dir, cfg) = write_config("[project]\nname = \"net\"\nedition = \"2b\"\n");
+        assert!(
+            subproject_edition_warning("net", "libs/net/cizon.toml", &cfg, "c++23").is_none(),
+            "2b is the pre-release name for C++23"
+        );
+        std::fs::remove_dir_all(dir).ok();
+
+        let (dir, cfg) = write_config("[project]\nname = \"net\"\n");
+        assert!(subproject_edition_warning("net", "libs/net/cizon.toml", &cfg, "c++23").is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_ignores_subproject_edition() {
+        // The subproject declares c++17; the merged config keeps the root's c++23.
+        // (The warning text is covered by subproject_edition_warning_fires_only_on_
+        // difference; the build-level test proves the root edition is what compiles.)
+        let dir = temp_dir("sub-edition");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\nedition = \"c++23\"\n\n[subproject]\nnet = \"libs/net\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml", &format!(
+            "[project]\nname = \"net\"\nedition = \"c++17\"\n\n{}",
+            lib_target("net")
+        ));
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(resolved.edition(), Some("c++23"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1910,6 +2040,23 @@ mod tests {
         ));
         let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("has no cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_subproject_path_that_is_a_file() {
+        // A subproject path naming a file must say so, not blame a missing cizon.toml:
+        // `path.join("cizon.toml").is_file()` is false for a file too (ENOTDIR).
+        let dir = temp_dir("sub-file-path");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n{}",
+            bin_target(&[])
+        ));
+        std::fs::create_dir_all(dir.join("libs")).unwrap();
+        std::fs::write(dir.join("libs/net"), "not a directory").unwrap();
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("is a file, not a directory"), "got: {err}");
+        assert!(!err.contains("has no cizon.toml"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 

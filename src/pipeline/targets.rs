@@ -130,7 +130,15 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 compile_flags: Vec::new(),
             });
         }
-        warn_unused_src(dir, &bins, &tests, &libs, &shared);
+        // Every target's base dir gets its src/ scanned for uncompiled files: a
+        // subproject's src/ is as much a source root as the project's own.
+        let mut base_dirs: Vec<PathBuf> = vec![dir.to_path_buf()];
+        for target in targets {
+            if !base_dirs.contains(&target.base_dir) {
+                base_dirs.push(target.base_dir.clone());
+            }
+        }
+        warn_unused_src(dir, &base_dirs, &bins, &tests, &libs, &shared);
         (bins, tests, libs, shared)
     } else {
         let explicit = cfg.explicit_sources();
@@ -619,24 +627,13 @@ fn resolve_include(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<
 /// target compiles would silently stop being built. Warn once with a concrete fix.
 fn warn_unused_src(
     dir: &Path,
+    base_dirs: &[PathBuf],
     bins: &[BinTarget],
     tests: &[BinTarget],
     libs: &[LibTarget],
     shared: &[SharedTarget],
 ) {
-    let mut used = HashSet::new();
-    for source in bins
-        .iter()
-        .chain(tests.iter())
-        .flat_map(|t| t.sources.iter())
-        .chain(libs.iter().flat_map(|l| l.sources.iter()))
-        .chain(shared.iter().flat_map(|s| s.sources.iter()))
-    {
-        if let Ok(rel) = project_relative(dir, source) {
-            used.insert(rel);
-        }
-    }
-    let unused = unused_src_sources(dir, &used);
+    let unused = unused_sources(dir, base_dirs, bins, tests, libs, shared);
     if unused.is_empty() {
         return;
     }
@@ -659,18 +656,54 @@ Declaring [[target]] disables the implicit single-executable project; add them t
     );
 }
 
-pub(super) fn unused_src_sources(dir: &Path, used: &HashSet<PathBuf>) -> Vec<PathBuf> {
-    let src = dir.join("src");
-    if !src.is_dir() {
+/// Project-relative source files under any target base dir's src/ that no [[target]]
+/// compiles. Every base dir is scanned — a subproject's src/ as well as the root's —
+/// and files are relativized against the project root so they match the `used` set.
+/// Pure: `warn_unused_src` prints it, tests assert on it.
+pub(super) fn unused_sources(
+    dir: &Path,
+    base_dirs: &[PathBuf],
+    bins: &[BinTarget],
+    tests: &[BinTarget],
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+) -> Vec<PathBuf> {
+    let mut used = HashSet::new();
+    for source in bins
+        .iter()
+        .chain(tests.iter())
+        .flat_map(|t| t.sources.iter())
+        .chain(libs.iter().flat_map(|l| l.sources.iter()))
+        .chain(shared.iter().flat_map(|s| s.sources.iter()))
+    {
+        if let Ok(rel) = project_relative(dir, source) {
+            used.insert(rel);
+        }
+    }
+    let mut unused = Vec::new();
+    for base in base_dirs {
+        unused.extend(unused_src_sources(&base.join("src"), dir, &used));
+    }
+    unused.sort();
+    unused.dedup();
+    unused
+}
+
+pub(super) fn unused_src_sources(
+    src_dir: &Path,
+    root: &Path,
+    used: &HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    if !src_dir.is_dir() {
         return Vec::new();
     }
     let mut scanned = Vec::new();
-    if collect_recursive(&src, &mut scanned).is_err() {
+    if collect_recursive(src_dir, &mut scanned).is_err() {
         return Vec::new();
     }
     let mut unused: Vec<PathBuf> = scanned
         .into_iter()
-        .filter(|path| project_relative(dir, path).map_or(true, |rel| !used.contains(&rel)))
+        .filter(|path| project_relative(root, path).map_or(true, |rel| !used.contains(&rel)))
         .collect();
     unused.sort();
     unused

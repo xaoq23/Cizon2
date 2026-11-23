@@ -68,13 +68,13 @@
         fs::write(dir.join("src/sub/helper.cc"), "").unwrap();
         fs::write(dir.join("src/readme.txt"), "").unwrap();
         let used: HashSet<PathBuf> = [PathBuf::from("src/used.cpp")].into_iter().collect();
-        let unused = unused_src_sources(&dir, &used);
+        let unused = unused_src_sources(&dir.join("src"), &dir, &used);
         assert_eq!(
             unused,
             vec![dir.join("src/main.cpp"), dir.join("src/sub/helper.cc")]
         );
 
-        let empty = unused_src_sources(&dir.join("missing"), &HashSet::new());
+        let empty = unused_src_sources(&dir.join("missing").join("src"), &dir, &HashSet::new());
         assert!(empty.is_empty());
         fs::remove_dir_all(dir).ok();
     }
@@ -2807,5 +2807,167 @@
         assert!(lib_archive_path(&dir, "mid").is_file());
         assert!(lib_archive_path(&dir, "mid").is_file());
         assert!(lib_archive_path(&dir, "leaf").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_edition_is_ignored() {
+        if !libs_supported() {
+            return;
+        }
+        // The subproject declares c++17 but uses std::expected (C++23-only): the build
+        // must still succeed, because the root's edition (c++23 here, the default)
+        // applies to every target. The differing edition is warned about at load time.
+        let dir = temp_dir("sub-edition-build");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\nedition = \"c++17\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/src/net.cpp",
+            "#include <expected>\nstd::expected<int, int> net() { return 7; }\nint net_value() { return net().value(); }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "int net_value();\nint main() { return net_value() == 7 ? 0 : 1; }\n",
+        );
+        let exe = build_project_resolved(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert!(lib_archive_path(&dir, "net").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_shared_lib_builds_and_runs() {
+        if !shared_supported() {
+            return;
+        }
+        // A shared_lib subproject: the .so is produced, the root bin links it and
+        // runs against it (the downflux shape, with a shared library instead of a
+        // static one).
+        let dir = temp_dir("sub-shared-lib");
+        write_sub(
+            &dir,
+            "libs/api/cizon.toml",
+            "[project]\nname = \"api\"\n\n\
+             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/api/src/api.cpp",
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\nextern \"C\" CZ_EXPORT int api_value() { return 5; }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\napi = \"libs/api\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"api\"]\n",
+        );
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "extern \"C\" int api_value();\nint main() { return api_value() == 5 ? 0 : 1; }\n",
+        );
+        let exe = build_project_resolved(&dir).unwrap();
+        let scope = scope_of(&dir, &exe);
+        let _so = shared_dll(&scope, "api");
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_test_links_other_subproject_lib() {
+        if !libs_supported() {
+            return;
+        }
+        // A's test target links B's library directly: test targets resolve links
+        // across subprojects, not just against the root's own libraries.
+        let dir = temp_dir("sub-cross-test");
+        write_sub(
+            &dir,
+            "libs/b/cizon.toml",
+            "[project]\nname = \"b\"\n\n\
+             [[target]]\nname = \"b_lib\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(&dir, "libs/b/src/b.cpp", "int b_lib() { return 3; }\n");
+        write_sub(
+            &dir,
+            "libs/a/cizon.toml",
+            "[project]\nname = \"a\"\n\n\
+             [[target]]\nname = \"a_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"b_lib\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/a/tests/a_test.cpp",
+            "int b_lib();\nint main() { return b_lib() == 3 ? 0 : 1; }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\na = \"libs/a\"\nb = \"libs/b\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"b_lib\"]\n",
+        );
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "int b_lib();\nint main() { return b_lib() == 3 ? 0 : 1; }\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
+        assert_eq!(result.execs.len(), 1);
+        assert_eq!(result.execs[0].0, "a_test");
+        assert_eq!(run_code(&result.execs[0].1), 0);
+        assert!(lib_archive_path(&dir, "b_lib").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unused_sources_covers_subproject_src() {
+        // The net subproject compiles only src/a.cpp; src/unused.cpp sits in the
+        // subproject's src/ uncompiled. The unused-source scan must report it,
+        // just as it reports uncompiled files under the root's src/.
+        let dir = temp_dir("unused-sub-src");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src/a.cpp\"]\n",
+        );
+        write_sub(&dir, "libs/net/src/a.cpp", "int net() { return 1; }\n");
+        write_sub(&dir, "libs/net/src/unused.cpp", "int unused() { return 2; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "int net();\nint main() { return net(); }\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let mut base_dirs: Vec<PathBuf> = vec![dir.clone()];
+        for target in cfg.targets().unwrap() {
+            if !base_dirs.contains(&target.base_dir) {
+                base_dirs.push(target.base_dir.clone());
+            }
+        }
+        let unused = unused_sources(&dir, &base_dirs, &p.bins, &p.tests, &p.libs, &p.shared);
+        assert_eq!(unused, vec![dir.join("libs/net/src/unused.cpp")]);
         fs::remove_dir_all(dir).ok();
     }
