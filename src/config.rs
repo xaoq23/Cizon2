@@ -401,7 +401,10 @@ fn target_source_suffix(root: &Path, target: &Target) -> String {
 /// A cizon.toml path for error messages, relative to the project root.
 fn toml_label(root: &Path, dir: &Path) -> String {
     match dir.strip_prefix(root) {
-        Ok(rel) if !rel.as_os_str().is_empty() => format!("{}/cizon.toml", rel.display()),
+        Ok(rel) if !rel.as_os_str().is_empty() => format!(
+            "{}/cizon.toml",
+            rel.to_string_lossy().replace('\\', "/")
+        ),
         _ => "cizon.toml".into(),
     }
 }
@@ -585,6 +588,10 @@ impl ResolvedFile {
 /// - `[subproject]` requires `[[target]]` in the declaring file, and a subproject must
 ///   declare at least one target; a subproject directory must sit inside the root project.
 pub fn load_resolved(dir: &Path) -> Result<Config, String> {
+    // Keep the caller's path spelling for target base_dir. Canonical paths are used only for
+    // graph identity/containment checks; on Windows they carry a `\\?\` prefix that does not
+    // prefix-match the ordinary project root used by the pipeline.
+    let root_input = dir.to_path_buf();
     let root = std::fs::canonicalize(dir)
         .map_err(|e| format!("Cannot resolve project root {}: {e}", dir.display()))?;
     let mut files: Vec<ResolvedFile> = Vec::new();
@@ -695,6 +702,11 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
     }
 
     validate_target_links(&targets, &root)?;
+    // Error labels above use canonical paths; the plan below must use the caller's spelling.
+    for target in &mut targets {
+        let rel = target.base_dir.strip_prefix(&root).unwrap_or(Path::new(""));
+        target.base_dir = root_input.join(rel);
+    }
     if !targets.is_empty() {
         merged.targets = Some(targets);
     }

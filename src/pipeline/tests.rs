@@ -2654,7 +2654,7 @@
         }
         let dir = downflux_project("sub-downflux");
         let exe = build_project_resolved(&dir).unwrap();
-        assert_eq!(run_stdout(&exe), "downflux: 82\n");
+        assert_eq!(run_stdout(&exe).trim(), "downflux: 82");
         assert_eq!(run_code(&exe), 0);
         // Both archives exist: each subproject's sources compiled against its own
         // directory, and storage's compile found net's headers through links.
@@ -2678,7 +2678,7 @@
         )
         .unwrap();
         let exe = build_project_resolved(&dir).unwrap();
-        assert_eq!(run_stdout(&exe), "downflux: 82\n");
+        assert_eq!(run_stdout(&exe).trim(), "downflux: 82");
         fs::remove_dir_all(dir).ok();
     }
 
