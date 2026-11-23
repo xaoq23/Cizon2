@@ -29,11 +29,12 @@ pub fn add_cmd(args: &[String]) -> Result<i32, String> {
 
 pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let (url, tag) = parse_args(args)?;
-    let cfg = config::load(dir)?;
+    // Resolved load: the name must not be taken by the root project or any subproject.
+    let cfg = config::load_resolved(dir)?;
     let name = dep_name(&url)?;
 
     if cfg.dependencies().map_or(false, |m| m.contains_key(&name)) {
-        return Err(format!("[dependencies] already contains {name}. Delete that entry and retry."));
+        return Err(format!("[dependencies] already contains {name} (in cizon.toml or one of its subprojects). Delete that entry and retry."));
     }
     let dep_dir = dir.join("deps").join(&name);
     if dep_dir.exists() {
@@ -369,7 +370,9 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         return Err("Usage: cizon update <dependency-name>".into());
     }
     let name = &args[0];
-    let cfg = config::load(dir)?;
+    // Resolved load: a dependency declared by a subproject is updated the same way — the
+    // lock and the checkout both live at the project root.
+    let cfg = config::load_resolved(dir)?;
     let info = cfg
         .dependencies()
         .and_then(|m| m.get(name))
@@ -888,7 +891,7 @@ mod tests {
         .unwrap();
         add_in(&proj, &add_args(&origin)).unwrap();
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
@@ -905,7 +908,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert_eq!(mtime(&dep_obj), dep_t, "a user flags change should not recompile dependency sources");
@@ -932,13 +935,64 @@ mod tests {
 
         // Remove the checkout; sync must restore it from the lock without compiling anything.
         fs::remove_dir_all(&dep_dir).unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         assert_eq!(sync(&proj, &cfg).unwrap(), 1);
         assert!(dep_dir.join("include/dep.h").exists());
         assert!(!proj.join("build").exists(), "sync must not build");
         // A second sync just verifies the restored checkout.
         assert_eq!(sync(&proj, &cfg).unwrap(), 1);
 
+        fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn subproject_dependency_updates_syncs_and_builds() {
+        if !has_git() || crate::compiler::pick(None).is_err() {
+            return;
+        }
+        let origin = temp("subdep-origin");
+        let proj = temp("subdep-proj");
+        make_origin(&origin, false);
+        let name = origin.file_name().unwrap().to_string_lossy().into_owned();
+        // Root bin + net subproject; only the subproject declares the dependency.
+        fs::create_dir_all(proj.join("src")).unwrap();
+        fs::create_dir_all(proj.join("libs/net/src")).unwrap();
+        fs::write(
+            proj.join("libs/net/src/net.cpp"),
+            "#include \"dep.h\"\nint netv() { return depv(); }\n",
+        )
+        .unwrap();
+        fs::write(
+            proj.join("libs/net/cizon.toml"),
+            format!(
+                "[project]\nname = \"net\"\n\n[dependencies]\n{name} = {{ git = \"{}\" }}\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+                esc(&origin.to_string_lossy())
+            ),
+        )
+        .unwrap();
+        fs::write(
+            proj.join("cizon.toml"),
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            proj.join("src/main.cpp"),
+            "int netv();\nint main() { return netv() == 42 ? 0 : 1; }\n",
+        )
+        .unwrap();
+
+        // update resolves the subproject's declaration into the root lock...
+        update_in(&proj, std::slice::from_ref(&name)).unwrap();
+        assert!(proj.join("cizon.lock").is_file(), "update must write the root lock");
+        // ...sync restores it from the lock, and the build compiles the dependency in.
+        let cfg = config::load_resolved(&proj).unwrap();
+        assert_eq!(sync(&proj, &cfg).unwrap(), 1);
+        let cxx = crate::compiler::pick(None).unwrap();
+        let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
+        let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
+        let out = std::process::Command::new(&exe).output().unwrap();
+        assert!(out.status.success(), "the exe must run the subproject + dependency code");
         fs::remove_dir_all(origin).ok();
         fs::remove_dir_all(proj).ok();
     }
@@ -957,7 +1011,7 @@ mod tests {
         add_in(&proj, &add_args(&origin)).unwrap();
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         let dep_dir = proj.join("deps").join(&name);
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         assert_eq!(check(&proj, &cfg).unwrap(), 1);
 
         // A missing checkout fails without cloning anything back.
@@ -1018,7 +1072,7 @@ mod tests {
         add_in(&proj, &add_args(&origin_a)).unwrap();
         add_in(&proj, &add_args(&origin_b)).unwrap();
 
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
@@ -1138,7 +1192,7 @@ mod tests {
         append_entry(&dir, "fmt", "https://example.com/fmt", None).unwrap();
         let text = fs::read_to_string(dir.join("cizon.toml")).unwrap();
         assert_eq!(text.matches("[dependencies]").count(), 1);
-        let cfg = config::load(&dir).unwrap();
+        let cfg = config::load_resolved(&dir).unwrap();
         assert!(cfg.dependencies().is_some_and(|m| m.contains_key("fmt")));
         fs::remove_dir_all(dir).ok();
     }
@@ -1154,7 +1208,7 @@ mod tests {
             )
             .unwrap();
             append_entry(&dir, "fmt", "https://example.com/fmt", None).unwrap();
-            let cfg = config::load(&dir).unwrap();
+            let cfg = config::load_resolved(&dir).unwrap();
             assert!(
                 cfg.dependencies().is_some_and(|m| m.contains_key("fmt")),
                 "header={header:?}"
@@ -1203,7 +1257,7 @@ mod tests {
 
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
-            config::load(&proj)
+            config::load_resolved(&proj)
                 .unwrap()
                 .dependencies()
                 .is_some_and(|m| m.contains_key(&name))
@@ -1263,7 +1317,7 @@ mod tests {
 
         // tag restore path: after deleting deps, prepare should clone by tag and verify the commit
         fs::remove_dir_all(proj.join("deps")).unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         prepare(&proj, &cfg, &proj.join("obj")).unwrap();
         assert_eq!(
             git_cmd(
@@ -1482,7 +1536,7 @@ mod tests {
         let name = origin.file_name().unwrap().to_string_lossy().into_owned();
         let c0 = git_cmd(&origin, &["rev-parse".into(), "HEAD".into()]).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert!(exe.is_file(), "the first build should produce an exe");
@@ -1497,14 +1551,14 @@ mod tests {
             "int depv() { return 0; }\n",
         )
         .unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx.clone(), false).unwrap();
         let err = crate::pipeline::build(&proj, &cfg, &plan).unwrap_err();
         assert!(err.contains("uncommitted changes"), "got: {err}");
 
         // key contract: deps/ deleted → build automatically restores from the lock and recompiles
         fs::remove_dir_all(proj.join("deps")).unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
         crate::pipeline::build(&proj, &cfg, &plan).unwrap();
         assert_eq!(
@@ -1538,7 +1592,7 @@ mod tests {
         .unwrap();
         add_in(&proj, &add_args(&origin)).unwrap();
 
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let plan = crate::pipeline::plan(&proj, &cfg, cxx, false).unwrap();
         let exe = crate::pipeline::build(&proj, &cfg, &plan).unwrap();
@@ -1558,7 +1612,7 @@ mod tests {
             "[project]\nname = \"t\"\n\n[dependencies]\nfoo = { git = \"x\" }\n",
         )
         .unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
         assert!(err.contains("update"), "got: {err}");
         fs::remove_dir_all(proj).ok();
@@ -1578,7 +1632,7 @@ mod tests {
             "foo = { git = \"x\", commit = \"main\" }\n",
         )
         .unwrap();
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
         assert!(err.contains("40/64"), "got: {err}");
         fs::remove_dir_all(proj).ok();
@@ -1614,7 +1668,7 @@ mod tests {
         fs::write(proj.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
         add_in(&proj, &add_args(&origin)).unwrap();
 
-        let cfg = config::load(&proj).unwrap();
+        let cfg = config::load_resolved(&proj).unwrap();
         let err = prepare(&proj, &cfg, &proj.join("obj")).unwrap_err();
         assert!(err.contains("conflict"), "got: {err}");
         fs::remove_dir_all(origin).ok();

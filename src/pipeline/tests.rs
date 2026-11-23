@@ -50,7 +50,7 @@
             "[project]\nname=\"t\"\n\n[compiler]\nflags=[\"-Wall\"]\nlink_flags=[\"-lm\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         assert_eq!(p.flags.iter().filter(|f| *f == "-Wall").count(), 1);
@@ -100,7 +100,7 @@
              [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib/core.cpp\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         let built = build_bins(&dir, &cfg, &p).unwrap();
@@ -124,7 +124,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let mk = || Cxx {
             name: "g++".into(),
             version: "test".into(),
@@ -336,7 +336,7 @@
         let dir = temp_dir("empty-src-message");
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("No .cpp file under src"), "got: {err}");
@@ -353,7 +353,7 @@
             "[project]\nname = \"t\"\nsources = [\"code\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("[project] sources"), "got: {err}");
@@ -486,7 +486,7 @@
     }
 
     fn build_project(dir: &Path) -> Result<PathBuf, String> {
-        let cfg = crate::config::load(dir)?;
+        let cfg = crate::config::load_resolved(dir)?;
         let cxx = crate::compiler::pick(None)?;
         let plan = plan(dir, &cfg, cxx, false)?;
         build(dir, &cfg, &plan)
@@ -744,7 +744,7 @@
             return;
         }
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("outside the project"), "got: {err}");
@@ -769,7 +769,7 @@
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"applink\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("outside the project"), "got: {err}");
@@ -785,7 +785,7 @@
         fs::create_dir_all(dir.join("include")).unwrap();
         fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
         fs::write(dir.join("cizon.toml"), "[project]\nname=\"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         let expected = format!("-I{}", dir.join("include").display());
@@ -1150,7 +1150,7 @@
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
 
         let mut cxx = crate::compiler::pick(None).unwrap();
         cxx.version = "test-v1".into();
@@ -1414,7 +1414,7 @@
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("empty path"), "got: {err}");
@@ -1433,7 +1433,7 @@
                 ),
             )
             .unwrap();
-            let cfg = crate::config::load(&dir).unwrap();
+            let cfg = crate::config::load_resolved(&dir).unwrap();
             let cxx = Cxx { name: "g++".into(), version: "test".into() };
             let err = plan(&dir, &cfg, cxx, false).unwrap_err();
             assert!(
@@ -1846,7 +1846,7 @@
     }
 
     fn build_bins_project(dir: &Path) -> BuildResult {
-        let cfg = crate::config::load(dir).unwrap();
+        let cfg = crate::config::load_resolved(dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let plan = plan(dir, &cfg, cxx, false).unwrap();
         build_bins(dir, &cfg, &plan).unwrap()
@@ -1865,7 +1865,7 @@
         assert_eq!(run_code(&one.1), 1);
         assert_eq!(run_code(&two.1), 2);
 
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         assert_eq!(
             crate::run::run(&dir, &cfg, false, None, Some("two"), &[]).unwrap(),
             2
@@ -1995,7 +1995,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let plan = plan(&dir, &cfg, cxx, false).unwrap();
         let result = super::build_tests(&dir, &cfg, &plan, &[]).unwrap();
@@ -2019,7 +2019,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let first_plan = plan(&dir, &cfg, cxx.clone(), false).unwrap();
         let result = super::build_tests(&dir, &cfg, &first_plan, &[]).unwrap();
@@ -2033,7 +2033,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"m\", \"stdc++\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let second_plan = plan(&dir, &cfg, cxx, false).unwrap();
         super::build_tests(&dir, &cfg, &second_plan, &[]).unwrap();
         assert_ne!(mtime(&exe), exe_t, "a extern_links change must relink");
@@ -2059,7 +2059,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         assert!(
@@ -2096,7 +2096,7 @@
             "[project]\nname = \"t\"\n\n[compiler]\nstrict = true\nwerror = true\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         for f in ["-Wall", "-Wextra", "-Wpedantic", "-Werror"] {
@@ -2162,7 +2162,7 @@
              [[target]]\nname = \"storage_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"storage\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         let result = super::build_bins(&dir, &cfg, &p).unwrap();
@@ -2480,7 +2480,7 @@
                 ),
             )
             .unwrap();
-            let cfg = crate::config::load(&dir).unwrap();
+            let cfg = crate::config::load_resolved(&dir).unwrap();
             let err = plan(&dir, &cfg, mk(), false).unwrap_err();
             assert!(err.contains(needle), "include {include}: got {err}");
         };
@@ -2504,7 +2504,7 @@
              [[target]]\nname = \"b\"\nkind = \"static_lib\"\nsources = [\"lib/b.cpp\"]\nlinks = [\"a\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx {
             name: "g++".into(),
             version: "test".into(),
@@ -2544,7 +2544,7 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\ninclude = \"own/include\"\nprefix = \"pkg\"\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
         let result = super::build_tests(&dir, &cfg, &p, &[]).unwrap();
@@ -2570,9 +2570,242 @@
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"nope\"\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("prefix"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    // ── [subproject]: nested cizon projects ──────────────────────────────────
+
+    /// Build through the resolved config (root + [subproject] graph merged).
+    fn build_project_resolved(dir: &Path) -> Result<PathBuf, String> {
+        let cfg = crate::config::load_resolved(dir)?;
+        let cxx = crate::compiler::pick(None)?;
+        let plan = plan(dir, &cfg, cxx, false)?;
+        build(dir, &cfg, &plan)
+    }
+
+    fn write_sub(dir: &Path, rel: &str, text: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    /// downflux shape: root bin + net/storage library subprojects. storage links net,
+    /// the root bin links both; each library keeps its public headers in its own
+    /// include/ and declares them with the v0.9.0 `include` field.
+    fn downflux_project(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/downflux/net/http_client.hpp",
+            "#pragma once\nnamespace downflux::net { int fetch(); }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/src/http_client.cpp",
+            "#include \"downflux/net/http_client.hpp\"\nnamespace downflux::net { int fetch() { return 40; } }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\nlinks = [\"net\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/downflux/storage/file_writer.hpp",
+            "#pragma once\nnamespace downflux::storage { int write_all(); }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/src/file_writer.cpp",
+            "#include \"downflux/storage/file_writer.hpp\"\n#include \"downflux/net/http_client.hpp\"\nnamespace downflux::storage { int write_all() { return downflux::net::fetch() + 2; } }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"downflux\"\n\n\
+             [subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"downflux\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\", \"storage\"]\n",
+        );
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "#include \"downflux/net/http_client.hpp\"\n#include \"downflux/storage/file_writer.hpp\"\n#include <cstdio>\nint main() {\n    int n = downflux::net::fetch() + downflux::storage::write_all();\n    std::printf(\"downflux: %d\\n\", n);\n    return n == 82 ? 0 : 1;\n}\n",
+        );
+        dir
+    }
+
+    #[test]
+    fn subproject_downflux_builds_and_runs() {
+        if !libs_supported() {
+            return;
+        }
+        let dir = downflux_project("sub-downflux");
+        let exe = build_project_resolved(&dir).unwrap();
+        assert_eq!(run_stdout(&exe), "downflux: 82\n");
+        assert_eq!(run_code(&exe), 0);
+        // Both archives exist: each subproject's sources compiled against its own
+        // directory, and storage's compile found net's headers through links.
+        assert!(lib_archive_path(&dir, "net").is_file());
+        assert!(lib_archive_path(&dir, "storage").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_compiler_is_ignored() {
+        if !libs_supported() {
+            return;
+        }
+        // The subproject names a compiler that does not exist; the build must still
+        // succeed with the root project's compiler.
+        let dir = downflux_project("sub-compiler-ignored");
+        fs::write(
+            dir.join("libs/net/cizon.toml"),
+            "[project]\nname = \"net\"\n\n[compiler]\ncpp = \"definitely-not-a-compiler\"\nflags = [\"-DNOPE=1\"]\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        )
+        .unwrap();
+        let exe = build_project_resolved(&dir).unwrap();
+        assert_eq!(run_stdout(&exe), "downflux: 82\n");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_include_resolves_against_subproject_dir() {
+        if !have_compiler() {
+            return;
+        }
+        // The subproject's include = "include" must resolve to libs/net/include, not to
+        // the root's include/ (which exists here but holds no such header).
+        let dir = temp_dir("sub-include-dir");
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::write(dir.join("include/root.h"), "#pragma once\n").unwrap();
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"missing\"\n",
+        );
+        fs::create_dir_all(dir.join("libs/net/src")).unwrap();
+        fs::write(dir.join("libs/net/src/net.cpp"), "int net(){ return 0; }\n").unwrap();
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int net();\nint main(){ return net(); }\n").unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("include path"), "got: {err}");
+        assert!(err.contains("not a directory"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_diamond_builds_shared_lib_once() {
+        if !libs_supported() {
+            return;
+        }
+        // A includes B and C; B and C both include D. The build must succeed and D's
+        // archive must exist exactly once.
+        let dir = temp_dir("sub-diamond-build");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nb = \"libs/b\"\nc = \"libs/c\"\nd = \"libs/d\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"b_lib\", \"c_lib\", \"d_lib\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/b/cizon.toml",
+            "[project]\nname = \"b\"\n\n[subproject]\nd = \"../d\"\n\n\
+             [[target]]\nname = \"b_lib\"\nkind = \"static_lib\"\nsources = [\"src\"]\nlinks = [\"d_lib\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/b/src/b.cpp",
+            "int d_lib();\nint b_lib() { return d_lib(); }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/c/cizon.toml",
+            "[project]\nname = \"c\"\n\n[subproject]\nd = \"../d\"\n\n\
+             [[target]]\nname = \"c_lib\"\nkind = \"static_lib\"\nsources = [\"src\"]\nlinks = [\"d_lib\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/c/src/c.cpp",
+            "int d_lib();\nint c_lib() { return d_lib(); }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/d/cizon.toml",
+            "[project]\nname = \"d\"\n\n[[target]]\nname = \"d_lib\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(&dir, "libs/d/src/d.cpp", "int d_lib() { return 3; }\n");
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "int b_lib();\nint c_lib();\nint main() { return b_lib() + c_lib() == 6 ? 0 : 1; }\n",
+        );
+        let exe = build_project_resolved(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert!(lib_archive_path(&dir, "d_lib").is_file());
+        assert!(lib_archive_path(&dir, "b_lib").is_file());
+        assert!(lib_archive_path(&dir, "c_lib").is_file());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_nested_builds_and_runs() {
+        if !libs_supported() {
+            return;
+        }
+        // Root -> mid -> leaf; the root bin links the leaf's target directly.
+        let dir = temp_dir("sub-nested-build");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nmid = \"libs/mid\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"mid\", \"leaf\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/mid/cizon.toml",
+            "[project]\nname = \"mid\"\n\n[subproject]\nleaf = \"leaf\"\n\n\
+             [[target]]\nname = \"mid\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(&dir, "libs/mid/src/mid.cpp", "int mid() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/mid/leaf/cizon.toml",
+            "[project]\nname = \"leaf\"\n\n[[target]]\nname = \"leaf\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(&dir, "libs/mid/leaf/src/leaf.cpp", "int leaf() { return 2; }\n");
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "int mid();\nint leaf();\nint main() { return mid() + leaf() == 3 ? 0 : 1; }\n",
+        );
+        let exe = build_project_resolved(&dir).unwrap();
+        assert_eq!(run_code(&exe), 0);
+        assert!(lib_archive_path(&dir, "mid").is_file());
+        assert!(lib_archive_path(&dir, "mid").is_file());
+        assert!(lib_archive_path(&dir, "leaf").is_file());
         fs::remove_dir_all(dir).ok();
     }

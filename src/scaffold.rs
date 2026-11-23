@@ -503,12 +503,12 @@ mod tests {
         }
         // The template must be accepted by the parser as-is: shipped template and parser are
         // locked together.
-        crate::config::load(&dir).unwrap();
+        crate::config::load_resolved(&dir).unwrap();
         fs::remove_dir_all(dir).ok();
     }
 
     fn assert_library_template(dir: &Path, kind: TargetKind) {
-        let cfg = config::load(dir).unwrap();
+        let cfg = config::load_resolved(dir).unwrap();
         let targets = cfg.targets().expect("library template must use targets");
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].kind, kind);

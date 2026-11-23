@@ -1,12 +1,12 @@
 //! Parsing of cizon.toml.
 //!
-//! Current boundary: only the four sections `[project]`, `[dependencies]`, `[compiler]` and
-//! `[[target]]` are recognized. Any other section is a loud error and is never silently ignored
-//! — a typo or a "supported in a future version" must surface on the spot, instead of producing
-//! a build that looks successful while the dependency was never added.
+//! Current boundary: only the five sections `[project]`, `[dependencies]`, `[compiler]`,
+//! `[subproject]` and `[[target]]` are recognized. Any other section is a loud error and is
+//! never silently ignored — a typo or a "supported in a future version" must surface on the
+//! spot, instead of producing a build that looks successful while the dependency was never added.
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -15,6 +15,10 @@ pub struct Config {
     pub project: Option<Project>,
     pub dependencies: Option<BTreeMap<String, DepInfo>>,
     pub compiler: Option<CompilerSection>,
+    /// `[subproject]`: name → project-relative directory of a nested cizon project whose
+    /// targets are merged into this project's build plan (see `load_resolved`).
+    #[serde(default, rename = "subproject")]
+    pub subprojects: Option<BTreeMap<String, String>>,
     /// `[[target]]`: one bin plus multiple static libraries; when absent the project stays
     /// the implicit single-executable one.
     #[serde(default, rename = "target")]
@@ -51,13 +55,18 @@ pub enum TargetKind {
     Test,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
     /// Required for static_lib/shared_lib; optional for bin, defaulting to [project].name.
     #[serde(default)]
     pub name: Option<String>,
     pub kind: TargetKind,
+    /// The directory of the cizon.toml that declared this target; sources, include and prefix
+    /// resolve against it, not against the consuming project's root. Set by `parse` (the root
+    /// project's own directory for its own targets); never read from the file.
+    #[serde(skip)]
+    pub base_dir: PathBuf,
     /// A file or a directory; directories are scanned recursively. Defaults to src/ for bin,
     /// required for static_lib/shared_lib.
     #[serde(default)]
@@ -121,7 +130,7 @@ const FUTURE_SECTIONS: &[&str] = &[
 
 /// Configuration sections that were never supported — their presence counts as a typo.
 const UNKNOWN_HINT: &str =
-    "cizon only recognizes [project], [dependencies], [compiler] and [[target]]";
+    "cizon only recognizes [project], [dependencies], [compiler], [subproject] and [[target]]";
 
 /// A dependency name is also the directory name under `deps/`, so only characters that are safe
 /// in the intersection with TOML bare keys are allowed.
@@ -234,8 +243,6 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
     }
 
     let mut names = HashSet::new();
-    let mut libs = HashSet::new();
-    let mut shared = HashSet::new();
     for target in targets.iter() {
         let name = target.name.as_deref().expect("name resolved");
         if !names.insert(name.to_lowercase()) {
@@ -255,13 +262,11 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         match target.kind {
             TargetKind::Bin => {}
             TargetKind::StaticLib => {
-                libs.insert(name.to_lowercase());
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err(format!("static library target {name} must provide sources."));
                 }
             }
             TargetKind::SharedLib => {
-                shared.insert(name.to_lowercase());
                 if target.sources.as_ref().is_none_or(|s| s.is_empty()) {
                     return Err(format!("shared library target {name} must provide sources."));
                 }
@@ -294,8 +299,32 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
             }
         }
     }
+    Ok(())
+}
+
+/// Validate `links` against the given target set: static libraries link only static
+/// libraries, shared libraries link only static libraries, bins/tests link libraries.
+/// `root` is the project root; a target declared in another file gets a source suffix naming
+/// its cizon.toml, so the error points at the file to fix. `load_resolved` runs this on the
+/// merged target set, where a link may resolve to a subproject's library.
+fn validate_target_links(targets: &[Target], root: &Path) -> Result<(), String> {
+    let mut libs = HashSet::new();
+    let mut shared = HashSet::new();
+    for target in targets {
+        let name = target.name.as_deref().expect("config resolves target names");
+        match target.kind {
+            TargetKind::StaticLib => {
+                libs.insert(name.to_lowercase());
+            }
+            TargetKind::SharedLib => {
+                shared.insert(name.to_lowercase());
+            }
+            _ => {}
+        }
+    }
     for target in targets.iter() {
-        let name = target.name.as_deref().expect("name resolved");
+        let name = target.name.as_deref().expect("config resolves target names");
+        let src = target_source_suffix(root, target);
         let mut seen = HashSet::new();
         match target.kind {
             TargetKind::StaticLib => {
@@ -304,16 +333,16 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     if !libs.contains(&lower) {
                         if shared.contains(&lower) {
                             return Err(format!(
-                                "static library target {name} cannot link shared library {link}; static libraries can only depend on static libraries."
+                                "static library target {name}{src} cannot link shared library {link}; static libraries can only depend on static libraries."
                             ));
                         }
                         return Err(format!(
-                            "static library target {name} links a nonexistent static library {link}."
+                            "static library target {name}{src} links a nonexistent static library {link}."
                         ));
                     }
                     if !seen.insert(lower) {
                         return Err(format!(
-                            "duplicate entry {link} in the links of static library target {name}."
+                            "duplicate entry {link} in the links of static library target {name}{src}."
                         ));
                     }
                 }
@@ -324,16 +353,16 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     if !libs.contains(&lower) {
                         if shared.contains(&lower) {
                             return Err(format!(
-                                "shared library target {name} cannot link shared library {link}."
+                                "shared library target {name}{src} cannot link shared library {link}."
                             ));
                         }
                         return Err(format!(
-                            "shared library target {name} links a nonexistent static library {link}."
+                            "shared library target {name}{src} links a nonexistent static library {link}."
                         ));
                     }
                     if !seen.insert(lower) {
                         return Err(format!(
-                            "duplicate entry {link} in the links of shared library target {name}."
+                            "duplicate entry {link} in the links of shared library target {name}{src}."
                         ));
                     }
                 }
@@ -344,12 +373,12 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                     let lower = link.to_lowercase();
                     if !libs.contains(&lower) && !shared.contains(&lower) {
                         return Err(format!(
-                            "{kind} target {name} links a nonexistent library {link}."
+                            "{kind} target {name}{src} links a nonexistent library {link}."
                         ));
                     }
                     if !seen.insert(lower) {
                         return Err(format!(
-                            "duplicate entry {link} in the links of {kind} target {name}."
+                            "duplicate entry {link} in the links of {kind} target {name}{src}."
                         ));
                     }
                 }
@@ -357,6 +386,24 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+/// The cizon.toml that declared a target, relative to the project root; empty for the root
+/// project's own targets, so single-project error messages are unchanged.
+fn target_source_suffix(root: &Path, target: &Target) -> String {
+    if target.base_dir == *root {
+        String::new()
+    } else {
+        format!(" (declared in {})", toml_label(root, &target.base_dir))
+    }
+}
+
+/// A cizon.toml path for error messages, relative to the project root.
+fn toml_label(root: &Path, dir: &Path) -> String {
+    match dir.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => format!("{}/cizon.toml", rel.display()),
+        _ => "cizon.toml".into(),
+    }
 }
 
 fn validate_edition(edition: &str) -> Result<(), String> {
@@ -376,7 +423,13 @@ fn validate_edition(edition: &str) -> Result<(), String> {
     ))
 }
 
-pub fn load(dir: &Path) -> Result<Config, String> {
+/// Parse one cizon.toml with per-file validation only. Link existence is NOT checked here:
+/// a target may link a target declared in another file (a subproject), so links are
+/// validated on the merged set by `load_resolved` (which is also what single-project
+/// callers use: for a project without subprojects it is exactly parse plus link checks).
+/// Every target records the directory of the file that declared it (`base_dir`); the plan
+/// resolves that target's sources, include and prefix against it.
+fn parse(dir: &Path) -> Result<Config, String> {
     let path = dir.join("cizon.toml");
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => t,
@@ -401,7 +454,12 @@ pub fn load(dir: &Path) -> Result<Config, String> {
     }
 
     for key in table.keys() {
-        if key == "project" || key == "dependencies" || key == "compiler" || key == "target" {
+        if key == "project"
+            || key == "dependencies"
+            || key == "compiler"
+            || key == "subproject"
+            || key == "target"
+        {
             continue;
         }
         if FUTURE_SECTIONS.contains(&key.as_str()) {
@@ -449,8 +507,261 @@ pub fn load(dir: &Path) -> Result<Config, String> {
             }
         }
     }
+    if let Some(subs) = &cfg.subprojects {
+        for (name, raw) in subs {
+            if !is_valid_dep_name(name) {
+                return Err(format!(
+                    "subproject name {name:?} is invalid: only letters, digits, - and _ are allowed."
+                ));
+            }
+            if raw.trim().is_empty() {
+                return Err(format!("subproject {name} path must not be empty."));
+            }
+            // Unlike sources/include/prefix, a subproject path may climb with `..` (a
+            // subproject includes a sibling this way: B and C both include ../d). The real
+            // guard is collection time: the resolved directory must sit inside the root
+            // project, checked by canonicalization in `collect_subproject`.
+            let rel = Path::new(raw);
+            let bad_component = rel.components().any(|c| {
+                !matches!(
+                    c,
+                    std::path::Component::Normal(_)
+                        | std::path::Component::CurDir
+                        | std::path::Component::ParentDir
+                )
+            });
+            if rel.is_absolute() || bad_component {
+                return Err(format!(
+                    "subproject {name} path must be a project-relative path (no absolute path): {raw}"
+                ));
+            }
+        }
+    }
     validate_targets(&mut cfg, &effective_name)?;
+    if let Some(targets) = &mut cfg.targets {
+        for target in targets.iter_mut() {
+            target.base_dir = dir.to_path_buf();
+        }
+    }
     Ok(cfg)
+}
+
+/// One parsed project file in the subproject graph.
+struct ResolvedFile {
+    /// Canonical directory of this project's cizon.toml.
+    dir: PathBuf,
+    /// The `[subproject]` key that included it; None for the root project.
+    name: Option<String>,
+    cfg: Config,
+}
+
+impl ResolvedFile {
+    /// The file's cizon.toml, relative to the project root, for error messages.
+    fn label(&self, root: &Path) -> String {
+        toml_label(root, &self.dir)
+    }
+}
+
+/// Load the root project and recursively merge its `[subproject]` graph into one Config:
+/// every subproject's targets join the root's target list (each keeping its own `base_dir`),
+/// and every subproject's `[dependencies]` join the root's dependency set. The root
+/// project's `[compiler]` wins; a subproject's `[compiler]` is ignored (with a warning).
+/// This is what `build` / `run` / `test` / `sync` plan from, so a broken subproject graph
+/// fails every command before any compilation starts, with the offending file named.
+/// For a project without subprojects this is exactly parse plus link validation.
+///
+/// Rules enforced here — they are the feature, not an afterthought:
+/// - a target name must be unique across the whole merged graph (case-insensitive); a clash
+///   names both files.
+/// - a subproject may not declare a bin target; bins live only in the root project.
+/// - inclusion cycles (A includes B, B includes A, transitively) are errors; a diamond
+///   (A includes B and C, B and C include D) includes D once, by canonical directory.
+/// - the same directory reached through different path spellings is included once.
+/// - a dependency name used with a different git URL or tag is an error; identical
+///   declarations deduplicate.
+/// - `[subproject]` requires `[[target]]` in the declaring file, and a subproject must
+///   declare at least one target; a subproject directory must sit inside the root project.
+pub fn load_resolved(dir: &Path) -> Result<Config, String> {
+    let root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Cannot resolve project root {}: {e}", dir.display()))?;
+    let mut files: Vec<ResolvedFile> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut stack: Vec<PathBuf> = Vec::new();
+    collect_subproject(&root, &root, None, &mut seen, &mut stack, &mut files)?;
+
+    // A project that declares subprojects must be explicit: the implicit single-executable
+    // project has no links field, so it could never consume a subproject library. A
+    // subproject that declares nothing contributes nothing and would be silently ignored.
+    for file in &files {
+        let has_targets = file.cfg.targets().is_some_and(|t| !t.is_empty());
+        let has_subs = file.cfg.subprojects().is_some_and(|m| !m.is_empty());
+        if has_subs && !has_targets {
+            return Err(format!(
+                "[subproject] in {} requires [[target]]: the implicit single-executable project cannot link subproject libraries.",
+                file.label(&root)
+            ));
+        }
+        if file.name.is_some() && !has_targets {
+            return Err(format!(
+                "subproject {} ({}) declares no [[target]]; a subproject must provide at least one library or test target.",
+                file.name.as_deref().unwrap_or("?"),
+                file.label(&root)
+            ));
+        }
+    }
+
+    let mut iter = files.into_iter();
+    let root_file = iter.next().expect("collect_subproject always yields the root first");
+    let mut merged = root_file.cfg;
+    let mut targets = merged.targets.take().unwrap_or_default();
+    let mut deps = merged.dependencies.take().unwrap_or_default();
+    let mut dep_source: HashMap<String, String> = deps
+        .keys()
+        .map(|k| (k.clone(), "cizon.toml".to_string()))
+        .collect();
+    for file in iter {
+        let label = file.label(&root);
+        if file.cfg.compiler.is_some() {
+            eprintln!(
+                "Warning: subproject {} ({label}) declares [compiler], which is ignored; the root project's compiler and flags apply.",
+                file.name.as_deref().unwrap_or("?")
+            );
+        }
+        if let Some(list) = file.cfg.targets() {
+            for target in list {
+                if target.kind == TargetKind::Bin {
+                    return Err(format!(
+                        "subproject {} ({label}) declares a bin target {}; bins live only in the root project — a subproject provides static_lib, shared_lib and test targets.",
+                        file.name.as_deref().unwrap_or("?"),
+                        target.name.as_deref().unwrap_or("?")
+                    ));
+                }
+            }
+            targets.extend(list.iter().cloned());
+        }
+        if let Some(map) = file.cfg.dependencies() {
+            for (name, info) in map {
+                match deps.get(name) {
+                    Some(existing) if existing.git != info.git || existing.tag != info.tag => {
+                        let first = dep_source
+                            .get(name)
+                            .map(|s| s.as_str())
+                            .unwrap_or("cizon.toml");
+                        return Err(format!(
+                            "dependency {name} is declared with different sources: {} (from {first}) and {} (from {label}). A dependency name must resolve to one git URL and tag across the project and its subprojects.",
+                            describe_dep(existing),
+                            describe_dep(info)
+                        ));
+                    }
+                    Some(_) => {} // Identical declaration: deduplicate.
+                    None => {
+                        dep_source.insert(name.clone(), label.clone());
+                        deps.insert(name.clone(), info.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Target names must be unique across the whole merged graph; within-file duplicates
+    // were already rejected by parse, so a clash here is always across files.
+    {
+        let mut seen_names: HashMap<String, (String, String)> = HashMap::new();
+        for target in &targets {
+            let name = target.name.as_deref().expect("config resolves target names");
+            let label = toml_label(&root, &target.base_dir);
+            if let Some((first_name, first_label)) =
+                seen_names.insert(name.to_lowercase(), (name.to_string(), label.clone()))
+            {
+                return Err(format!(
+                    "duplicate target name {name:?}: {first_name:?} is declared in {first_label} and {name:?} in {label}. Target names must be unique across the root project and its subprojects (case-insensitive)."
+                ));
+            }
+        }
+    }
+
+    validate_target_links(&targets, &root)?;
+    if !targets.is_empty() {
+        merged.targets = Some(targets);
+    }
+    if !deps.is_empty() {
+        merged.dependencies = Some(deps);
+    }
+    Ok(merged)
+}
+
+fn describe_dep(info: &DepInfo) -> String {
+    match &info.tag {
+        Some(tag) => format!("git = {:?}, tag = {tag:?}", info.git),
+        None => format!("git = {:?}", info.git),
+    }
+}
+
+/// Depth-first walk of the subproject graph, in inclusion order (a file is recorded before
+/// its own subprojects). `seen` deduplicates by canonical directory (diamond); `stack`
+/// holds the current inclusion path for cycle detection.
+fn collect_subproject(
+    dir: &Path,
+    root: &Path,
+    name: Option<String>,
+    seen: &mut HashSet<PathBuf>,
+    stack: &mut Vec<PathBuf>,
+    out: &mut Vec<ResolvedFile>,
+) -> Result<(), String> {
+    let canonical = std::fs::canonicalize(dir).map_err(|e| match &name {
+        Some(n) => format!(
+            "subproject {n} directory {} does not exist or cannot be read: {e}",
+            dir.display()
+        ),
+        None => format!("Cannot resolve project root {}: {e}", dir.display()),
+    })?;
+    if stack.contains(&canonical) {
+        let mut chain: Vec<String> = stack.iter().map(|d| toml_label(root, d)).collect();
+        chain.push(toml_label(root, &canonical));
+        return Err(format!(
+            "subproject cycle: {}. A subproject must not (transitively) include itself or an ancestor.",
+            chain.join(" -> ")
+        ));
+    }
+    if !seen.insert(canonical.clone()) {
+        return Ok(()); // Diamond: already collected through another path.
+    }
+    // A malformed subproject file must name the subproject, or the error is unactionable.
+    let cfg = parse(&canonical).map_err(|e| match &name {
+        Some(n) => format!("subproject {n} ({}): {e}", toml_label(root, &canonical)),
+        None => e,
+    })?;
+    let subs: Vec<(String, PathBuf)> = match cfg.subprojects() {
+        Some(map) => map
+            .iter()
+            .map(|(n, rel)| (n.clone(), canonical.join(rel)))
+            .collect(),
+        None => Vec::new(),
+    };
+    stack.push(canonical.clone());
+    out.push(ResolvedFile { dir: canonical.clone(), name, cfg });
+    for (sub_name, sub_dir) in subs {
+        if !sub_dir.join("cizon.toml").is_file() {
+            return Err(format!(
+                "subproject {sub_name} at {} has no cizon.toml (declared in {}).",
+                sub_dir.display(),
+                toml_label(root, &canonical)
+            ));
+        }
+        let sub_canonical = std::fs::canonicalize(&sub_dir).map_err(|e| {
+            format!("Cannot resolve subproject {sub_name} directory {}: {e}", sub_dir.display())
+        })?;
+        if !sub_canonical.starts_with(root) {
+            return Err(format!(
+                "subproject {sub_name} at {} resolves outside the project ({}). Subprojects must live inside the project directory.",
+                sub_dir.display(),
+                sub_canonical.display()
+            ));
+        }
+        collect_subproject(&sub_dir, root, Some(sub_name), seen, stack, out)?;
+    }
+    stack.pop();
+    Ok(())
 }
 
 impl Config {
@@ -509,6 +820,12 @@ impl Config {
     pub fn dependencies(&self) -> Option<&BTreeMap<String, DepInfo>> {
         self.dependencies.as_ref()
     }
+
+    /// The `[subproject]` table (name → project-relative directory); BTreeMap keeps the
+    /// iteration order stable, so the merge order is deterministic.
+    pub fn subprojects(&self) -> Option<&BTreeMap<String, String>> {
+        self.subprojects.as_ref()
+    }
 }
 
 #[cfg(test)]
@@ -519,7 +836,9 @@ mod tests {
     fn write_config(text: &str) -> (PathBuf, Config) {
         let dir = temp_dir("parse");
         std::fs::write(dir.join("cizon.toml"), text).unwrap();
-        let cfg = load(&dir).unwrap();
+        // Single-file parse only: a [subproject] entry names directories that need not
+        // exist for a parse test; resolution is load_resolved's job, tested separately.
+        let cfg = parse(&dir).unwrap();
         (dir, cfg)
     }
 
@@ -571,7 +890,7 @@ mod tests {
             "[project]\nname = \"a\"\nversion = \"  \"\n",
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must not be empty"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must not be empty"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -615,7 +934,7 @@ mod tests {
         let dir = temp_dir("future-rej");
         std::fs::write(dir.join("cizon.toml"), "[project]\nname=\"a\"\n\n[workspace]\nmembers=[]\n")
             .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("[workspace]"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -624,7 +943,7 @@ mod tests {
     fn typo_section_rejected_loudly() {
         let dir = temp_dir("typo-rej");
         std::fs::write(dir.join("cizon.toml"), "[dependancies]\n").unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("[dependancies]"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -638,7 +957,7 @@ mod tests {
             "[project]\nname = \"a\"\n\n[compiler]\ncompiler = \"clang++\"\n",
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("unknown field"), "got: {err}");
         assert!(err.contains("cpp"), "the error should name the correct key cpp: {err}");
         std::fs::remove_dir_all(dir).ok();
@@ -652,7 +971,7 @@ mod tests {
             "[project]\nname = \"a\"\nlicence = \"MIT\"\n",
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("licence"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -666,7 +985,7 @@ mod tests {
              fmt = { git = \"https://example.com/fmt\", branch = \"main\" }\n",
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("branch"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -743,7 +1062,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("cannot link shared library"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -759,7 +1078,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must provide name"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must provide name"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("shared-no-sources");
@@ -771,7 +1090,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must provide sources"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must provide sources"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -812,7 +1131,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must provide name"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must provide name"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -824,7 +1143,7 @@ mod tests {
             target_config("[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n"),
         )
         .unwrap();
-        let cfg = load(&dir).unwrap();
+        let cfg = load_resolved(&dir).unwrap();
         assert_eq!(cfg.targets().unwrap()[0].kind, TargetKind::StaticLib);
         std::fs::remove_dir_all(dir).ok();
 
@@ -834,7 +1153,7 @@ mod tests {
             target_config("[[target]]\nname = \"dll\"\nkind = \"shared_lib\"\nsources = [\"capi\"]\n"),
         )
         .unwrap();
-        assert!(load(&dir).is_ok(), "a shared-library-only project is valid");
+        assert!(load_resolved(&dir).is_ok(), "a shared-library-only project is valid");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("two-bin");
@@ -846,7 +1165,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).is_ok(), "multiple named bins must be accepted");
+        assert!(load_resolved(&dir).is_ok(), "multiple named bins must be accepted");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("two-bin-unnamed");
@@ -858,7 +1177,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("every bin must provide name"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -874,7 +1193,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("nonexistent"));
+        assert!(load_resolved(&dir).unwrap_err().contains("nonexistent"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("lib-links-missing");
@@ -886,7 +1205,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("nonexistent static library"));
+        assert!(load_resolved(&dir).unwrap_err().contains("nonexistent static library"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("lib-links");
@@ -899,7 +1218,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).is_ok(), "static libraries may depend on static libraries");
+        assert!(load_resolved(&dir).is_ok(), "static libraries may depend on static libraries");
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("lib-links-shared");
@@ -912,7 +1231,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("cannot link shared library"));
+        assert!(load_resolved(&dir).unwrap_err().contains("cannot link shared library"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("lib-no-sources");
@@ -924,7 +1243,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must provide sources"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must provide sources"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -939,7 +1258,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("duplicate"));
+        assert!(load_resolved(&dir).unwrap_err().contains("duplicate"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("targets-sources");
@@ -949,7 +1268,7 @@ mod tests {
              [[target]]\nname = \"app\"\nkind = \"bin\"\n",
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("cannot be used together"));
+        assert!(load_resolved(&dir).unwrap_err().contains("cannot be used together"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -961,7 +1280,7 @@ mod tests {
             target_config("[[target]]\nname = \"app\"\nkind = \"bin\"\nextra = true\n"),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("extra"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -974,7 +1293,7 @@ mod tests {
             "[project]\nname = \"t\"\n\n[target]\nname = \"app\"\nkind = \"bin\"\n",
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("[[target]]"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -990,7 +1309,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("duplicate"));
+        assert!(load_resolved(&dir).unwrap_err().contains("duplicate"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("reserved-target");
@@ -999,7 +1318,7 @@ mod tests {
             target_config("[[target]]\nname = \"obj\"\nkind = \"bin\"\n"),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("internal"));
+        assert!(load_resolved(&dir).unwrap_err().contains("internal"));
         std::fs::remove_dir_all(dir).ok();
 
         // links are matched case-insensitively
@@ -1012,7 +1331,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).is_ok());
+        assert!(load_resolved(&dir).is_ok());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1028,7 +1347,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("duplicate"));
+        assert!(load_resolved(&dir).unwrap_err().contains("duplicate"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1053,7 +1372,7 @@ mod tests {
             "[project]\nname = \"t\"\nedition = \"23x\"\n",
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("[project].edition"), "got: {err}");
         assert!(err.contains("invalid"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
@@ -1103,7 +1422,7 @@ mod tests {
             target_config("[[target]]\nkind = \"test\"\nsources = [\"tests\"]\n"),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("a test target must provide name"));
+        assert!(load_resolved(&dir).unwrap_err().contains("a test target must provide name"));
         std::fs::remove_dir_all(dir).ok();
 
         let dir = temp_dir("test-no-sources");
@@ -1112,7 +1431,7 @@ mod tests {
             target_config("[[target]]\nname = \"t_test\"\nkind = \"test\"\n"),
         )
         .unwrap();
-        assert!(load(&dir).unwrap_err().contains("must provide sources"));
+        assert!(load_resolved(&dir).unwrap_err().contains("must provide sources"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1126,7 +1445,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("test target"), "got: {err}");
         assert!(err.contains("nonexistent"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
@@ -1143,7 +1462,7 @@ mod tests {
         ] {
             let dir = temp_dir("system-non-test");
             std::fs::write(dir.join("cizon.toml"), target_config(targets)).unwrap();
-            let err = load(&dir).unwrap_err();
+            let err = load_resolved(&dir).unwrap_err();
             assert!(
                 err.contains("only test targets can declare extern_links"),
                 "targets={targets} got: {err}"
@@ -1163,7 +1482,7 @@ mod tests {
                 )),
             )
             .unwrap();
-            let err = load(&dir).unwrap_err();
+            let err = load_resolved(&dir).unwrap_err();
             assert!(
                 err.contains("extern_links entry"),
                 "bad={bad:?} got: {err}"
@@ -1181,7 +1500,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(load(&dir).is_ok());
+        assert!(load_resolved(&dir).is_ok());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1195,7 +1514,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("duplicate"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
@@ -1203,7 +1522,7 @@ mod tests {
     #[test]
     fn missing_file_gives_actionable_message() {
         let dir = temp_dir("missing-proj");
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
         assert!(err.contains("not a cizon project"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
@@ -1215,7 +1534,7 @@ mod tests {
         // Non-UTF-8 content: reading the file fails, and that must not be disguised as
         // "cizon.toml not found".
         std::fs::write(dir.join("cizon.toml"), [0xFFu8, 0xFE]).unwrap();
-        let err = load(&dir).unwrap_err();
+        let err = load_resolved(&dir).unwrap_err();
         assert!(err.contains("failed to read"), "got: {err}");
         assert!(!err.contains("not found"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
@@ -1230,7 +1549,7 @@ mod tests {
                 format!("[project]\nname = {bad:?}\n"),
             )
             .unwrap();
-            let err = load(&dir).unwrap_err();
+            let err = load_resolved(&dir).unwrap_err();
             assert!(err.contains("file name"), "name={bad:?} got: {err}");
         }
         std::fs::remove_dir_all(dir).ok();
@@ -1245,7 +1564,7 @@ mod tests {
                 format!("[project]\nname = \"a\"\n\n[dependencies]\n{bad:?} = {{ git = \"x\" }}\n"),
             )
             .unwrap();
-            let err = load(&dir).unwrap_err();
+            let err = load_resolved(&dir).unwrap_err();
             assert!(err.contains("dependency name"), "dep={bad:?} got: {err}");
         }
         std::fs::write(
@@ -1253,7 +1572,393 @@ mod tests {
             "[project]\nname = \"a\"\n\n[dependencies]\nmy-dep_1 = { git = \"x\" }\n",
         )
         .unwrap();
-        assert!(load(&dir).is_ok(), "a valid dependency name should be accepted");
+        assert!(load_resolved(&dir).is_ok(), "a valid dependency name should be accepted");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    // ── [subproject] ──────────────────────────────────────────────────────────
+
+    fn write_file(dir: &Path, rel: &str, text: &str) {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, text).unwrap();
+    }
+
+    fn lib_target(name: &str) -> String {
+        format!(
+            "[[target]]\nname = \"{name}\"\nkind = \"static_lib\"\nsources = [\"src\"]\n"
+        )
+    }
+
+    fn lib_toml(name: &str) -> String {
+        format!("[project]\nname = \"{name}\"\n\n{}", lib_target(name))
+    }
+
+    fn bin_target(links: &[&str]) -> String {
+        format!(
+            "[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [{}]\n",
+            links
+                .iter()
+                .map(|l| format!("\"{l}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
+    #[test]
+    fn parse_subproject_table() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"t\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n",
+        );
+        let subs = cfg.subprojects().unwrap();
+        assert_eq!(subs.get("net").map(|s| s.as_str()), Some("libs/net"));
+        assert_eq!(subs.get("storage").map(|s| s.as_str()), Some("libs/storage"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_name_and_path_validation() {
+        // Invalid names are rejected.
+        let dir = temp_dir("sub-bad-name");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[subproject]\n\"my net\" = \"libs/net\"\n",
+        )
+        .unwrap();
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("subproject name"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // Empty and absolute paths are rejected; `..` is allowed (a subproject includes a
+        // sibling that way) — the inside-project guard runs at collection time.
+        for (raw, needle) in [("", "must not be empty"), ("/etc", "project-relative")] {
+            let dir = temp_dir("sub-bad-path");
+            std::fs::write(
+                dir.join("cizon.toml"),
+                format!("[project]\nname = \"a\"\n\n[subproject]\nnet = {raw:?}\n"),
+            )
+            .unwrap();
+            let err = load_resolved(&dir).unwrap_err();
+            assert!(err.contains(needle), "raw={raw:?} got: {err}");
+            std::fs::remove_dir_all(dir).ok();
+        }
+        let (dir, _) = write_config("[project]\nname = \"a\"\n\n[subproject]\nnet = \"../shared\"\n");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_matches_load_without_subprojects() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"foo\"\nkind = \"static_lib\"\nsources = [\"lib/foo.cpp\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"foo\"]\n",
+        ));
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(
+            resolved.targets().unwrap().len(),
+            cfg.targets().unwrap().len()
+        );
+        assert_eq!(
+            resolved.targets().unwrap()[0].name.as_deref(),
+            Some("foo")
+        );
+        assert!(resolved.subprojects().is_none());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_duplicate_target_names_across_files() {
+        let dir = temp_dir("sub-dup");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nother = \"libs/other\"\n\n{}",
+            "[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n"
+        ));
+        write_file(&dir, "libs/other/cizon.toml", &lib_toml("net"));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("duplicate target name"), "got: {err}");
+        assert!(err.contains("libs/other/cizon.toml"), "the error must name both files: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_cycle() {
+        let dir = temp_dir("sub-cycle");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\na = \"libs/a\"\n\n{}",
+            bin_target(&["a_lib"])
+        ));
+        write_file(&dir, "libs/a/cizon.toml", &format!(
+            "[project]\nname = \"a\"\n\n[subproject]\nb = \"b\"\n\n{}",
+            lib_target("a_lib")
+        ));
+        // b includes its parent a via ".." — a cycle.
+        write_file(&dir, "libs/a/b/cizon.toml", &format!(
+            "[project]\nname = \"b\"\n\n[subproject]\na = \"..\"\n\n{}",
+            lib_target("b_lib")
+        ));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("cycle"), "got: {err}");
+        assert!(err.contains("libs/a/cizon.toml"), "the chain must name the files: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // A project including itself is a cycle too.
+        let dir = temp_dir("sub-self-cycle");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nself = \".\"\n\n{}",
+            bin_target(&[])
+        ));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("cycle"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_diamond_includes_shared_once() {
+        // A includes B and C; B and C both include D (as a sibling via ".."). D's target
+        // must appear exactly once in the merged set.
+        let dir = temp_dir("sub-diamond");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nb = \"libs/b\"\nc = \"libs/c\"\nd = \"libs/d\"\n\n{}",
+            bin_target(&["b_lib", "c_lib", "d_lib"])
+        ));
+        write_file(&dir, "libs/b/cizon.toml", &format!(
+            "[project]\nname = \"b\"\n\n[subproject]\nd = \"../d\"\n\n{}",
+            lib_target("b_lib")
+        ));
+        write_file(&dir, "libs/c/cizon.toml", &format!(
+            "[project]\nname = \"c\"\n\n[subproject]\nd = \"../d\"\n\n{}",
+            lib_target("c_lib")
+        ));
+        write_file(&dir, "libs/d/cizon.toml", &lib_toml("d_lib"));
+        let resolved = load_resolved(&dir).unwrap();
+        let mut names: Vec<_> = resolved
+            .targets()
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["app", "b_lib", "c_lib", "d_lib"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_dedups_same_dir_by_spelling() {
+        let dir = temp_dir("sub-spelling");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nnet2 = \"./libs/net\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml", &lib_toml("net"));
+        let resolved = load_resolved(&dir).unwrap();
+        let count = resolved
+            .targets()
+            .unwrap()
+            .iter()
+            .filter(|t| t.name.as_deref() == Some("net"))
+            .count();
+        assert_eq!(count, 1, "the same directory must be included once");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_bin_in_subproject() {
+        let dir = temp_dir("sub-bin");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nother = \"libs/other\"\n\n{}",
+            bin_target(&[])
+        ));
+        write_file(&dir, "libs/other/cizon.toml",
+            "[project]\nname = \"other\"\n\n[[target]]\nname = \"other\"\nkind = \"bin\"\nsources = [\"src\"]\n");
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("bin target"), "got: {err}");
+        assert!(err.contains("other"), "got: {err}");
+        assert!(err.contains("libs/other/cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_ignores_subproject_compiler() {
+        // A subproject naming a compiler that does not exist must not fail loading: the
+        // root project's compiler applies. (The build-level test proves the build itself
+        // uses the root compiler.)
+        let dir = temp_dir("sub-compiler");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml", &format!(
+            "[project]\nname = \"net\"\n\n[compiler]\ncpp = \"definitely-not-a-compiler\"\nflags = [\"-DNOPE=1\"]\n\n{}",
+            lib_target("net")
+        ));
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(resolved.explicit_compiler(), None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_merges_subproject_dependencies() {
+        // Identical declarations deduplicate.
+        let dir = temp_dir("sub-deps-same");
+        write_file(&dir, "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n[dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n");
+        write_file(&dir, "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n[dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n");
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(resolved.dependencies().unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+
+        // The same name with a different URL is a loud error naming the dependency.
+        let dir = temp_dir("sub-deps-conflict");
+        write_file(&dir, "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n[dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n");
+        write_file(&dir, "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n[dependencies]\nfmt = { git = \"https://example.com/other-fmt\" }\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n");
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("fmt"), "got: {err}");
+        assert!(err.contains("different sources"), "got: {err}");
+        assert!(err.contains("libs/net/cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // A subproject-only dependency joins the set.
+        let dir = temp_dir("sub-deps-only");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n[dependencies]\ntiny = { git = \"https://example.com/tiny\", tag = \"v1\" }\n\n[[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n");
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(
+            resolved.dependencies().unwrap().get("tiny").map(|d| d.git.as_str()),
+            Some("https://example.com/tiny")
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_nested_subproject() {
+        // Root -> mid -> leaf; the leaf's target is usable by the root bin.
+        let dir = temp_dir("sub-nested");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nmid = \"libs/mid\"\n\n{}",
+            bin_target(&["leaf"])
+        ));
+        write_file(&dir, "libs/mid/cizon.toml", &format!(
+            "[project]\nname = \"mid\"\n\n[subproject]\nleaf = \"leaf\"\n\n{}",
+            lib_target("mid")
+        ));
+        write_file(&dir, "libs/mid/leaf/cizon.toml", &lib_toml("leaf"));
+        let resolved = load_resolved(&dir).unwrap();
+        let mut names: Vec<_> = resolved
+            .targets()
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["app", "leaf", "mid"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_requires_targets_with_subprojects() {
+        // The root with [subproject] but no [[target]] cannot link anything.
+        let dir = temp_dir("sub-no-targets-root");
+        write_file(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n",
+        );
+        write_file(&dir, "libs/net/cizon.toml", &lib_toml("net"));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("requires [[target]]"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // A subproject declaring no targets contributes nothing and must not be silent.
+        let dir = temp_dir("sub-no-targets-sub");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nempty = \"libs/empty\"\n\n{}",
+            bin_target(&[])
+        ));
+        write_file(&dir, "libs/empty/cizon.toml", "[project]\nname = \"empty\"\n");
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("declares no [[target]]"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_missing_subproject() {
+        // No cizon.toml in the named directory.
+        let dir = temp_dir("sub-missing-toml");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nempty = \"libs/empty\"\n\n{}",
+            bin_target(&[])
+        ));
+        std::fs::create_dir_all(dir.join("libs/empty")).unwrap();
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("has no cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // No such directory at all.
+        let dir = temp_dir("sub-missing-dir");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nghost = \"libs/ghost\"\n\n{}",
+            bin_target(&[])
+        ));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("has no cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_resolved_rejects_subproject_outside_project() {
+        // A symlinked subproject directory pointing outside the project must be refused:
+        // the build never compiles sources outside the project.
+        let dir = temp_dir("sub-outside");
+        let outside = temp_dir("sub-outside-target");
+        write_file(&outside, "cizon.toml", &lib_toml("evil"));
+        std::fs::create_dir_all(dir.join("libs")).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("libs/evil")).unwrap();
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nevil = \"libs/evil\"\n\n{}",
+            bin_target(&[])
+        ));
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("outside the project"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(outside).ok();
+    }
+
+    #[test]
+    fn load_resolved_validates_merged_links() {
+        // A subproject lib linking a library that exists only in another subproject is
+        // fine; linking a nonexistent one names the declaring file.
+        let dir = temp_dir("sub-links");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n{}",
+            bin_target(&["net", "storage"])
+        ));
+        write_file(&dir, "libs/net/cizon.toml", &lib_toml("net"));
+        write_file(&dir, "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n[[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\nlinks = [\"net\"]\n");
+        let resolved = load_resolved(&dir).unwrap();
+        assert_eq!(resolved.targets().unwrap().len(), 3);
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("sub-links-bad");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nstorage = \"libs/storage\"\n\n{}",
+            bin_target(&["storage"])
+        ));
+        write_file(&dir, "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n[[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\nlinks = [\"ghost\"]\n");
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("nonexistent static library ghost"), "got: {err}");
+        assert!(err.contains("libs/storage/cizon.toml"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 }

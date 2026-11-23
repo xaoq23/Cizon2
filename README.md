@@ -305,7 +305,7 @@ The layout is a convention, not a hard-coded framework: `sources` may point at a
 
 Run `cizon help toml` for a terminal-local reference of every configuration key.
 
-cizon recognizes exactly four top-level sections: `[project]`, `[compiler]`, `[dependencies]`, and `[[target]]`. Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
+cizon recognizes exactly five top-level sections: `[project]`, `[compiler]`, `[dependencies]`, `[subproject]`, and `[[target]]`. Unknown sections, and unknown keys inside known sections, are hard errors, so typos such as `[dependancies]` or `compiler = "..."` are never silently ignored.
 
 The minimal configuration only needs a project name and scans `src/`:
 
@@ -375,6 +375,20 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - Each dependency accepts only the `git` and `tag` keys. The key is the dependency name and the `deps/<name>` directory; it may contain only letters, digits, `-`, and `_`. `git` is required, `tag` is optional (the remote default branch when omitted).
 - `cizon.lock` is the single source of truth for builds: `build` uses the pinned commit and never chases a new `tag` that has not been applied with `update`.
 - Dependencies are project-wide, not per-target; adding, updating, lock restoration, and layout are covered in [Dependencies and the lock file](#dependencies-and-the-lock-file).
+
+### `[subproject]`
+
+```toml
+[subproject]
+net = "libs/net"
+storage = "libs/storage"
+```
+
+- A subproject is a nested cizon project: the named directory holds its own `cizon.toml`, and its targets join this project's build plan, linkable by name (`links = ["net"]`). Copy a library out of a multi-library project and declare it here instead of re-declaring its target.
+- Each subproject's `sources`, `include`, and `prefix` resolve against its own directory, not the root. A library's public headers stay in its own `include/` and are declared with the target `include` field, which propagates through `links` as usual.
+- A subproject provides `static_lib`, `shared_lib`, and `test` targets only; a `bin` there is a plan error, and target names must be unique across the project and its subprojects (case-insensitive).
+- A subproject's `[compiler]` is ignored (the root project's compiler and flags apply), and its `[dependencies]` merge into the project's dependency set — the same name with a different git URL or tag is an error; identical declarations deduplicate. `cizon update` and `cizon sync` resolve those dependencies into the root `cizon.lock` and `deps/`.
+- Subprojects may nest (a subproject may declare its own `[subproject]`). Inclusion cycles are plan errors; a diamond (two routes to the same directory) includes it once.
 
 ### `[[target]]`: libraries and bins
 

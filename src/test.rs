@@ -195,12 +195,12 @@ mod tests {
             return;
         }
         let dir = write_project("pass", true);
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
         fs::remove_dir_all(dir).ok();
 
         let dir = write_project("fail", false);
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let code = test(&dir, &cfg, false, None, &[], &[]).unwrap();
         assert_eq!(code, 1, "a failing test target must exit non-zero");
         fs::remove_dir_all(dir).ok();
@@ -220,7 +220,7 @@ mod tests {
              [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib/core.cpp\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let err = crate::run::run(&dir, &cfg, false, None, None, &[]).unwrap_err();
         assert!(err.contains("no bin target"), "got: {err}");
         assert!(err.contains("cizon build"), "got: {err}");
@@ -246,7 +246,7 @@ mod tests {
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         assert_eq!(
             crate::run::run(&dir, &cfg, true, None, None, &[]).unwrap(),
             0,
@@ -266,7 +266,7 @@ mod tests {
             return;
         }
         let dir = write_project("filter", true);
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         // Exact filter still works
         assert_eq!(
             test(&dir, &cfg, false, None, &["calc_test".to_string()], &[]).unwrap(),
@@ -297,7 +297,7 @@ mod tests {
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         assert_eq!(
             test(&dir, &cfg, false, None, &[], &["x".to_string()]).unwrap(),
             0
@@ -325,7 +325,7 @@ mod tests {
              [[target]]\nname = \"b_test\"\nkind = \"test\"\nsources = [\"tests/b.cpp\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = compiler::pick(None).unwrap();
         let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
         let all = pipeline::build_tests(&dir, &cfg, &plan, &[]).unwrap();
@@ -354,7 +354,7 @@ mod tests {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/main.cpp"), "int main(){}").unwrap();
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         // No tests is not a failure (CTest/cargo-like); explicitly selecting one is.
         assert_eq!(test(&dir, &cfg, false, None, &[], &[]).unwrap(), 0);
         let err = test(&dir, &cfg, false, None, &["nope".to_string()], &[]).unwrap_err();
@@ -368,7 +368,7 @@ mod tests {
             return;
         }
         let dir = write_project("ignore", true);
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = compiler::pick(None).unwrap();
         let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
         // build must produce exactly the bin, not the test exe
@@ -400,7 +400,7 @@ mod tests {
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = compiler::pick(None).unwrap();
         let plan = pipeline::plan(&dir, &cfg, cxx, false).unwrap();
         let built = pipeline::build_bins(&dir, &cfg, &plan).unwrap();

@@ -23,7 +23,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         for target in targets.iter().filter(|t| t.kind == TargetKind::StaticLib) {
             let name = target.name.as_deref().expect("config resolves lib name");
             let lib_sources = collect_target_sources(
-                dir,
+                &target.base_dir,
                 target.sources.as_deref(),
                 &format!("static library target {name}"),
             )?;
@@ -34,7 +34,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             libs.push(LibTarget {
                 name: name.to_string(),
                 sources: lib_sources,
-                include: resolve_include(dir, target.include.as_deref(), &owner)?,
+                include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
                 links: target
                     .links
                     .iter()
@@ -45,7 +45,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                             .ok_or_else(|| format!("{owner} links a nonexistent static library {link}."))
                     })
                     .collect::<Result<_, _>>()?,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
         }
@@ -53,7 +53,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         for target in targets.iter().filter(|t| t.kind == TargetKind::SharedLib) {
             let name = target.name.as_deref().expect("config resolves shared library name");
             let shared_sources = collect_target_sources(
-                dir,
+                &target.base_dir,
                 target.sources.as_deref(),
                 &format!("shared library target {name}"),
             )?;
@@ -76,9 +76,9 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             shared.push(SharedTarget {
                 name: name.to_string(),
                 sources: shared_sources,
-                include: resolve_include(dir, target.include.as_deref(), &owner)?,
+                include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
                 links: shared_links,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
         }
@@ -86,7 +86,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         for target in targets.iter().filter(|t| t.kind == TargetKind::Bin) {
             let name = target.name.as_deref().expect("config resolves bin name");
             let sources = collect_target_sources(
-                dir,
+                &target.base_dir,
                 target.sources.as_deref(),
                 &format!("bin target {name}"),
             )?;
@@ -101,8 +101,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 links,
                 out_name: exe_name(name),
                 extern_links: Vec::new(),
-                include: resolve_include(dir, target.include.as_deref(), &owner)?,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
         }
@@ -110,7 +110,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         for target in targets.iter().filter(|t| t.kind == TargetKind::Test) {
             let name = target.name.as_deref().expect("config resolves test name");
             let sources = collect_target_sources(
-                dir,
+                &target.base_dir,
                 target.sources.as_deref(),
                 &format!("test target {name}"),
             )?;
@@ -125,8 +125,8 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 links,
                 out_name: exe_name(name),
                 extern_links: target.extern_links.clone(),
-                include: resolve_include(dir, target.include.as_deref(), &owner)?,
-                prefix: resolve_prefix(dir, target.prefix.as_deref(), &owner)?,
+                include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
         }

@@ -33,7 +33,7 @@ Usage:
   cizon version                     # print version
 
 Run `cizon help <command>` or `cizon help toml` for details. Only reads the [project], \
-[dependencies], [compiler] and [[target]] sections of cizon.toml; any other section is a hard error.";
+[dependencies], [compiler], [subproject] and [[target]] sections of cizon.toml; any other section is a hard error.";
 
 const TOML_HELP: &str = r#"cizon.toml — configuration reference
 
@@ -59,6 +59,16 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   # key = dependency name and deps/<name> directory; git is required, tag is optional.
   # flat layout: include/ headers plus src/*.cpp; cizon checks out git sources but does not build them.
 
+[subproject]
+  net = "libs/net"             # name → project-relative directory of a nested cizon project
+  # The subproject's targets join this project's build plan and are linkable by name
+  # (links = ["net"]); its sources, include and prefix resolve against its own directory.
+  # A subproject provides static_lib, shared_lib and test targets only — no bin; its
+  # [compiler] is ignored (the root project's compiler and flags apply). Its own
+  # [dependencies] merge into the project's dependency set; the same name with a different
+  # git URL or tag is an error. Cycles are errors; a diamond includes the shared
+  # subproject once.
+
 [[target]]
   name = "app"                 # optional for a single bin; required for libs, tests, multiple bins
   kind = "bin"                 # bin | static_lib | shared_lib | test
@@ -74,6 +84,8 @@ Rules:
     run reports no bin, and test reports no test targets.
   - include is added to the target's own compile; library includes propagate transitively through
     links. The project-root include/ remains automatic for every target.
+  - A subproject's targets are merged into the plan by name; a subproject may not declare a
+    bin, and target names must be unique across the project and its subprojects.
   - Static dependencies are ordered dependent-first (consumers before dependencies); cycles are errors.
   - shared_lib may link only static_lib; bin/test may link both; shared -> shared is not supported.
   - extern_links is accepted only on test targets; framework discovery/download is not handled.
@@ -353,7 +365,9 @@ fn parse_run_args<'a>(
 }
 
 fn load_config() -> Result<(std::path::PathBuf, config::Config), String> {    let dir = std::env::current_dir().map_err(|e| format!("cannot read current directory: {e}"))?;
-    let cfg = config::load(&dir)?;
+    // Resolved load: the root project plus its [subproject] graph, merged into one
+    // config. For a project without subprojects this is exactly `config::load`.
+    let cfg = config::load_resolved(&dir)?;
     Ok((dir, cfg))
 }
 
@@ -555,7 +569,7 @@ mod tests {
         assert_eq!(dispatch(&args(&["help", "build"])), 0);
         assert_eq!(dispatch(&args(&["help", "toml"])), 0);
         let toml = command_usage("toml").expect("toml reference");
-        for needle in ["[project]", "[compiler]", "[dependencies]", "[[target]]", "edition", "extern_links"] {
+        for needle in ["[project]", "[compiler]", "[dependencies]", "[subproject]", "[[target]]", "edition", "extern_links"] {
             assert!(toml.contains(needle), "toml help is missing {needle}");
         }
         assert_eq!(dispatch(&args(&["build", "--help"])), 0);

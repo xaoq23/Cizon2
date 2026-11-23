@@ -301,7 +301,7 @@ project/
 
 终端内可用 `cizon help toml` 查看所有配置项的离线参考。
 
-cizon 只识别四个顶层配置段：`[project]`、`[compiler]`、`[dependencies]` 和 `[[target]]`。未知配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
+cizon 只识别五个顶层配置段：`[project]`、`[compiler]`、`[dependencies]`、`[subproject]` 和 `[[target]]`。未知配置段、以及已知段内的未知键都会直接报错，避免 `[dependancies]`、`compiler = "..."` 这类笔误被静默忽略。
 
 最小配置只需要项目名；默认扫描 `src/`：
 
@@ -371,6 +371,20 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - 每个依赖只支持 `git` 与 `tag` 两个键。键名即依赖名和 `deps/<名字>` 目录名，只允许字母、数字、`-`、`_`；`git` 必填，`tag` 可选（省略时使用远端默认分支）。
 - `cizon.lock` 是构建的唯一真相：`build` 只执行锁中已确定的提交，不会自动追随尚未 `update` 的新 `tag`。
 - 依赖是项目级的，不支持 per-target 依赖；添加、更新、锁恢复与目录布局见下文[依赖与锁文件](#依赖与锁文件)。
+
+### `[subproject]`
+
+```toml
+[subproject]
+net = "libs/net"
+storage = "libs/storage"
+```
+
+- 子项目是一个嵌套的 cizon 项目：指定目录下有自己的 `cizon.toml`，它的 target 会合并进本项目的构建计划，按名字链接（`links = ["net"]`）。把某个库从多库项目里拷出来后，在这里声明即可，不必在新项目的 toml 里把 target 重写一遍。
+- 每个子项目的 `sources`、`include`、`prefix` 都相对它自己的目录解析，而不是根目录。库的公开头留在自己的 `include/` 里，用 target 的 `include` 字段声明，沿 `links` 照常传播。
+- 子项目只提供 `static_lib`、`shared_lib` 和 `test` target；里面写 `bin` 会在 plan 阶段报错，target 名在整个项目（含子项目）内必须唯一（不区分大小写）。
+- 子项目的 `[compiler]` 会被忽略（以根项目的编译器和 flags 为准），它的 `[dependencies]` 会合并进项目的依赖集——同名依赖配不同的 git URL 或 tag 会报错，完全相同的声明去重。`cizon update` 与 `cizon sync` 把这些依赖解析进根目录的 `cizon.lock` 与 `deps/`。
+- 子项目可以嵌套（子项目自己也能声明 `[subproject]`）。包含环是 plan 错误；菱形包含（两条路到达同一目录）只包含一次。
 
 ### `[[target]]`：库与 bin
 

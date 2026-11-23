@@ -191,7 +191,7 @@ mod tests {
         )
         .unwrap();
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let args = vec!["a".to_string(), "b".to_string()];
         assert_eq!(run(&dir, &cfg, false, None, None, &args).unwrap(), 7);
         fs::remove_dir_all(dir).ok();
@@ -243,7 +243,7 @@ mod tests {
              [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
         )
         .unwrap();
-        let cfg = crate::config::load(&dir).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
         let err = run(&dir, &cfg, false, None, None, &[]).unwrap_err();
         assert!(err.contains("no bin target"), "got: {err}");
         assert!(err.contains("cizon test"), "got: {err}");
