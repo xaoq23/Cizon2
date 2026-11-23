@@ -163,14 +163,13 @@ pub fn new_cmd(args: &[String]) -> Result<i32, String> {
     validate_new_path(dir)?;
     let project = project_name(dir, &name);
     config::validate_project_name(&project)?;
-    match std::fs::create_dir(dir) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(format!(
-                "the directory {name} already exists. Pick another name, or cd into it and use `cizon init`."
-            ));
-        }
-        Err(e) => return Err(format!("cannot create the directory {name}: {e}")),
+    if dir.exists() {
+        return Err(format!(
+            "the directory {name} already exists. Pick another name, or cd into it and use `cizon init`."
+        ));
+    }
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return Err(format!("cannot create the directory {name}: {e}"));
     }
     if let Err(e) = scaffold(dir, &project, kind) {
         let _ = std::fs::remove_dir_all(dir);
@@ -575,6 +574,19 @@ mod tests {
         assert!(new_cmd(&["--kind=nope".into(), "x".into()]).is_err());
         assert!(init_cmd(&["--kind".into(), "test".into()]).is_err());
         assert!(init_cmd(&["--kind".into()]).is_err());
+    }
+
+    #[test]
+    fn new_creates_missing_parent_directories() {
+        let parent = PathBuf::from(temp("nested-parent"));
+        let dir = parent.join("libs/net");
+        assert_eq!(
+            new_cmd(&[dir.to_string_lossy().into_owned()]).unwrap(),
+            0
+        );
+        assert!(dir.join("cizon.toml").is_file());
+        assert!(dir.join("src/main.cpp").is_file());
+        fs::remove_dir_all(parent).ok();
     }
 
     #[test]

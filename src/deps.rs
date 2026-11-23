@@ -513,7 +513,7 @@ fn read_lock(dir: &Path) -> Result<toml::Table, String> {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Err(format!(
-                "{CIZON_LOCK} is missing, but [dependencies] declares dependencies. Run cizon update <dependency-name> to rebuild the lock from cizon.toml."
+                "{CIZON_LOCK} is missing, but the project (cizon.toml or a subproject) declares dependencies. Run cizon update <dependency-name> to rebuild the lock."
             ));
         }
         Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
@@ -538,12 +538,12 @@ fn lock_commit(
         })?;
     if entry.get("git").and_then(|v| v.as_str()) != Some(info.git.as_str()) {
         return Err(format!(
-            "[dependencies] and {CIZON_LOCK} have a git URL mismatch for {name}. Follow [dependencies]: run cizon update {name} to align."
+            "the configured dependencies (cizon.toml or a subproject) and {CIZON_LOCK} have a git URL mismatch for {name}. Run cizon update {name} to align."
         ));
     }
     if entry.get("tag").and_then(|v| v.as_str()) != info.tag.as_deref() {
         return Err(format!(
-            "[dependencies] and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon update {name} to align."
+            "the configured dependencies (cizon.toml or a subproject) and {CIZON_LOCK} have a tag mismatch for {name}. Run cizon update {name} to align."
         ));
     }
     let Some(commit) = entry.get("commit").and_then(|v| v.as_str()) else {

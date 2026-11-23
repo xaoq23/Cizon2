@@ -2805,7 +2805,6 @@
         let exe = build_project_resolved(&dir).unwrap();
         assert_eq!(run_code(&exe), 0);
         assert!(lib_archive_path(&dir, "mid").is_file());
-        assert!(lib_archive_path(&dir, "mid").is_file());
         assert!(lib_archive_path(&dir, "leaf").is_file());
         fs::remove_dir_all(dir).ok();
     }
@@ -2961,12 +2960,7 @@
         let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let p = plan(&dir, &cfg, cxx, false).unwrap();
-        let mut base_dirs: Vec<PathBuf> = vec![dir.clone()];
-        for target in cfg.targets().unwrap() {
-            if !base_dirs.contains(&target.base_dir) {
-                base_dirs.push(target.base_dir.clone());
-            }
-        }
+        let base_dirs = target_base_dirs(&dir, cfg.targets().unwrap());
         let unused = unused_sources(&dir, &base_dirs, &p.bins, &p.tests, &p.libs, &p.shared);
         assert_eq!(unused, vec![dir.join("libs/net/src/unused.cpp")]);
         fs::remove_dir_all(dir).ok();

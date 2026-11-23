@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::compiler::{self, Cxx};
-use crate::config::{Config, TargetKind};
+use crate::config::{Config, Target, TargetKind};
 
 use super::output::rel_display;
 use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
@@ -132,12 +132,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         }
         // Every target's base dir gets its src/ scanned for uncompiled files: a
         // subproject's src/ is as much a source root as the project's own.
-        let mut base_dirs: Vec<PathBuf> = vec![dir.to_path_buf()];
-        for target in targets {
-            if !base_dirs.contains(&target.base_dir) {
-                base_dirs.push(target.base_dir.clone());
-            }
-        }
+        let base_dirs = target_base_dirs(dir, targets);
         warn_unused_src(dir, &base_dirs, &bins, &tests, &libs, &shared);
         (bins, tests, libs, shared)
     } else {
@@ -625,6 +620,16 @@ fn resolve_include(dir: &Path, raw: Option<&str>, owner: &str) -> Result<Option<
 
 /// Explicit target mode drops the implicit single-executable project, so src/ files that no
 /// target compiles would silently stop being built. Warn once with a concrete fix.
+pub(super) fn target_base_dirs(dir: &Path, targets: &[Target]) -> Vec<PathBuf> {
+    let mut base_dirs = vec![dir.to_path_buf()];
+    for target in targets {
+        if !base_dirs.contains(&target.base_dir) {
+            base_dirs.push(target.base_dir.clone());
+        }
+    }
+    base_dirs
+}
+
 fn warn_unused_src(
     dir: &Path,
     base_dirs: &[PathBuf],
@@ -633,27 +638,37 @@ fn warn_unused_src(
     libs: &[LibTarget],
     shared: &[SharedTarget],
 ) {
-    let unused = unused_sources(dir, base_dirs, bins, tests, libs, shared);
-    if unused.is_empty() {
-        return;
-    }
-    let shown = unused
-        .iter()
-        .take(3)
-        .map(|src| rel_display(dir, src))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let more = unused.len().saturating_sub(3);
-    let suffix = if more > 0 {
-        format!(" (+{more} more)")
-    } else {
-        String::new()
-    };
-    eprintln!(
-        "Warning: source files under src/ are not compiled by any [[target]]: {shown}{suffix}. \
+    for base in base_dirs {
+        let unused = unused_sources(dir, std::slice::from_ref(base), bins, tests, libs, shared);
+        if unused.is_empty() {
+            continue;
+        }
+        let shown = unused
+            .iter()
+            .take(3)
+            .map(|src| rel_display(dir, src))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = unused.len().saturating_sub(3);
+        let suffix = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        if base.as_path() == dir {
+            eprintln!(
+                "Warning: source files under src/ are not compiled by any [[target]]: {shown}{suffix}. \
 Declaring [[target]] disables the implicit single-executable project; add them to a bin/test target \
 (e.g. sources = [\"src\"]), or remove [[target]]."
-    );
+            );
+        } else {
+            let label = rel_display(dir, base).replace('\\', "/");
+            eprintln!(
+                "Warning: source files under {label}/src/ are not compiled by any target in subproject {label}: \
+{shown}{suffix}. Add them to a target in {label}/cizon.toml, or remove them."
+            );
+        }
+    }
 }
 
 /// Project-relative source files under any target base dir's src/ that no [[target]]

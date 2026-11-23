@@ -1761,6 +1761,36 @@ mod tests {
     }
 
     #[test]
+    fn load_resolved_keeps_caller_spelling_for_base_dirs() {
+        let dir = temp_dir("sub-base-spelling");
+        write_file(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_file(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        let cfg = load_resolved(&dir).unwrap();
+        let by_name = |name: &str| {
+            cfg.targets()
+                .unwrap()
+                .iter()
+                .find(|t| t.name.as_deref() == Some(name))
+                .unwrap()
+                .base_dir
+                .clone()
+        };
+        assert_eq!(by_name("app"), dir);
+        assert_eq!(by_name("net"), dir.join("libs/net"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn load_resolved_rejects_duplicate_target_names_across_files() {
         let dir = temp_dir("sub-dup");
         write_file(&dir, "cizon.toml", &format!(
