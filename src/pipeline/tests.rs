@@ -2965,3 +2965,209 @@
         assert_eq!(unused, vec![dir.join("libs/net/src/unused.cpp")]);
         fs::remove_dir_all(dir).ok();
     }
+
+    // ── Duplicate public headers ──────────────────────────────────────────
+
+    /// Two library subprojects that both provide `include/util.hpp` at their include
+    /// root, with a root bin linking both: the shape that used to build silently and
+    /// let link order pick the winner.
+    fn duplicate_header_project(tag: &str) -> PathBuf {
+        let dir = temp_dir(tag);
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"net\"; }\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"storage\"; }\n",
+        );
+        write_sub(&dir, "libs/storage/src/storage.cpp", "int storage() { return 2; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\", \"storage\"]\n",
+        );
+        write_sub(&dir, "src/main.cpp", "int main() { return 0; }\n");
+        dir
+    }
+
+    #[test]
+    fn duplicate_header_in_same_link_closure_is_rejected_at_plan_time() {
+        let dir = duplicate_header_project("dup-header-closure");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("duplicate header \"util.hpp\""), "got: {err}");
+        assert!(err.contains("libs/net/include/util.hpp"), "got: {err}");
+        assert!(err.contains("libs/storage/include/util.hpp"), "got: {err}");
+        assert!(err.contains("\"net\""), "got: {err}");
+        assert!(err.contains("\"storage\""), "got: {err}");
+        // Labels are project-relative, never absolute or canonical paths.
+        assert!(!err.contains(dir.to_string_lossy().as_ref()), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn namespaced_headers_do_not_collide() {
+        // Same two-library shape, but each header lives under include/<project>/, so
+        // the relative paths differ and the plan must succeed.
+        let dir = temp_dir("dup-header-namespaced");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/downflux/net/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"net\"; }\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/downflux/storage/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"storage\"; }\n",
+        );
+        write_sub(&dir, "libs/storage/src/storage.cpp", "int storage() { return 2; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\", \"storage\"]\n",
+        );
+        write_sub(&dir, "src/main.cpp", "int main() { return 0; }\n");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let _p = plan(&dir, &cfg, cxx, false).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn transitive_duplicate_header_is_rejected_at_plan_time() {
+        // storage links net; both provide include/util.hpp. The root bin links
+        // storage only, but the collision sits in its transitive closure.
+        let dir = temp_dir("dup-header-transitive");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"net\"; }\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\nlinks = [\"net\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"storage\"; }\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/src/storage.cpp",
+            "int net();\nint storage() { return net(); }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"storage\"]\n",
+        );
+        write_sub(&dir, "src/main.cpp", "int main() { return 0; }\n");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("duplicate header \"util.hpp\""), "got: {err}");
+        assert!(err.contains("libs/net/include/util.hpp"), "got: {err}");
+        assert!(err.contains("libs/storage/include/util.hpp"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn duplicate_header_in_separate_closures_is_allowed() {
+        // Both libraries provide include/util.hpp, but no target links both: bin A
+        // links net only, bin B links storage only. The check runs per link closure,
+        // so the plan must succeed.
+        let dir = temp_dir("dup-header-separate");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"net\"; }\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"storage\"; }\n",
+        );
+        write_sub(&dir, "libs/storage/src/storage.cpp", "int storage() { return 2; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"app_a\"\nkind = \"bin\"\nsources = [\"src/a.cpp\"]\nlinks = [\"net\"]\n\n\
+             [[target]]\nname = \"app_b\"\nkind = \"bin\"\nsources = [\"src/b.cpp\"]\nlinks = [\"storage\"]\n",
+        );
+        write_sub(&dir, "src/a.cpp", "int net();\nint main() { return net(); }\n");
+        write_sub(&dir, "src/b.cpp", "int storage();\nint main() { return storage(); }\n");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let _p = plan(&dir, &cfg, cxx, false).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn duplicate_header_rejects_real_build() {
+        if !libs_supported() {
+            return;
+        }
+        // The same colliding shape, built through the resolved config: the build
+        // must fail at plan time, before any compilation.
+        let dir = duplicate_header_project("dup-header-build");
+        let err = build_project_resolved(&dir).unwrap_err();
+        assert!(err.contains("duplicate header \"util.hpp\""), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }

@@ -199,7 +199,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);
-    finalize_target_graph(&mut bins, &mut tests, &mut libs, &mut shared, &flags, &test_flags)?;
+    finalize_target_graph(dir, &mut bins, &mut tests, &mut libs, &mut shared, &flags, &test_flags)?;
 
     for (src, names) in overlapping_exec_sources(&bins, &tests) {
         eprintln!(
@@ -226,6 +226,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
 /// Resolve the include interface and static-library order, then materialize each target's
 /// effective compile flags. Root `include/` and dependency includes are already in `flags`.
 fn finalize_target_graph(
+    dir: &Path,
     bins: &mut [BinTarget],
     tests: &mut [BinTarget],
     libs: &mut [LibTarget],
@@ -244,6 +245,7 @@ fn finalize_target_graph(
         .map(|(i, sh)| (sh.name.to_lowercase(), i))
         .collect();
     validate_static_graph(libs, &lib_index)?;
+    validate_include_uniqueness(dir, bins, tests, libs, shared, &lib_index, &shared_index)?;
 
     for i in 0..libs.len() {
         let includes = lib_includes(&libs[i].name, libs, &lib_index);
@@ -447,6 +449,180 @@ fn validate_static_graph(
     let mut stack = Vec::new();
     for lib in libs {
         visit(&lib.name, libs, index, &mut state, &mut stack)?;
+    }
+    Ok(())
+}
+
+/// Reject duplicate public headers across a target's link closure at plan time. Two
+/// libraries providing the same relative header path (e.g. both `include/util.hpp`)
+/// would otherwise silently shadow each other, with the winner decided by link order.
+/// Only declared target `include` directories are scanned (root include/ and deps/ are
+/// not); the check runs per link closure, so libraries that never meet in one target
+/// do not collide.
+fn validate_include_uniqueness(
+    dir: &Path,
+    bins: &[BinTarget],
+    tests: &[BinTarget],
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+    lib_index: &HashMap<String, usize>,
+    shared_index: &HashMap<String, usize>,
+) -> Result<(), String> {
+    // Every target's own compilation sees the same -I list as its consumers, so each
+    // closure is checked: libraries first, then shared libraries, bins and tests.
+    for lib in libs {
+        let pairs =
+            lib_closure_includes(&lib.name, lib.include.as_ref(), &lib.links, libs, lib_index);
+        check_closure_includes(dir, &pairs)?;
+    }
+    for sh in shared {
+        let pairs = lib_closure_includes(&sh.name, sh.include.as_ref(), &sh.links, libs, lib_index);
+        check_closure_includes(dir, &pairs)?;
+    }
+    for target in bins.iter().chain(tests.iter()) {
+        let pairs = exec_closure_includes(target, libs, shared, lib_index, shared_index);
+        check_closure_includes(dir, &pairs)?;
+    }
+    Ok(())
+}
+
+/// (owning target, include directory) pairs in a static library's link closure, in
+/// declaration order, starting with the library's own include directory. Mirrors
+/// `collect_lib_includes` but keeps the owner of each directory so a duplicate header
+/// can name both libraries.
+fn lib_closure_includes(
+    name: &str,
+    own_include: Option<&PathBuf>,
+    links: &[String],
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(include) = own_include {
+        out.push((name.to_string(), include.clone()));
+    }
+    let mut visited = HashSet::new();
+    for dep in links {
+        collect_closure_includes(dep, libs, index, &mut visited, &mut out);
+    }
+    out
+}
+
+/// (owning target, include directory) pairs in a bin/test target's link closure, in
+/// declaration order, starting with the target's own include directory. Mirrors
+/// `exec_includes`.
+fn exec_closure_includes(
+    target: &BinTarget,
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+    lib_index: &HashMap<String, usize>,
+    shared_index: &HashMap<String, usize>,
+) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    if let Some(include) = &target.include {
+        out.push((target.name.clone(), include.clone()));
+    }
+    let mut visited_libs = HashSet::new();
+    let mut visited_shared = HashSet::new();
+    for link in &target.links {
+        match link {
+            LinkTarget::Static(name) => {
+                collect_closure_includes(name, libs, lib_index, &mut visited_libs, &mut out);
+            }
+            LinkTarget::Shared(name) => {
+                let lower = name.to_lowercase();
+                if !visited_shared.insert(lower.clone()) {
+                    continue;
+                }
+                if let Some(&i) = shared_index.get(&lower) {
+                    if let Some(include) = &shared[i].include {
+                        out.push((shared[i].name.clone(), include.clone()));
+                    }
+                    for dep in &shared[i].links {
+                        collect_closure_includes(dep, libs, lib_index, &mut visited_libs, &mut out);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Recursive half of `lib_closure_includes` / `exec_closure_includes`: one static
+/// library's include directory plus its transitive dependencies, in declaration
+/// order. Mirrors `collect_lib_includes`.
+fn collect_closure_includes(
+    name: &str,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+    visited: &mut HashSet<String>,
+    out: &mut Vec<(String, PathBuf)>,
+) {
+    let lower = name.to_lowercase();
+    if !visited.insert(lower.clone()) {
+        return;
+    }
+    let Some(&i) = index.get(&lower) else {
+        return;
+    };
+    if let Some(include) = &libs[i].include {
+        out.push((libs[i].name.clone(), include.clone()));
+    }
+    for dep in &libs[i].links {
+        collect_closure_includes(dep, libs, index, visited, out);
+    }
+}
+
+/// Scan one link closure's include directories for the same relative header path
+/// provided by two different directories. Directories are identified by canonical
+/// path (identity only, never shown) so the same directory spelled two ways is
+/// scanned once; file labels in the error stay project-relative.
+fn check_closure_includes(dir: &Path, pairs: &[(String, PathBuf)]) -> Result<(), String> {
+    let mut scanned: HashSet<PathBuf> = HashSet::new();
+    let mut seen: HashMap<PathBuf, (String, PathBuf)> = HashMap::new();
+    for (owner, include) in pairs {
+        let identity = std::fs::canonicalize(include).unwrap_or_else(|_| include.clone());
+        if !scanned.insert(identity) {
+            continue;
+        }
+        let mut files = Vec::new();
+        collect_include_files(include, &mut files)?;
+        for file in files {
+            let rel = file.strip_prefix(include).unwrap_or(&file).to_path_buf();
+            if let Some((first_owner, first_file)) = seen.get(&rel) {
+                return Err(format!(
+                    "duplicate header \"{}\" provided by \"{}\" ({}) and \"{}\" ({}); move one under include/<project>/ or rename it.",
+                    rel.to_string_lossy().replace('\\', "/"),
+                    first_owner,
+                    rel_display(dir, first_file).replace('\\', "/"),
+                    owner,
+                    rel_display(dir, &file).replace('\\', "/")
+                ));
+            }
+            seen.insert(rel, (owner.clone(), file));
+        }
+    }
+    Ok(())
+}
+
+/// All files under an include directory (any extension: everything under an include
+/// root is includable). Symlinked directories are not followed (cycle guard, same as
+/// `collect_recursive`); symlinked files are collected.
+fn collect_include_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|e| format!("Cannot read directory entries of {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("Cannot read type of {}: {e}", path.display()))?;
+        if file_type.is_dir() {
+            collect_include_files(&path, out)?;
+        } else if path.is_file() {
+            out.push(path);
+        }
     }
     Ok(())
 }
