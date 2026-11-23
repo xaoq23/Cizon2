@@ -3171,3 +3171,95 @@
         assert!(err.contains("duplicate header \"util.hpp\""), "got: {err}");
         fs::remove_dir_all(dir).ok();
     }
+
+    fn case_only_header_project(tag: &str) -> PathBuf {
+        // Full project: net provides include/Util.hpp, storage provides
+        // include/util.hpp, root bin links both. The two headers differ only by
+        // case, so they shadow each other on case-insensitive filesystems
+        // (Windows) but are different files on case-sensitive ones (Linux).
+        let dir = temp_dir(tag);
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/include/Util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"net\"; }\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "libs/storage/cizon.toml",
+            "[project]\nname = \"storage\"\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(
+            &dir,
+            "libs/storage/include/util.hpp",
+            "#pragma once\ninline const char* util_origin() { return \"storage\"; }\n",
+        );
+        write_sub(&dir, "libs/storage/src/storage.cpp", "int storage() { return 2; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\nstorage = \"libs/storage\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\", \"storage\"]\n",
+        );
+        write_sub(&dir, "src/main.cpp", "int main() { return 0; }\n");
+        dir
+    }
+
+    #[test]
+    fn case_only_duplicate_header_is_rejected_when_case_insensitive() {
+        // Simulates the Windows branch: the duplicate test must treat Util.hpp
+        // and util.hpp as the same header.
+        let dir = case_only_header_project("dup-header-case-insensitive");
+        let pairs = vec![
+            ("net".to_string(), dir.join("libs/net/include")),
+            ("storage".to_string(), dir.join("libs/storage/include")),
+        ];
+        let err = check_closure_includes(&dir, &pairs, true).unwrap_err();
+        assert!(err.contains("duplicate header"), "got: {err}");
+        // The message names both files with their original case.
+        assert!(err.contains("libs/net/include/Util.hpp"), "got: {err}");
+        assert!(err.contains("libs/storage/include/util.hpp"), "got: {err}");
+        assert!(!err.contains(dir.to_string_lossy().as_ref()), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn case_only_duplicate_header_is_allowed_when_case_sensitive() {
+        // Same two headers, exact matching: they are different files, so the
+        // check must pass.
+        let dir = case_only_header_project("dup-header-case-sensitive");
+        let pairs = vec![
+            ("net".to_string(), dir.join("libs/net/include")),
+            ("storage".to_string(), dir.join("libs/storage/include")),
+        ];
+        check_closure_includes(&dir, &pairs, false).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn case_only_duplicate_header_at_plan_time_follows_platform() {
+        // The same project through plan(): on case-insensitive filesystems
+        // (Windows) the two headers shadow each other and the plan must fail;
+        // on case-sensitive ones (Linux) they are different files and the plan
+        // must succeed.
+        let dir = case_only_header_project("dup-header-case-plan");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let result = plan(&dir, &cfg, cxx, false);
+        if cfg!(windows) {
+            let err = result.unwrap_err();
+            assert!(err.contains("duplicate header"), "got: {err}");
+            assert!(err.contains("libs/net/include/Util.hpp"), "got: {err}");
+            assert!(err.contains("libs/storage/include/util.hpp"), "got: {err}");
+        } else {
+            result.unwrap();
+        }
+        fs::remove_dir_all(dir).ok();
+    }

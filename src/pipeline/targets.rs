@@ -470,18 +470,23 @@ fn validate_include_uniqueness(
 ) -> Result<(), String> {
     // Every target's own compilation sees the same -I list as its consumers, so each
     // closure is checked: libraries first, then shared libraries, bins and tests.
+    // Whether two headers differing only by case count as duplicates follows the
+    // host filesystem: Windows lookups are case-insensitive, so Util.hpp and
+    // util.hpp shadow each other there; on case-sensitive filesystems they are
+    // different files.
+    let case_insensitive = cfg!(windows);
     for lib in libs {
         let pairs =
             lib_closure_includes(&lib.name, lib.include.as_ref(), &lib.links, libs, lib_index);
-        check_closure_includes(dir, &pairs)?;
+        check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for sh in shared {
         let pairs = lib_closure_includes(&sh.name, sh.include.as_ref(), &sh.links, libs, lib_index);
-        check_closure_includes(dir, &pairs)?;
+        check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for target in bins.iter().chain(tests.iter()) {
         let pairs = exec_closure_includes(target, libs, shared, lib_index, shared_index);
-        check_closure_includes(dir, &pairs)?;
+        check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     Ok(())
 }
@@ -573,13 +578,30 @@ fn collect_closure_includes(
     }
 }
 
+/// Map key for a header's path relative to its include directory: separators
+/// normalized, and lowercased when the host filesystem is case-insensitive so
+/// Util.hpp and util.hpp count as the same header there. The error message
+/// always shows the original paths, never the key.
+fn header_key(rel: &Path, case_insensitive: bool) -> String {
+    let key = rel.to_string_lossy().replace('\\', "/");
+    if case_insensitive {
+        key.to_lowercase()
+    } else {
+        key
+    }
+}
+
 /// Scan one link closure's include directories for the same relative header path
 /// provided by two different directories. Directories are identified by canonical
 /// path (identity only, never shown) so the same directory spelled two ways is
 /// scanned once; file labels in the error stay project-relative.
-fn check_closure_includes(dir: &Path, pairs: &[(String, PathBuf)]) -> Result<(), String> {
+pub(crate) fn check_closure_includes(
+    dir: &Path,
+    pairs: &[(String, PathBuf)],
+    case_insensitive: bool,
+) -> Result<(), String> {
     let mut scanned: HashSet<PathBuf> = HashSet::new();
-    let mut seen: HashMap<PathBuf, (String, PathBuf)> = HashMap::new();
+    let mut seen: HashMap<String, (String, PathBuf)> = HashMap::new();
     for (owner, include) in pairs {
         let identity = std::fs::canonicalize(include).unwrap_or_else(|_| include.clone());
         if !scanned.insert(identity) {
@@ -589,7 +611,8 @@ fn check_closure_includes(dir: &Path, pairs: &[(String, PathBuf)]) -> Result<(),
         collect_include_files(include, &mut files)?;
         for file in files {
             let rel = file.strip_prefix(include).unwrap_or(&file).to_path_buf();
-            if let Some((first_owner, first_file)) = seen.get(&rel) {
+            let key = header_key(&rel, case_insensitive);
+            if let Some((first_owner, first_file)) = seen.get(&key) {
                 return Err(format!(
                     "duplicate header \"{}\" provided by \"{}\" ({}) and \"{}\" ({}); move one under include/<project>/ or rename it.",
                     rel.to_string_lossy().replace('\\', "/"),
@@ -599,7 +622,7 @@ fn check_closure_includes(dir: &Path, pairs: &[(String, PathBuf)]) -> Result<(),
                     rel_display(dir, &file).replace('\\', "/")
                 ));
             }
-            seen.insert(rel, (owner.clone(), file));
+            seen.insert(key, (owner.clone(), file));
         }
     }
     Ok(())
