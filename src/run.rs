@@ -8,7 +8,7 @@ use std::io::Write;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
-use crate::pipeline::output::{style_err, CYAN, DIM, RED};
+use crate::pipeline::output::{style_err, verbose_command, CYAN, DIM, RED};
 
 /// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
 pub fn run(
@@ -79,6 +79,7 @@ pub fn run(
     if let Some(path) = compiler::child_path(&compiler_name) {
         cmd.env("PATH", path);
     }
+    verbose_command(&cmd);
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("cannot start {}: {e}", pipeline::rel_display(dir, &exe)))?;

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::compile::{replace_file, temp_sibling};
+use super::output::verbose_command;
 use super::state::reset_dir;
 
 pub(super) fn archive_path(scope_dir: &Path, name: &str) -> PathBuf {
@@ -34,10 +35,10 @@ pub(super) fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<
     }
     let tmp = temp_sibling(archive);
     let _ = std::fs::remove_file(&tmp);
-    let out = Command::new(ar)
-        .arg("rcs")
-        .arg(&tmp)
-        .args(objs)
+    let mut cmd = Command::new(ar);
+    cmd.arg("rcs").arg(&tmp).args(objs);
+    verbose_command(&cmd);
+    let out = cmd
         .output()
         .map_err(|e| format!("Failed to start archiver {ar}: {e}"))?;
     if !out.status.success() {
@@ -91,6 +92,7 @@ pub(super) fn link_shared(
     for f in link_flags {
         cmd.arg(f);
     }
+    verbose_command(&cmd);
     let out = cmd
         .output()
         .map_err(|e| format!("Failed to start linker {cxx}: {e}"))?;
@@ -131,6 +133,7 @@ pub(super) fn link(
     for f in extra {
         cmd.arg(f);
     }
+    verbose_command(&cmd);
     let out = cmd
         .output()
         .map_err(|e| format!("Failed to start linker {cxx}: {e}"))?;

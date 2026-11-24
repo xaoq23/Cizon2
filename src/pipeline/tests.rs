@@ -2408,6 +2408,78 @@
     }
 
     #[test]
+    fn clean_removes_only_build_directory() {
+        let dir = temp_dir("clean");
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("cizon.lock"), "locked\n").unwrap();
+        fs::write(dir.join("compile_commands.json"), "[]\n").unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("deps/pkg")).unwrap();
+        fs::create_dir_all(dir.join(".vscode")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("deps/pkg/keep.txt"), "keep\n").unwrap();
+        fs::write(dir.join(".vscode/settings.json"), "{}\n").unwrap();
+        fs::create_dir_all(dir.join("build/debug-g++/obj")).unwrap();
+        fs::write(dir.join("build/debug-g++/obj/main.o"), "old").unwrap();
+
+        assert!(clean(&dir).unwrap(), "an existing build directory must be cleaned");
+        assert!(!dir.join("build").exists());
+        assert!(dir.join("cizon.toml").exists(), "clean must preserve config");
+        assert!(dir.join("cizon.lock").exists(), "clean must preserve the lock");
+        assert!(dir.join("compile_commands.json").exists(), "clean must preserve the compilation database");
+        assert!(dir.join("deps/pkg/keep.txt").exists(), "clean must preserve dependencies");
+        assert!(dir.join(".vscode/settings.json").exists(), "clean must preserve editor configuration");
+        assert!(dir.join("src/main.cpp").exists(), "clean must preserve sources");
+        assert!(!clean(&dir).unwrap(), "a missing build directory is a no-op");
+        assert!(!dir.join("build").exists(), "a no-op clean must not create build/");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clean_removes_a_stray_build_file() {
+        let dir = temp_dir("clean-file");
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::write(dir.join("build"), "not a directory\n").unwrap();
+        assert!(clean(&dir).unwrap(), "a stray build file must be removed");
+        assert!(!dir.join("build").exists());
+        assert!(!clean(&dir).unwrap(), "cleaning twice is a no-op");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn clean_does_not_follow_build_directory_link() {
+        let parent = temp_dir("clean-link");
+        let dir = parent.join("project");
+        let outside = parent.join("outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("artifact"), "keep me\n").unwrap();
+        if !make_dir_link(&dir.join("build"), &outside) {
+            fs::remove_dir_all(parent).ok();
+            return;
+        }
+
+        assert!(clean(&dir).unwrap(), "the build link itself should be removed");
+        assert!(!dir.join("build").exists());
+        assert!(outside.join("artifact").exists(), "clean must not delete the link target");
+        fs::remove_dir_all(parent).ok();
+    }
+
+    #[test]
+    fn clean_reports_an_active_build_lock() {
+        let dir = temp_dir("clean-lock");
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::create_dir_all(dir.join("build/debug-g++")).unwrap();
+        let _lock = BuildLock::acquire(&dir).unwrap();
+        let err = clean(&dir).unwrap_err();
+        assert!(err.contains("another cizon build"), "got: {err}");
+        assert!(dir.join("build").exists(), "a failed clean must preserve artifacts");
+        drop(_lock);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn static_link_change_relinks_with_new_archive() {
         if !have_compiler() {
             return;

@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, validation of subproject git sources and include roots, and PUBLIC per-target compile definitions. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, validation of subproject git sources and include roots, and PUBLIC per-target compile definitions. `cizon clean` removes only `build/`, while `--verbose` prints actual compiler, archiver and linker commands. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -27,6 +27,7 @@ Current version: **v0.10.0**. Adds local `[subproject]` composition: library/tes
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
 - Git dependencies with a lock file: `cizon add` / `cizon update` / `cizon sync`; `sync --check` verifies a locked checkout in CI without writing
 - `--quiet` silences build/run/test progress lines (errors, warnings and program output still print)
+- `--verbose` prints compiler, archiver, linker and selected program/test commands on stderr; `cizon clean` removes only `build/`
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
 - Compiler warnings grouped by source file and highlighted; build status distinguishes fresh / incremental / relinked / up to date
 - Compiler stderr is captured and replayed (lossy decoding for non-UTF-8); crash exit codes are translated into plain language
@@ -119,21 +120,22 @@ It does not run `git init`: version control is your decision. The generated `.gi
 
 ## Commands
 
-Commands that operate on a project (`build` / `run` / `test` / `add` / `update` / `sync`) run in the directory containing `cizon.toml`; `new` creates a directory, `init` initializes the current directory, and `help` / `version` need no project. Running `cizon` without a subcommand prints usage.
+Commands that operate on a project (`build` / `run` / `test` / `add` / `update` / `sync` / `clean`) run in the directory containing `cizon.toml`; `new` creates a directory, `init` initializes the current directory, and `help` / `version` need no project. Running `cizon` without a subcommand prints usage.
 
 | Command | Purpose |
 |---|---|
 | `cizon new <path> [--kind <kind>]` | Create a project skeleton (`bin`, `static_lib`, or `shared_lib`) |
 | `cizon init [--kind <kind>]` | Initialize in the current directory (existing files are not overwritten) |
-| `cizon build [--release] [--compiler <spec>] [--quiet]` | Build every bin and library target (not tests) |
-| `cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]` | Build bins and their dependencies, then run and forward arguments |
-| `cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]` | Build and run test targets one by one |
+| `cizon build [--release] [--compiler <spec>] [--quiet] [--verbose]` | Build every bin and library target (not tests) |
+| `cizon run [--release] [--compiler <spec>] [--quiet] [--verbose] [<bin-name>] [-- <program args...>]` | Build bins and their dependencies, then run and forward arguments |
+| `cizon test [--release] [--compiler <spec>] [--quiet] [--verbose] [<test-name>...] [-- <test args...>]` | Build and run test targets one by one |
 | `cizon add <git-url> [--tag <tag>]` | Add a git dependency and write the lock file |
 | `cizon update <dependency>` | Align the lock with the intent in `cizon.toml` (upgrade or downgrade) |
 | `cizon sync [--check]` | Restore deps from `cizon.lock`, or verify them without writing |
+| `cizon clean` | Remove the project's `build/` directory only |
 | `cizon help [<command>\|toml]` / `cizon version` | General, per-command, or cizon.toml reference / version |
 
-`--quiet` on `build` / `run` / `test` suppresses cizon's own progress lines; errors, compiler warnings and the program/test output still print.
+`--quiet` on `build` / `run` / `test` suppresses cizon's own progress lines; errors, compiler warnings and the program/test output still print. `--verbose` prints the actual compiler, archiver and linker commands (and the selected program/test command); `--quiet` and `--verbose` cannot be combined.
 
 ### `cizon new <path> [--kind bin|static_lib|shared_lib]`
 
@@ -161,11 +163,12 @@ Builds every bin, static library, and shared library in the plan, compiling only
 | `--release` | Uses `-O2 -DNDEBUG` (asserts off for project/dependency sources); the default debug build uses `-g`. Test sources always strip NDEBUG |
 | `--compiler <spec>` | Temporarily selects the compiler for this build |
 | `--quiet` / `-q` | Suppress progress lines; errors, warnings and program output still print |
+| `--verbose` | Print each actual compiler, archiver and linker command line |
 
 - `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
 - An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon probes g++ → clang++ and prints a notice when g++ is missing
 - Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers never happens
-- `build` accepts only the three options above and no program arguments; use `run` to pass arguments
+- `build` accepts only the options above and no program arguments; use `run` to pass arguments
 
 ```bash
 cizon build
@@ -180,6 +183,7 @@ Builds every bin and its dependencies, then runs the selected bin; test targets 
 ```bash
 cizon run                        # valid when the project has exactly one bin
 cizon run worker                 # select worker when multiple bins exist
+cizon run worker --verbose       # show build commands and the executed program command
 cizon run worker -- --port 8080  # everything after -- goes to the program
 ```
 
@@ -198,10 +202,11 @@ Builds the selected test targets (all when no filter is given) and runs them in 
 ```bash
 cizon test                              # run every test target
 cizon test calc_test codec_test         # select targets, case-insensitive
+cizon test calc_test --verbose          # show build commands and each test command
 cizon test calc_test -- --gtest_filter=Add*  # everything after -- goes to each test process
 ```
 
-- Accepts `--release` and `--compiler <spec>` like `build` / `run`; the build phase builds the selected test targets and all planned library targets (bins are not built), and `build` / `run` never build or execute test targets
+- Accepts `--release`, `--compiler <spec>`, `--quiet`, and `--verbose` like `build` / `run`; the build phase builds the selected test targets and all planned library targets (bins are not built), and `build` / `run` never build or execute test targets
 - Any non-zero exit or crash fails the whole run; cizon keeps running the remaining tests and prints a `passed/failed/total` summary
 - Child stdout/stderr are replayed untouched on stderr (cizon's stdout stays empty); `Running`, `Passed` / `Failed`, and the summary also go to stderr
 - With no test targets, `cizon test` prints `no test targets` and exits 0; explicitly naming a missing test is an error
@@ -252,6 +257,14 @@ cizon build
 cizon sync --check
 ```
 
+### `cizon clean`
+
+Removes only the project's `build/` directory and all compiler/mode-scoped artifacts inside it. If `build` itself is a symlink or junction, cizon removes the link and preserves its target. It does not delete `cizon.toml`, `cizon.lock`, `deps/`, `compile_commands.json`, editor configuration, or source files. The command requires `cizon.toml` in the current directory but intentionally does not validate it, so a broken configuration can still be cleaned. If another build holds the project lock, clean reports the existing lock error rather than deleting artifacts underneath it.
+
+```bash
+cizon clean
+```
+
 ### `cizon help` / `cizon version`
 
 `cizon help` prints general usage; `cizon help <command>` (or `cizon <command> --help` / `-h`) prints detailed per-command help. `cizon help toml` prints an offline reference for every `cizon.toml` key, including defaults and constraints. `cizon version` prints the version; aliases `--version`, `-V`, `-v`.
@@ -262,6 +275,7 @@ cizon sync --check
 - Compiler warnings are grouped per source file: a yellow `Warning <relative path> (compiler version)` header; a blank line separates the warning section from build status, with no decorative rule; project absolute path prefixes in diagnostic bodies are replaced with relative paths, while line numbers and message text stay untouched
 - Warnings do not fail the build; set `[compiler] werror = true` for strict mode
 - Build and `Running` status go to stderr, keeping program stdout clean: `cizon run > out.txt` contains only program output
+- `--verbose` adds a `Command` line before each compiler, archiver, linker, selected program and selected test invocation. The command line is the actual process invocation, including cizon's temporary output names used for atomic replacement; all verbose progress goes to stderr
 - ANSI color is decided per stream and turns off automatically when stdout or stderr is redirected (pipes, files, CI); timings keep the unit attached to the number (`0.12s`), so escape-stripped logs cannot turn them into `ms`
 - `cizon test` prints `Running` / `Passed` / `Failed` per target and a final `test result: ok` or `FAILED`; any failure exits 1, all-pass exits 0
 - With `compile_commands` enabled, a missing VS Code config prints `Writing .vscode/c_cpp_properties.json` once (stderr) and is then created

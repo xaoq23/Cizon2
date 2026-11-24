@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验，以及 PUBLIC per-target 编译定义。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验，以及 PUBLIC per-target 编译定义。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际的编译器、归档器与链接器命令。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -23,6 +23,7 @@
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
 - git 依赖 + 锁文件：`cizon add` / `cizon update` / `cizon sync`；`sync --check` 在 CI 中只校验锁、不写文件
 - `--quiet` 关闭 build/run/test 的进度行（错误、警告与程序输出仍照常）
+- `--verbose` 在 stderr 打印编译器、归档器、链接器及选中的程序/test 命令；`cizon clean` 只删除 `build/`
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
 - 编译器警告按源文件分组高亮；构建状态区分 fresh / incremental / relinked / up to date
 - 编译器 stderr 捕获后回放（非 UTF-8 内容按有损方式解码）；运行崩溃时把退出码翻译成人话
@@ -115,21 +116,22 @@ hello/
 
 ## 命令
 
-需要项目的命令（`build` / `run` / `test` / `add` / `update` / `sync`）在 `cizon.toml` 所在目录执行；`new` 创建目录，`init` 初始化当前目录，`help` / `version` 不需要项目。不带子命令运行 `cizon` 会打印用法。
+需要项目的命令（`build` / `run` / `test` / `add` / `update` / `sync` / `clean`）在 `cizon.toml` 所在目录执行；`new` 创建目录，`init` 初始化当前目录，`help` / `version` 不需要项目。不带子命令运行 `cizon` 会打印用法。
 
 | 命令 | 作用 |
 |---|---|
 | `cizon new <路径> [--kind <kind>]` | 创建项目骨架（`bin`、`static_lib` 或 `shared_lib`） |
 | `cizon init [--kind <kind>]` | 在当前目录初始化（已有文件不覆盖） |
-| `cizon build [--release] [--compiler <spec>] [--quiet]` | 构建全部 bin 与库 target（不构建 test） |
-| `cizon run [--release] [--compiler <spec>] [--quiet] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
-| `cizon test [--release] [--compiler <spec>] [--quiet] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
+| `cizon build [--release] [--compiler <spec>] [--quiet] [--verbose]` | 构建全部 bin 与库 target（不构建 test） |
+| `cizon run [--release] [--compiler <spec>] [--quiet] [--verbose] [<bin名>] [-- <程序参数...>]` | 构建 bin 及其依赖后运行，并转发参数 |
+| `cizon test [--release] [--compiler <spec>] [--quiet] [--verbose] [<test名>...] [-- <测试参数...>]` | 构建并逐个运行 test target |
 | `cizon add <git-url> [--tag <tag>]` | 添加 git 依赖并写入锁文件 |
 | `cizon update <依赖名>` | 按 `cizon.toml` 的意图对齐锁（升级/降级通用） |
 | `cizon sync [--check]` | 从 `cizon.lock` 恢复依赖，或只校验不写 |
+| `cizon clean` | 只删除项目的 `build/` 目录 |
 | `cizon help [<命令>\|toml]` / `cizon version` | 总览、单命令帮助或 cizon.toml 参考 / 版本 |
 
-`--quiet` 用于 `build` / `run` / `test`：关闭 cizon 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。
+`--quiet` 用于 `build` / `run` / `test`：关闭 cizon 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。`--verbose` 打印实际的编译器、归档器与链接器命令（以及选中的程序或测试命令）；`--quiet` 与 `--verbose` 不能同时使用。
 
 ### `cizon new <路径> [--kind bin|static_lib|shared_lib]`
 
@@ -157,11 +159,12 @@ hello/
 | `--release` | 使用 `-O2 -DNDEBUG`（项目与依赖源码关闭 assert）；默认 debug 使用 `-g`。test 源码始终剥离 NDEBUG |
 | `--compiler <spec>` | 本次构建临时指定编译器 |
 | `--quiet` / `-q` | 关闭进度行；错误、警告与程序输出仍照常打印 |
+| `--verbose` | 打印每条实际的编译器、归档器与链接器命令 |
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
 - 显式指定的编译器不可用时会直接报错，不会静默回退；未指定时按 g++ → clang++ 探测，g++ 缺失会打印回退提示
 - 产物位于 `build/<mode>-<compiler>/`；不同模式或编译器之间不会混链
-- `build` 只接受上面三个选项，不接受程序参数；要传参请用 `run`
+- `build` 只接受上面的选项，不接受程序参数；要传参请用 `run`
 
 ```bash
 cizon build
@@ -176,6 +179,7 @@ cizon build --compiler clang++
 ```bash
 cizon run                        # 项目只有一个 bin 时可省略名字
 cizon run worker                 # 多 bin 时选择 worker
+cizon run worker --verbose       # 显示构建命令与实际运行的程序命令
 cizon run worker -- --port 8080  # -- 之后的参数原样传给程序
 ```
 
@@ -194,10 +198,11 @@ cizon run worker -- --port 8080  # -- 之后的参数原样传给程序
 ```bash
 cizon test                              # 运行全部 test target
 cizon test calc_test codec_test         # 只运行指定 target，名字大小写不敏感
+cizon test calc_test --verbose          # 显示构建命令与每个测试进程命令
 cizon test calc_test -- --gtest_filter=Add*  # -- 后参数透传给每个选中的测试进程
 ```
 
-- 与 `build` / `run` 一样接受 `--release` 与 `--compiler <spec>`；构建阶段构建选中的 test target 与计划内全部库 target（不构建 bin），`build` / `run` 不会构建或运行 test target
+- 与 `build` / `run` 一样接受 `--release`、`--compiler <spec>`、`--quiet` 和 `--verbose`；构建阶段构建选中的 test target 与计划内全部库 target（不构建 bin），`build` / `run` 不会构建或运行 test target
 - 任一 test 非 0 或崩溃即整体失败；cizon 继续跑完其余 test，最后汇总 `passed/failed/total`
 - 子进程 stdout/stderr 都原样转发到 stderr（cizon 的 stdout 保持为空）；`Running`、`Passed` / `Failed` 与汇总也写 stderr
 - 没有 test target 时打印 `no test targets` 并返回 0；显式指定不存在的 test 名则报错
@@ -248,6 +253,14 @@ cizon build
 cizon sync --check
 ```
 
+### `cizon clean`
+
+只删除项目根目录下的 `build/`，包括其中不同 mode 与 compiler 的全部产物。若 `build` 本身是符号链接或 junction，只移除链接本身并保留目标。它不会删除 `cizon.toml`、`cizon.lock`、`deps/`、`compile_commands.json`、编辑器配置或源码。命令要求当前目录存在 `cizon.toml`，但不会校验配置内容，因此配置写错时仍能清理产物。若其他构建正持有项目锁，clean 会沿用同一锁错误提示，不会从构建过程中删除产物。
+
+```bash
+cizon clean
+```
+
 ### `cizon help` / `cizon version`
 
 `cizon help` 打印总览；`cizon help <命令>`（或 `cizon <命令> --help` / `-h`）打印该命令的详细帮助。`cizon help toml` 打印所有 `cizon.toml` 配置项的离线参考，包括默认值与约束。`cizon version` 打印版本；别名 `--version`、`-V`、`-v`。
@@ -258,6 +271,7 @@ cizon sync --check
 - 编译器警告会按源文件分组：黄色 `Warning <相对路径> (编译器 版本)` 头；警告段与构建状态之间空一行，不打印装饰分割线；诊断正文中的项目绝对路径前缀会替换为相对路径，行号与错误文本保持不变
 - 警告不会让构建失败；需要严格模式时设置 `[compiler] werror = true`
 - 构建与 `Running` 状态写 stderr，程序 stdout 保持纯净，`cizon run > out.txt` 只包含程序输出
+- `--verbose` 会在每条编译器、归档器、链接器、选中程序或 test 进程执行前向 stderr 打印 `Command`。它显示实际进程参数，包括用于原子替换的临时输出名
 - ANSI 颜色按流判断：stdout 或 stderr 被重定向（管道、文件、CI）时该流自动关色；计时单位始终紧贴数字（`0.12s`），剥离转义码后的日志不会变成 `ms`
 - `cizon test` 逐项打印 `Running` / `Passed` / `Failed`，最后输出 `test result: ok` 或 `FAILED`；任一 test 失败时命令退出 1，全部通过退出 0
 - 开启 `compile_commands` 且 VS Code 配置缺失时，会输出一次 `Writing .vscode/c_cpp_properties.json`（stderr）并生成该文件

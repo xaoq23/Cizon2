@@ -176,6 +176,57 @@ pub fn build_bins(dir: &Path, cfg: &Config, plan: &Plan) -> Result<BuildResult, 
     build_execs(dir, cfg, plan, ExecSet::Bins, &[])
 }
 
+fn remove_build_link(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    return std::fs::remove_file(path);
+
+    #[cfg(windows)]
+    std::fs::remove_dir(path).or_else(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            return Err(e);
+        }
+        std::fs::remove_file(path)
+    })
+}
+
+/// Remove only the project build directory, returning whether artifacts existed.
+pub fn clean(dir: &Path) -> Result<bool, String> {
+    let build = dir.join("build");
+    let label = rel_display(dir, &build);
+    let metadata = match std::fs::symlink_metadata(&build) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(format!("Cannot inspect {label}: {e}")),
+    };
+    if metadata.file_type().is_symlink() {
+        step_line("Cleaning", &label);
+        remove_build_link(&build)
+            .map_err(|e| format!("Cannot remove build link {label}: {e}"))?;
+        return Ok(true);
+    }
+    if metadata.is_file() {
+        step_line("Cleaning", &label);
+        std::fs::remove_file(&build).map_err(|e| format!("Cannot remove {label}: {e}"))?;
+        return Ok(true);
+    }
+    if !metadata.is_dir() {
+        return Err(format!("Cannot clean {label}: not a directory"));
+    }
+    let canonical_root = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Cannot resolve project root {}: {e}", dir.display()))?;
+    let canonical_build = std::fs::canonicalize(&build)
+        .map_err(|e| format!("Cannot resolve {label}: {e}"))?;
+    if !canonical_build.starts_with(&canonical_root) {
+        return Err(format!(
+            "Cannot clean build path {label}: it resolves outside the project."
+        ));
+    }
+    let _build_lock = BuildLock::acquire(dir)?;
+    step_line("Cleaning", &label);
+    reset_dir(&build)?;
+    Ok(true)
+}
+
 /// Build the selected test targets (`cizon test` only). `filter` holds pre-validated target
 /// names; empty means all tests.
 pub fn build_tests(

@@ -21,19 +21,26 @@ const USAGE: &str = "\
 cizon — declarative C++ build & run manager
 
 Usage:
-  cizon new <dir-name> [--kind bin|static_lib|shared_lib]  # create a new project
-  cizon init [--kind bin|static_lib|shared_lib]            # initialize in place
-  cizon add <git-url> [--tag <tag>] # add a git dependency (locked into cizon.lock)
-  cizon update <dep-name>           # align the lock with cizon.toml intent (upgrade/downgrade)
-  cizon sync [--check]              # restore deps from the lock, or verify without writing
-  cizon build [--release] [--compiler <spec>] [--quiet]
-  cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
-  cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
-  cizon help [<command>|toml]       # general, per-command, or cizon.toml reference
-  cizon version                     # print version
+  cizon [COMMAND] [OPTIONS] [ARGS]...
 
-Run `cizon help <command>` or `cizon help toml` for details. Only reads the [project], \
-[dependencies], [compiler], [subproject] and [[target]] sections of cizon.toml; any other section is a hard error.";
+Options:
+  -h, --help      Print help
+  -V, --version   Print version information
+
+Commands:
+  new       Create a project skeleton
+  init      Initialize a project in the current directory
+  build     Build bin and library targets
+  run       Build and run a bin target
+  test      Build and run test targets
+  add       Add a git dependency
+  update    Align the lock with cizon.toml
+  sync      Restore dependencies from the lock
+  clean     Remove build artifacts
+  help      Print help for a command or cizon.toml
+  version   Print version information
+
+Run `cizon help <command>` or `cizon help toml` for details.";
 
 const TOML_HELP: &str = r#"cizon.toml — configuration reference
 
@@ -159,6 +166,7 @@ fn dispatch(args: &[String]) -> i32 {
         "add" => top_err(deps::add_cmd(&args[1..])),
         "update" => top_err(deps::update_cmd(&args[1..])),
         "sync" => top_err(sync_cmd(&args[1..])),
+        "clean" => top_err(clean_cmd(&args[1..])),
         other => {
             eprint_top(&format!("Unknown command \"{other}\".\n\n{USAGE}"));
             2
@@ -170,7 +178,7 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
     let check = match args {
         [] => false,
         [arg] if arg == "--check" => true,
-        _ => return Err("Usage: cizon sync [--check]".into()),
+        _ => return Err("Usage:\n  cizon sync [OPTIONS]".into()),
     };
     let (dir, cfg) = load_config()?;
     if check {
@@ -197,110 +205,175 @@ fn sync_cmd(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+fn clean_cmd(args: &[String]) -> Result<i32, String> {
+    if !args.is_empty() {
+        return Err("Usage: cizon clean".into());
+    }
+    let dir = std::env::current_dir().map_err(|e| format!("cannot read current directory: {e}"))?;
+    if !dir.join("cizon.toml").is_file() {
+        return Err(
+            "not found cizon.toml: this directory is not a cizon project. Run `cizon new <name>` first."
+                .into(),
+        );
+    }
+    let removed = pipeline::clean(&dir)?;
+    if removed {
+        eprintln!(
+            "{} cleaned build/",
+            style_err("  Finished", GREEN)
+        );
+    } else {
+        eprintln!("no build directory to clean");
+    }
+    Ok(0)
+}
+
 /// Detailed per-command help for `cizon help <command>` and `<command> --help`.
 fn command_usage(cmd: &str) -> Option<&'static str> {
     Some(match cmd {
-        "new" => "\
-cizon new — create a new project
+        "new" => r#"cizon new — create a new project
 
-Usage: cizon new <dir-name> [--kind bin|static_lib|shared_lib]
+Usage:
+  cizon new <PATH> [--kind <KIND>]
 
-Creates <dir-name>/ with cizon.toml and .gitignore plus the chosen template. The
-project name is the last path segment. Refuses an existing directory; does not run
-git init.
+Options:
+  -h, --help       Print help
+  --kind <KIND>    bin | static_lib | shared_lib (default: bin)
 
-Kinds:
-  bin         implicit single executable (default): src/main.cpp
-  static_lib  target-based library: include/<name>/<name>.hpp, src, tests
-  shared_lib  C ABI DLL/.so: include/<name>/<name>.hpp, src, tests
+Creates <PATH> with cizon.toml and .gitignore plus the chosen template. The project
+name is the last path segment. Existing directories are refused; git init is not run.
 
 Examples:
   cizon new hello && cd hello && cizon run
-  cizon new calc --kind static_lib && cd calc && cizon test",
-        "init" => "\
-cizon init — initialize a project in the current directory
+  cizon new calc --kind static_lib && cd calc && cizon test"#,
+        "init" => r#"cizon init — initialize a project in the current directory
 
-Usage: cizon init [--kind bin|static_lib|shared_lib]
-
-Writes cizon.toml and .gitignore plus the chosen template; the project name is the
-directory name. The default bin template writes src/main.cpp. Library templates write
-include/<name>/<name>.hpp, src and tests. Refuses when cizon.toml or any main.cpp
-already exists.",
-        "build" => "\
-cizon build — build all bin and library targets (not tests)
-
-Usage: cizon build [--release] [--compiler <spec>] [--quiet]
+Usage:
+  cizon init [--kind <KIND>]
 
 Options:
-  --release          optimize (-O2) and define NDEBUG; debug uses -g (test sources keep asserts)
-  --compiler <spec>  use g++, clang++ or a full path for this build
-  --quiet            suppress progress lines (errors and warnings still print)
+  -h, --help       Print help
+  --kind <KIND>    bin | static_lib | shared_lib (default: bin)
 
-Compiles only stale objects; artifacts live under build/<mode>-<compiler>/.
-Test targets are ignored — use `cizon test` for those.",
-        "run" => "\
-cizon run — build, then run a bin target
+Writes cizon.toml and .gitignore plus the chosen template. Existing configuration or
+main sources are never overwritten."#,
+        "build" => r#"cizon build — build all bin and library targets (not tests)
 
-Usage: cizon run [--release] [--compiler <spec>] [--quiet] [<bin-name>] [-- <program args...>]
+Usage:
+  cizon build [OPTIONS]
 
-The bin name is optional only when the project has exactly one bin. Everything after
--- is passed to the program, and the program's exit code is forwarded.
+Options:
+  -h, --help             Print help
+  --release              Optimize with -O2 -DNDEBUG; default debug uses -g
+  --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -q, --quiet            Suppress progress lines
+  --verbose              Print compiler, archiver and linker commands
+
+Compiles only stale objects. Artifacts live under build/<mode>-<compiler>/, and test
+targets are ignored — use `cizon test` for those."#,
+        "run" => r#"cizon run — build, then run a bin target
+
+Usage:
+  cizon run [OPTIONS] [BIN] [-- <ARGS>...]
+
+Options:
+  -h, --help             Print help
+  --release              Optimize with -O2 -DNDEBUG; default debug uses -g
+  --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -q, --quiet            Suppress progress lines
+  --verbose              Print build and selected program commands
+
+The bin name is optional only when exactly one bin exists. Arguments after -- are
+forwarded to the program, and its exit code is preserved.
 
 Examples:
   cizon run
-  cizon run worker -- --port 8080",
-        "test" => "\
-cizon test — build and run test targets
+  cizon run worker -- --port 8080"#,
+        "test" => r#"cizon test — build and run test targets
 
-Usage: cizon test [--release] [--compiler <spec>] [--quiet] [<test-name>...] [-- <test args...>]
+Usage:
+  cizon test [OPTIONS] [TEST]... [-- <ARGS>...]
 
-Runs the selected test targets (all when none are named), in declaration order. A test
-passes iff its process exits 0; any failure exits 1. Test output goes to stderr.
+Options:
+  -h, --help             Print help
+  --release              Optimize with -O2 -DNDEBUG; default debug uses -g
+  --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -q, --quiet            Suppress progress lines
+  --verbose              Print build and test commands
+
+Runs selected test targets in declaration order, or all targets when none are named.
+A test passes iff its process exits 0; any failure exits 1.
 
 Examples:
   cizon test
-  cizon test calc_test -- --gtest_filter=Add*",
-        "add" => "\
-cizon add — add a git dependency
+  cizon test calc_test -- --gtest_filter=Add*"#,
+        "add" => r#"cizon add — add a git dependency
 
-Usage: cizon add <git-url> [--tag <tag>]
+Usage:
+  cizon add <GIT_URL> [--tag <TAG>]
 
-Shallow-clones into deps/<name>, appends to [dependencies] and writes cizon.lock. The
-name is the last URL segment minus .git. --tag pins a tag or branch.
+Options:
+  -h, --help       Print help
+  --tag <TAG>      Pin a tag or branch
+
+Shallow-clones into deps/<name>, updates [dependencies], and writes cizon.lock. The
+dependency name is the final URL segment minus .git.
 
 Example:
-  cizon add https://github.com/fmtlib/fmt --tag 11.0.2",
-        "update" => "\
-cizon update — align the lock with cizon.toml
+  cizon add https://github.com/fmtlib/fmt --tag 11.0.2"#,
+        "update" => r#"cizon update — align the lock with cizon.toml
 
-Usage: cizon update <dep-name>
+Usage:
+  cizon update <DEPENDENCY>
 
-Re-resolves a case-insensitive dependency name from the root or an included subproject's
-cizon.toml (upgrade or downgrade), writing the root cizon.lock. Refuses a dirty deps/<name>.
-Change the tag first, then run update.",
-        "sync" => "\
-cizon sync — restore dependencies from the lock
+Options:
+  -h, --help       Print help
 
-Usage: cizon sync [--check]
+Re-resolves a case-insensitive dependency name from the root or an included subproject,
+then writes the root cizon.lock. A dirty deps/<name> checkout is refused."#,
+        "sync" => r#"cizon sync — restore dependencies from the lock
 
-Restores every merged dependency checkout from the root cizon.lock without building or
-changing cizon.toml. With --check it only verifies the lock and checkouts (no network,
-no writes) and exits non-zero on drift — the CI gate for a locked build.",
+Usage:
+  cizon sync [OPTIONS]
+
+Options:
+  -h, --help    Print help
+  --check       Verify the lock and checkouts without network access or writes
+
+Restores every merged dependency checkout from the root cizon.lock. `--check` exits
+non-zero on drift and is intended for CI."#,
+        "clean" => r#"cizon clean — remove build artifacts
+
+Usage:
+  cizon clean
+
+Options:
+  -h, --help    Print help
+
+Removes only this project's build/ directory. It does not delete cizon.toml,
+cizon.lock, deps/, compile_commands.json, editor configuration or source files.
+The operation reports the existing project-lock error if another cizon build is running."#,
         "toml" => TOML_HELP,
-        "help" => "\
-cizon help — show help
+        "help" => r#"cizon help — show help
 
-Usage: cizon help [<command>|toml]
+Usage:
+  cizon help [COMMAND|toml]
+
+Options:
+  -h, --help    Print help
 
 Without a command, prints general usage. With a command, prints its detailed help.
-`cizon help toml` prints a reference for every cizon.toml key.
-`cizon <command> --help` is equivalent to `cizon help <command>`.",
-        "version" => "\
-cizon version — print the version
+`cizon help toml` prints a reference for every cizon.toml key. `cizon <command> --help`
+is equivalent to `cizon help <command>`."#,
+        "version" => r#"cizon version — print the version
 
-Usage: cizon version
+Usage:
+  cizon version
 
-Aliases: --version, -V, -v.",
+Options:
+  -h, --help    Print help
+
+Aliases: --version, -V, -v."#,
         _ => return None,
     })
 }
@@ -312,15 +385,25 @@ struct Flags {
     cc: Option<String>,
     /// Suppress cizon's own progress lines (errors, warnings and program output still print).
     quiet: bool,
+    /// Print each compiler, archiver and linker command line.
+    verbose: bool,
+}
+
+fn validate_flags(flags: &Flags) -> Result<(), String> {
+    if flags.quiet && flags.verbose {
+        return Err("--quiet and --verbose cannot be used together.".into());
+    }
+    Ok(())
 }
 
 /// Parse flags up to `--`; everything after it is passed through.
 fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false };
+    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
             "--quiet" | "-q" => flags.quiet = true,
+            "--verbose" => flags.verbose = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -337,6 +420,7 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
         }
         args = &args[1..];
     }
+    validate_flags(&flags)?;
     Ok((flags, args))
 }
 
@@ -344,12 +428,13 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
 fn parse_run_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Option<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false };
+    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
     let mut bin = None;
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
             "--quiet" | "-q" => flags.quiet = true,
+            "--verbose" => flags.verbose = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -358,7 +443,10 @@ fn parse_run_args<'a>(
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
-            "--" => return Ok((flags, bin, &args[1..])),
+            "--" => {
+                validate_flags(&flags)?;
+                return Ok((flags, bin, &args[1..]));
+            }
             other if !other.starts_with('-') => {
                 if bin.is_some() {
                     return Err(format!(
@@ -376,6 +464,7 @@ fn parse_run_args<'a>(
         }
         args = &args[1..];
     }
+    validate_flags(&flags)?;
     Ok((flags, bin, args))
 }
 
@@ -392,6 +481,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
         return Err(format!("build does not accept program arguments: {}", rest.join(" ")));
     }
     pipeline::output::set_quiet(flags.quiet);
+    pipeline::output::set_verbose(flags.verbose);
     let (dir, cfg) = load_config()?;
     let (cxx, fallback_note) =
         compiler::pick_with_note(flags.cc.as_deref().or(cfg.explicit_compiler()))?;
@@ -409,6 +499,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
 fn execute_run(args: &[String]) -> Result<i32, String> {
     let (flags, bin, app_args) = parse_run_args(args)?;
     pipeline::output::set_quiet(flags.quiet);
+    pipeline::output::set_verbose(flags.verbose);
     let (dir, cfg) = load_config()?;
     run::run(
         &dir,
@@ -424,12 +515,13 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
 fn parse_test_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Vec<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false };
+    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
     let mut names = Vec::new();
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
             "--quiet" | "-q" => flags.quiet = true,
+            "--verbose" => flags.verbose = true,
             "--compiler" => match args.get(1) {
                 Some(spec) if !spec.is_empty() && !spec.starts_with('-') => {
                     flags.cc = Some(spec.clone());
@@ -438,7 +530,10 @@ fn parse_test_args<'a>(
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
-            "--" => return Ok((flags, names, &args[1..])),
+            "--" => {
+                validate_flags(&flags)?;
+                return Ok((flags, names, &args[1..]));
+            }
             other if !other.starts_with('-') => names.push(other.to_string()),
             other => {
                 return Err(format!(
@@ -448,12 +543,14 @@ fn parse_test_args<'a>(
         }
         args = &args[1..];
     }
+    validate_flags(&flags)?;
     Ok((flags, names, args))
 }
 
 fn test_cmd(args: &[String]) -> Result<i32, String> {
     let (flags, names, app_args) = parse_test_args(args)?;
     pipeline::output::set_quiet(flags.quiet);
+    pipeline::output::set_verbose(flags.verbose);
     let (dir, cfg) = load_config()?;
     test::test(
         &dir,
@@ -495,6 +592,8 @@ mod tests {
         let (flags, rest) = parse_flags(&input).unwrap();
         assert!(!flags.release);
         assert!(flags.cc.is_none());
+        assert!(!flags.quiet);
+        assert!(!flags.verbose);
         assert_eq!(rest, &args(&["a", "b"]));
     }
 
@@ -504,6 +603,7 @@ mod tests {
         let (flags, rest) = parse_flags(&input).unwrap();
         assert!(flags.release);
         assert_eq!(flags.cc.as_deref(), Some("clang++"));
+        assert!(!flags.verbose);
         assert!(rest.is_empty());
     }
 
@@ -527,6 +627,24 @@ mod tests {
     }
 
     #[test]
+    fn parse_flags_accepts_verbose_and_rejects_quiet_conflict() {
+        let binding = args(&["--verbose"]);
+        let (flags, rest) = parse_flags(&binding).unwrap();
+        assert!(flags.verbose);
+        assert!(!flags.quiet);
+        assert!(rest.is_empty());
+
+        let err = parse_flags(&args(&["--quiet", "--verbose"])).unwrap_err();
+        assert!(err.contains("--quiet and --verbose"), "got: {err}");
+        let err = parse_run_args(&args(&["--quiet", "--verbose"])).unwrap_err();
+        assert!(err.contains("--quiet and --verbose"), "got: {err}");
+        let err = parse_run_args(&args(&["--quiet", "--verbose", "--", "arg"])).unwrap_err();
+        assert!(err.contains("--quiet and --verbose"), "got: {err}");
+        let err = parse_test_args(&args(&["--quiet", "--verbose"])).unwrap_err();
+        assert!(err.contains("--quiet and --verbose"), "got: {err}");
+    }
+
+    #[test]
     fn run_unknown_flag_mentions_powershell_wrapper() {
         let err = parse_run_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
@@ -539,12 +657,14 @@ mod tests {
         let input = args(&["server", "--", "a", "b"]);
         let (flags, bin, rest) = parse_run_args(&input).unwrap();
         assert!(!flags.release);
+        assert!(!flags.verbose);
         assert_eq!(bin.as_deref(), Some("server"));
         assert_eq!(rest, &args(&["a", "b"]));
 
         let input = args(&["--release", "server"]);
         let (flags, bin, rest) = parse_run_args(&input).unwrap();
         assert!(flags.release);
+        assert!(!flags.verbose);
         assert_eq!(bin.as_deref(), Some("server"));
         assert!(rest.is_empty());
     }
@@ -560,11 +680,13 @@ mod tests {
         let input = args(&["--release", "a", "b", "--", "arg1", "arg2"]);
         let (flags, names, rest) = parse_test_args(&input).unwrap();
         assert!(flags.release);
+        assert!(!flags.verbose);
         assert_eq!(names, args(&["a", "b"]));
         assert_eq!(rest, &args(&["arg1", "arg2"]));
 
         let (flags, names, rest) = parse_test_args(&[]).unwrap();
         assert!(!flags.release);
+        assert!(!flags.verbose);
         assert!(names.is_empty());
         assert!(rest.is_empty());
     }
@@ -574,6 +696,12 @@ mod tests {
         let err = parse_test_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
         assert!(err.contains("cizon test"), "got: {err}");
+    }
+
+    #[test]
+    fn clean_rejects_arguments() {
+        let err = clean_cmd(&args(&["--force"])).unwrap_err();
+        assert_eq!(err, "Usage: cizon clean");
     }
 
     #[test]
@@ -591,7 +719,16 @@ mod tests {
         assert_eq!(dispatch(&args(&["test", "-h"])), 0);
         assert_eq!(dispatch(&args(&["help", "nope"])), 2);
         assert_eq!(dispatch(&args(&["sync", "extra"])), 1);
+        assert!(USAGE.contains("Options:"), "top-level help should use a Cargo-style Options section");
+        assert!(USAGE.contains("Commands:"), "top-level help should use a Cargo-style Commands section");
+        assert!(USAGE.contains("  clean     Remove build artifacts"), "top-level usage is missing clean");
+        assert!(command_usage("build").unwrap().contains("--verbose"));
         assert!(command_usage("sync").is_some());
+        let clean = command_usage("clean").expect("clean help");
+        assert!(clean.contains("Removes only this project's build/ directory"), "got: {clean}");
+        assert!(command_usage("build").unwrap().contains("--verbose"));
+        assert!(command_usage("run").unwrap().contains("--verbose"));
+        assert!(command_usage("test").unwrap().contains("--verbose"));
         assert!(command_usage("nope").is_none());
     }
 }

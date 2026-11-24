@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::compiler;
 use crate::config::Config;
 use crate::pipeline;
-use crate::pipeline::output::{style_err, CYAN, DIM, GREEN, RED};
+use crate::pipeline::output::{style_err, verbose_command, CYAN, DIM, GREEN, RED};
 use crate::run;
 
 /// Execute `test [name...] [-- <args>]`; returns the exit code for main.
@@ -76,6 +76,7 @@ pub fn test(
         if let Some(path) = compiler::child_path(&compiler_name) {
             cmd.env("PATH", path);
         }
+        verbose_command(&cmd);
         let output = cmd
             .output()
             .map_err(|e| format!("cannot start {}: {e}", pipeline::rel_display(dir, exe)))?;

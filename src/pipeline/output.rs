@@ -1,5 +1,6 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
@@ -17,6 +18,37 @@ pub(crate) fn set_quiet(value: bool) {
 
 pub(crate) fn quiet() -> bool {
     QUIET.load(Ordering::Relaxed)
+}
+
+/// `--verbose` prints the actual compiler, archiver and linker command line to stderr.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn set_verbose(value: bool) {
+    VERBOSE.store(value, Ordering::Relaxed);
+}
+
+pub(crate) fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+pub(crate) fn command_text(cmd: &Command) -> String {
+    format!("{cmd:?}")
+}
+
+pub(crate) fn command_line(show: bool, quiet: bool, cmd: &Command) -> Option<String> {
+    if !show || quiet {
+        return None;
+    }
+    Some(command_text(cmd))
+}
+
+pub(crate) fn verbose_command(cmd: &Command) {
+    if let Some(text) = command_line(verbose(), quiet(), cmd) {
+        eprintln!(
+            "{} {text}",
+            style_err(&format!("{:>12}", "Command"), CYAN)
+        );
+    }
 }
 
 /// Color follows each stream's terminal state; main calls this once before any output so
@@ -117,4 +149,28 @@ pub(super) fn step_fin(started: Instant, recompiled: usize, total: usize) {
         "Finished",
         &format!("{} ({note})", elapsed_text(secs, stderr_color())),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_text_preserves_program_and_arguments() {
+        let mut cmd = Command::new("g++");
+        cmd.arg("-c").arg("src/file name.cpp").arg("-DVALUE=1");
+        let text = command_text(&cmd);
+        assert!(text.contains("g++"), "got: {text}");
+        assert!(text.contains("file name"), "got: {text}");
+        assert!(text.contains("-DVALUE=1"), "got: {text}");
+    }
+
+    #[test]
+    fn command_lines_follow_verbose_and_quiet() {
+        let mut cmd = Command::new("g++");
+        cmd.arg("-c").arg("main.cpp");
+        assert!(command_line(true, false, &cmd).is_some());
+        assert!(command_line(false, false, &cmd).is_none());
+        assert!(command_line(true, true, &cmd).is_none());
+    }
 }

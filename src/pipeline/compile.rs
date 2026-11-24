@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::output::verbose_command;
+
 /// Replace the project absolute-path prefix in compiler diagnostics with a project-relative path;
 /// line numbers and the rest of the original text stay unchanged.
 pub(super) fn relativize_diagnostics(dir: &Path, text: &str) -> String {
@@ -158,6 +160,7 @@ pub(super) fn compile_one(
     for f in flags {
         cmd.arg(f);
     }
+    verbose_command(&cmd);
     let out = match cmd.output() {
         Ok(out) => out,
         Err(e) => {
