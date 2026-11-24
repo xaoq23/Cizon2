@@ -60,7 +60,7 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   # file must use the same spelling. git is required, tag is optional. Flat layout: include/
   # headers plus src/*.cpp. Cizon compiles those sources directly, without dependency build/install.
 
-[subproject]                   # planned for v0.10.0; local composition, not a workspace
+[subproject]                   # local composition, not a workspace
   net = "libs/net"             # name → project-relative directory of a nested cizon project
   # One root build/lock/compiler/edition; no independent subproject build or release.
   # The declaring file and every subproject must declare [[target]]. A subproject provides

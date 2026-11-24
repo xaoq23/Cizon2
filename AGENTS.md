@@ -112,5 +112,5 @@
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为当前可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. `[subproject]` 受限本地组合 —— feat/subproject 开发中，目标 v0.10.0；不是 workspace，不引入独立包生命周期。
+15. `[subproject]` 受限本地组合 —— v0.10.0 提供；不是 workspace，不引入独立包生命周期。
 16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

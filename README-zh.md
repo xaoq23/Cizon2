@@ -17,7 +17,7 @@
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
 - 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，include 与归档顺序由依赖图解析
-- v0.10（开发中）：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
+- v0.10：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
@@ -374,7 +374,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - `cizon.lock` 是构建的唯一真相：`build` 只执行锁中已确定的提交，不会自动追随尚未 `update` 的新 `tag`。
 - 依赖是项目级的，不支持 per-target 依赖；添加、更新、锁恢复与目录布局见下文[依赖与锁文件](#依赖与锁文件)。
 
-### `[subproject]`（v0.10 开发中）
+### `[subproject]`（v0.10）
 
 `[subproject]` 随 v0.10.0 提供。它让本地库/test 目录把 target 并入同一个根构建，无需重复声明，也无需搬动公开头。它**不是 workspace**：只有一个根 build、锁文件、compiler 和 edition；子项目没有独立的构建或发布生命周期。
 

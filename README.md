@@ -21,7 +21,7 @@ Current version: **v0.10.0**. Adds local `[subproject]` composition: library/tes
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
 - Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with includes and archive order resolved from the graph
-- v0.10 (in development): `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
+- v0.10: `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
@@ -378,7 +378,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - `cizon.lock` is the single source of truth for builds: `build` uses the pinned commit and never chases a new `tag` that has not been applied with `update`.
 - Dependencies are project-wide, not per-target; adding, updating, lock restoration, and layout are covered in [Dependencies and the lock file](#dependencies-and-the-lock-file).
 
-### `[subproject]` (v0.10, in development)
+### `[subproject]` (v0.10)
 
 `[subproject]` is available in v0.10.0. It lets local library/test directories contribute targets to one root build without duplicate declarations or moving public headers. It is **not** a workspace: there is one root build, lock file, compiler, and edition; no subproject has an independent build or release lifecycle.
 
