@@ -21,6 +21,7 @@ Current version: **v0.9.6**. Reliability release: exe/build-state/`cizon.lock`/`
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
 - Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with includes and archive order resolved from the graph
+- v0.10 (in development): `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
@@ -224,9 +225,10 @@ cizon add https://github.com/fmtlib/fmt --tag 11.0.2
 
 ### `cizon update <dependency>`
 
-Re-resolves a dependency from its `git` / `tag` entry in `cizon.toml`. Upgrade and downgrade use the same command: change the `tag`, then run `update`.
+Re-resolves a dependency from its `git` / `tag` entry in the root or an included subproject's `cizon.toml`. Upgrade and downgrade use the same command: change the `tag`, then run `update`.
 
-- The dependency must exist in `[dependencies]`
+- The dependency name is case-insensitive and must exist in the merged `[dependencies]` set
+- With subprojects, `update` writes the root `cizon.lock`; `sync` restores the merged dependency set from that lock
 - Refuses when `deps/<name>` has uncommitted changes; push local commits first if they must be kept
 - Clones into a temporary directory first and replaces the old checkout only on success; failures keep the existing checkout
 - `build` always builds the commit pinned in `cizon.lock` and never chases a new `tag` in `cizon.toml` on its own
@@ -372,23 +374,50 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 ```
 
-- Each dependency accepts only the `git` and `tag` keys. The key is the dependency name and the `deps/<name>` directory; it may contain only letters, digits, `-`, and `_`. `git` is required, `tag` is optional (the remote default branch when omitted).
+- Each dependency accepts only the `git` and `tag` keys. The key is the dependency name and the `deps/<name>` directory; it may contain only letters, digits, `-`, and `_`. Names are case-insensitive, but every file must use the same spelling. `git` is required, `tag` is optional (the remote default branch when omitted).
 - `cizon.lock` is the single source of truth for builds: `build` uses the pinned commit and never chases a new `tag` that has not been applied with `update`.
 - Dependencies are project-wide, not per-target; adding, updating, lock restoration, and layout are covered in [Dependencies and the lock file](#dependencies-and-the-lock-file).
 
-### `[subproject]`
+### `[subproject]` (v0.10, in development)
+
+`[subproject]` is planned for v0.10.0 and is not available in v0.9.6. It lets local library/test directories contribute targets to one root build without duplicate declarations or moving public headers. It is **not** a workspace: there is one root build, lock file, compiler, and edition; no subproject has an independent build or release lifecycle.
+
+Root `cizon.toml`:
 
 ```toml
+[project]
+name = "mesh"
+version = "0.1.0"
+edition = "c++20"
+
 [subproject]
 net = "libs/net"
 storage = "libs/storage"
+
+[[target]]
+name = "mesh"
+kind = "bin"
+sources = ["src/main.cpp"]
+links = ["net", "storage"]
 ```
 
-- A subproject is a nested cizon project: the named directory holds its own `cizon.toml`, and its targets join this project's build plan, linkable by name (`links = ["net"]`). Copy a library out of a multi-library project and declare it here instead of re-declaring its target.
-- Each subproject's `sources`, `include`, and `prefix` resolve against its own directory, not the root. A library's public headers stay in its own `include/` and are declared with the target `include` field, which propagates through `links` as usual.
-- A subproject provides `static_lib`, `shared_lib`, and `test` targets only; a `bin` there is a plan error, and target names must be unique across the project and its subprojects (case-insensitive).
-- A subproject's `[compiler]` is ignored (the root project's compiler and flags apply), and its `[dependencies]` merge into the project's dependency set — the same name with a different git URL or tag is an error; identical declarations deduplicate. `cizon update` and `cizon sync` resolve those dependencies into the root `cizon.lock` and `deps/`.
-- Subprojects may nest (a subproject may declare its own `[subproject]`). Inclusion cycles are plan errors; a diamond (two routes to the same directory) includes it once.
+`libs/net/cizon.toml` (and similarly `libs/storage/cizon.toml`):
+
+```toml
+[[target]]
+name = "net"
+kind = "static_lib"
+sources = ["src"]
+include = "include"
+```
+
+- A subproject provides `static_lib`, `shared_lib`, and `test` targets only; a `bin` there is a plan error. Both the declaring file and each subproject must declare at least one `[[target]]`. Target names are globally unique and case-insensitive.
+- Paths must stay inside the root project, including after resolving symlinks/junctions. Each subproject's `sources`, `include`, and `prefix` resolve against its own directory. Public headers stay with their library and propagate through target `include` as usual.
+- The root `[compiler]` and `[project].edition` win. A subproject's `[compiler]` is ignored with a warning, as is a differing edition; neither creates a separate toolchain configuration.
+- Subproject `[dependencies]` merge into the root dependency set. Names are case-insensitive, but every file must use the same key spelling: case-only duplicates are errors, the same exact key with a different git URL or tag is an error, and exact duplicate declarations deduplicate. Because checkouts are cloned from the root, subproject git sources must be absolute paths or URL/SSH forms, not relative paths.
+- `cizon update <name>` can update a dependency declared in any included file, but writes only the root `cizon.lock`. `cizon sync` restores all merged dependencies from that lock into the root `deps/`; `sync --check` verifies them without network access or writes.
+- Subprojects may nest. Inclusion cycles are plan errors; a diamond (two routes to the same canonical directory) includes it once.
+- Use CMake instead for workspace/package lifecycles, independent compilers or locks, conditional or large target graphs, and install/export.
 
 ### `[[target]]`: libraries and bins
 
@@ -463,6 +492,8 @@ Rules:
 - Target names are case-insensitive and unique, and must pass file-name validation: not `obj` / `lib` / `deps-obj`, no leading dot, and no Windows device names. A target named `shared` is allowed because the internal directory is `.shared`
 - `sources` must be project-relative paths (no absolute paths or `..`); files and directories are accepted and directories are scanned recursively; same-named sources in different directories are allowed
 - `include` adds a target-owned public header root on top of the automatic project-root `include/`; it must exist, be a directory, stay inside the project, and must not be the project root. Missing paths fail during planning, before compilation
+- Cizon checks root `include/`, automatic dependency include roots, and target/library `include` roots for duplicate public-header relative paths. Root `include/` shadowing a linked library/dependency header, or duplicates between linked library include roots, is a plan error; comparisons are case-insensitive on Windows. Collisions between two dependency include roots remain allowed and follow dependency search order
+- Include-directory symlinks/junctions are scanned for duplicates and must stay inside the project; cycle guards prevent repeated scanning
 - For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
 - `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
 - Link order inside the static dependency graph is derived dependent-first (consumers before their dependencies), so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)
@@ -514,7 +545,7 @@ cizon update fmt
 - `add` / `update` shallow-clone; `build` restores from the lock when `deps/` is missing.
 - To upgrade or downgrade, change only the `tag` in `cizon.toml`, then run `cizon update <name>`.
 - `update` replaces the entire `deps/<name>` tree and refuses when the directory has uncommitted changes. To keep local commits, push them and update the `tag` first.
-- Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. For other layouts or libraries that need a build system, use CMake.
+- Dependencies follow a fixed layout: headers in `include/` plus flat `src/*.cpp`. Cizon checks out the git source and compiles those sources directly; it does not run dependency build systems or install steps. For other layouts, use CMake.
 - When `deps/<name>` has no `include/`, `add` prints a one-time layout note (later `build`/`test` do not repeat it): header-only libraries may already be usable, while compiled libraries should go through the system package manager plus `extern_links`, or be vendored header-only.
 - Dependency source objects are linked into the bin and every shared library; dependencies are project-wide, not per-target.
 - If an external dependency needs its own cmake build/install, keep the build tree and install prefix under `deps/.build/<name>` and `deps/.install/<name>`, not at the project root; the root keeps only source directories plus `deps/` and `build/`.
@@ -693,8 +724,9 @@ The goal is first-class breakpoint debugging, but **cizon does not implement a d
 
 ## When to use CMake
 
-Cizon targets small-to-medium projects with one or more bins (optionally with static/shared library targets, including acyclic static-library dependencies and their public includes). Reach for CMake when you need:
+Cizon targets small-to-medium projects with one or more bins (optionally with static/shared library targets, including acyclic static-library dependencies and their public includes). The v0.10 `[subproject]` boundary allows local library/test composition under one root build, not independent package lifecycles. Reach for CMake when you need:
 
+- Workspaces or monorepo packages with independent builds, compilers, locks, or releases
 - Conditional or very large target graphs, per-target compile flags/definitions, generated sources
 - install/export/find_package/packaging, DLL versioning/SONAME
 - Shared libraries depending on other shared libraries, direct C++ ABI distribution

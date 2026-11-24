@@ -532,11 +532,19 @@
     }
 
     fn run_code(exe: &Path) -> i32 {
-        Command::new(exe)
-            .status()
-            .unwrap()
-            .code()
-            .unwrap_or(-1)
+        for attempt in 0..5 {
+            match Command::new(exe).status() {
+                Ok(status) => return status.code().unwrap_or(-1),
+                // WSL can briefly report ETXTBSY after copying a fresh executable.
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 4 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("cannot run {}: {e}", exe.display()),
+            }
+        }
+        unreachable!("the final attempt either runs or returns an error")
     }
 
     fn run_stdout(exe: &Path) -> String {
@@ -3157,6 +3165,87 @@
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let _p = plan(&dir, &cfg, cxx, false).unwrap();
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn duplicate_header_check_includes_project_root_include() {
+        let dir = temp_dir("dup-header-root");
+        write_sub(&dir, "include/api.hpp", "#pragma once\n");
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\ninclude = \"include\"\n",
+        );
+        write_sub(&dir, "libs/net/include/api.hpp", "#pragma once\n");
+        write_sub(&dir, "libs/net/src/net.cpp", "int net() { return 1; }\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_sub(&dir, "src/main.cpp", "int net();\nint main() { return net(); }\n");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("duplicate header \"api.hpp\""), "got: {err}");
+        assert!(err.contains("include/api.hpp"), "got: {err}");
+        assert!(err.contains("libs/net/include/api.hpp"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn duplicate_header_check_follows_include_directory_links() {
+        let parent = temp_dir("dup-header-links");
+        let dir = parent.join("project");
+        fs::create_dir_all(dir.join("a/include")).unwrap();
+        fs::create_dir_all(dir.join("b/include")).unwrap();
+        fs::create_dir_all(dir.join("a-vendor")).unwrap();
+        fs::create_dir_all(dir.join("b-vendor")).unwrap();
+        fs::write(dir.join("a-vendor/api.hpp"), "#pragma once\n").unwrap();
+        fs::write(dir.join("b-vendor/api.hpp"), "#pragma once\n").unwrap();
+        let a_link = dir.join("a/include/vendor");
+        let b_link = dir.join("b/include/vendor");
+        if !make_dir_link(&a_link, &dir.join("a-vendor"))
+            || !make_dir_link(&b_link, &dir.join("b-vendor"))
+        {
+            remove_dir_link(&a_link);
+            remove_dir_link(&b_link);
+            fs::remove_dir_all(parent).ok();
+            return;
+        }
+        let pairs = vec![
+            ("a".to_string(), dir.join("a/include")),
+            ("b".to_string(), dir.join("b/include")),
+        ];
+        let err = check_closure_includes(&dir, &pairs, cfg!(windows)).unwrap_err();
+        assert!(err.contains("duplicate header \"vendor/api.hpp\""), "got: {err}");
+        remove_dir_link(&a_link);
+        remove_dir_link(&b_link);
+        fs::remove_dir_all(parent).ok();
+    }
+
+    #[test]
+    fn include_directory_link_outside_project_is_rejected() {
+        let parent = temp_dir("include-link-outside");
+        let dir = parent.join("project");
+        let outside = parent.join("outside");
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("api.hpp"), "#pragma once\n").unwrap();
+        let link = dir.join("include/vendor");
+        if !make_dir_link(&link, &outside) {
+            fs::remove_dir_all(parent).ok();
+            return;
+        }
+        let pairs = vec![("lib".to_string(), dir.join("include"))];
+        let err = check_closure_includes(&dir, &pairs, cfg!(windows)).unwrap_err();
+        assert!(err.contains("outside the project"), "got: {err}");
+        assert!(err.contains("include/vendor"), "got: {err}");
+        assert!(!err.contains(&dir.to_string_lossy().to_string()), "got: {err}");
+        remove_dir_link(&link);
+        fs::remove_dir_all(parent).ok();
     }
 
     #[test]

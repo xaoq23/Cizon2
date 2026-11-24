@@ -33,11 +33,15 @@ pub fn add_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let cfg = config::load_resolved(dir)?;
     let name = dep_name(&url)?;
 
-    if cfg.dependencies().map_or(false, |m| m.contains_key(&name)) {
-        return Err(format!("[dependencies] already contains {name} (in cizon.toml or one of its subprojects). Delete that entry and retry."));
+    if cfg.dependencies().map_or(false, |m| {
+        m.keys().any(|key| key.eq_ignore_ascii_case(&name))
+    }) {
+        return Err(format!("[dependencies] already contains {name} (case-insensitive, in cizon.toml or one of its subprojects). Delete that entry and retry."));
     }
-    if cfg.subprojects().map_or(false, |m| m.contains_key(&name)) {
-        return Err(format!("[subproject] already contains {name} (in cizon.toml). A dependency name must not collide with a subproject name; rename the subproject or add a different dependency."));
+    if cfg.subprojects().map_or(false, |m| {
+        m.keys().any(|key| key.eq_ignore_ascii_case(&name))
+    }) {
+        return Err(format!("[subproject] already contains {name} (case-insensitive, in cizon.toml). A dependency name must not collide with a subproject name; rename the subproject or add a different dependency."));
     }
     let dep_dir = dir.join("deps").join(&name);
     if dep_dir.exists() {
@@ -372,19 +376,29 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     if args.len() != 1 || args[0].is_empty() {
         return Err("Usage: cizon update <dependency-name>".into());
     }
-    let name = &args[0];
+    let requested_name = &args[0];
     // Resolved load: a dependency declared by a subproject is updated the same way — the
     // lock and the checkout both live at the project root.
     let cfg = config::load_resolved(dir)?;
+    let name = cfg
+        .dependencies()
+        .and_then(|m| {
+            m.keys()
+                .find(|key| key.eq_ignore_ascii_case(requested_name))
+                .cloned()
+        })
+        .ok_or_else(|| {
+            format!("{requested_name} is not in [dependencies]. Run cizon add first, or check the spelling.")
+        })?;
     let info = cfg
         .dependencies()
-        .and_then(|m| m.get(name))
-        .ok_or_else(|| format!("{name} is not in [dependencies]. Run cizon add first, or check the spelling."))?;
+        .and_then(|m| m.get(&name))
+        .expect("resolved dependency name came from the same map");
 
     let deps_dir = dir.join("deps");
     std::fs::create_dir_all(&deps_dir)
         .map_err(|e| format!("failed to create {}: {e}", deps_dir.display()))?;
-    let dep_dir = deps_dir.join(name);
+    let dep_dir = deps_dir.join(&name);
     // update replaces the whole checkout; uncommitted changes must be explicitly discarded
     if dep_dir.exists() {
         let status = git_cmd(
@@ -429,7 +443,7 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!("failed to move {tmp_rel} to deps/{name}: {e}"));
     }
-    if let Err(e) = write_lock_entry(dir, name, &info.git, info.tag.as_deref(), &commit) {
+    if let Err(e) = write_lock_entry(dir, &name, &info.git, info.tag.as_deref(), &commit) {
         return Err(format!(
             "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon update {name}."
         ));
@@ -1410,6 +1424,21 @@ mod tests {
         let err = add_in(&proj, &args).unwrap_err();
         assert!(err.contains("already contains"), "got: {err}");
         fs::remove_dir_all(origin).ok();
+        fs::remove_dir_all(proj).ok();
+    }
+
+    #[test]
+    fn add_rejects_case_variant_of_existing_dependency() {
+        let proj = temp("dep-add-case");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n[dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n",
+        )
+        .unwrap();
+        let err = add_in(&proj, &["https://example.com/Fmt".into()]).unwrap_err();
+        assert!(err.contains("case-insensitive"), "got: {err}");
+        assert!(!proj.join("deps").exists());
         fs::remove_dir_all(proj).ok();
     }
 

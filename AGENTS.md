@@ -14,12 +14,13 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.9.6）
+## 当前边界（feat/subproject，目标 v0.10.0）
 
 | 在边界内 | 边界外 |
 |---|---|
-| `build` / `run` / `test` / `sync` / `new` / `init` / `add` / `update` | Workspace / monorepo / 多包 |
+| `build` / `run` / `test` / `sync` / `new` / `init` / `add` / `update` | 独立包/workspace 生命周期、多包注册表 |
 | 中小型单项目（多个 bin/test + 静态库/共享库 `[[target]]`；无环静态库公共依赖与 include 传播） | 条件化/大型 target 图 / install-export / 共享库依赖共享库 |
+| `[subproject]` 受限本地组合：单一根 build/lock/compiler/edition，递归包含库/test，子项目无 bin | 子项目独立 compiler/edition/deps/lock、独立构建/发布、workspace 命令 |
 | Linux `shared_lib`：`.so`、`-fPIC`、`$ORIGIN` rpath | MSVC / 交叉编译 / 复杂工具链 |
 | CI 原语：`sync --check`（只校验）、`--quiet` | `init --ci`、企业级 CI |
 | `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
@@ -40,11 +41,14 @@
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
 - target `include` 是项目内公共头根目录：库的 include 沿 `links` PUBLIC 传播（可传递），bin/test 只作用于自身；与根 `include/` 叠加；路径必须在 plan 阶段校验存在、是目录、在项目内且不是项目根。`prefix` 是消费已安装包的输入，只作用于当前 target，不传播
+- 公开头相对路径冲突在 plan 阶段检查：根 `include/`、target/库 include 与自动依赖 include 共同参与，Windows 不区分大小写；include 目录链接会被跟随，并做项目内约束与规范路径环保护。两个依赖 include 根之间的冲突仍按既有依赖搜索顺序允许
+- `[subproject]` 不是 workspace：根统一 compiler/edition/deps/lock；子项目只提供 static_lib/shared_lib/test，路径必须在根内，依赖 git URL 必须绝对、URL 或 SCP 风格 SSH，target 名全局唯一且不区分大小写；声明文件与子项目自身都必须有 `[[target]]`。依赖名不区分大小写，但 key 拼写必须一致；完全重复声明去重，git/tag 冲突或仅大小写不同的重复报错。嵌套允许、环报错、菱形去重
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
 - `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
 - release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `build/<mode>-<compiler>/test-obj/<name>/`，`build` / `run` 不构建 test target
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
+- git 依赖约定为 `deps/<name>/include/` 头文件与平铺的 `src/*.cpp`；cizon 直接 checkout 并编译这些源码，不执行依赖自带的构建/安装步骤；其他布局交给 CMake
 - 外部依赖的 cmake 构建树/安装产物收进 `deps/.build/<name>`、`deps/.install/<name>`（checkout 之外的兄弟目录），不散落项目根；`prefix` 指向安装根并推导 `-I`/`-L`
 - `compile_commands = true` 时，若 `.vscode/c_cpp_properties.json` 缺失则生成（不覆盖已有文件），供微软 C/C++ 扩展使用
 - 项目级构建锁为 `build/.cizon-build.lock`：并发 build 明确报错；exe、状态文件、`cizon.lock`、`compile_commands.json` 通过临时文件替换写入（Unix 原子 rename，Windows 先删后 rename）
@@ -63,7 +67,7 @@
 
 ## 非目标（重开需明确讨论）
 
-- monorepo / workspace / 多包、crates.io 式包注册表
+- 独立包/workspace 生命周期、monorepo 多包 registry、crates.io 式包注册表；`[subproject]` 仅限单一根构建下的本地库/test 组合
 - PCH、build.cpp 逃生舱、metadata / env / tree / doctor
 - 企业级 CI
 - `serde` / `toml` 之外的第三方 crate
@@ -108,4 +112,5 @@
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为当前可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。
+15. `[subproject]` 受限本地组合 —— feat/subproject 开发中，目标 v0.10.0；不是 workspace，不引入独立包生命周期。
+16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

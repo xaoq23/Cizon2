@@ -56,18 +56,22 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
 
 [dependencies]
   fmt = { git = "https://...", tag = "11.0.2" }
-  # key = dependency name and deps/<name> directory; git is required, tag is optional.
-  # flat layout: include/ headers plus src/*.cpp; cizon checks out git sources but does not build them.
+  # key = dependency name and deps/<name> directory; names are case-insensitive, but every
+  # file must use the same spelling. git is required, tag is optional. Flat layout: include/
+  # headers plus src/*.cpp. Cizon compiles those sources directly, without dependency build/install.
 
-[subproject]
+[subproject]                   # planned for v0.10.0; local composition, not a workspace
   net = "libs/net"             # name → project-relative directory of a nested cizon project
-  # The subproject's targets join this project's build plan and are linkable by name
-  # (links = ["net"]); its sources, include and prefix resolve against its own directory.
-  # A subproject provides static_lib, shared_lib and test targets only — no bin; its
-  # [compiler] is ignored (the root project's compiler and flags apply). Its own
-  # [dependencies] merge into the project's dependency set; the same name with a different
-  # git URL or tag is an error. Cycles are errors; a diamond includes the shared
-  # subproject once.
+  # One root build/lock/compiler/edition; no independent subproject build or release.
+  # The declaring file and every subproject must declare [[target]]. A subproject provides
+  # static_lib, shared_lib and test targets only — no bin. Paths must stay inside the root;
+  # sources, include and prefix resolve against the subproject's own directory.
+  # Root compiler/edition win; a subproject [compiler] or differing edition is ignored with
+  # a warning. [dependencies] merge into the root set with case-insensitive names but one key
+  # spelling: case-only duplicates and conflicting git/tag declarations are errors; exact duplicates
+  # deduplicate. Subproject git sources must be absolute paths or URL/SSH forms, not relative paths.
+  # update writes the root cizon.lock; sync restores from it.
+  # Nesting is allowed; cycles are errors and a diamond includes the directory once.
 
 [[target]]
   name = "app"                 # optional for a single bin; required for libs, tests, multiple bins
@@ -84,8 +88,12 @@ Rules:
     run reports no bin, and test reports no test targets.
   - include is added to the target's own compile; library includes propagate transitively through
     links. The project-root include/ remains automatic for every target.
+  - Duplicate public-header paths across root include/, dependency include roots, and target/library
+    include roots are plan errors; Windows compares case-insensitively. Dependency-vs-dependency
+    collisions remain allowed. Include directory links must stay inside the project, are scanned,
+    and use cycle guards to avoid repeated scanning.
   - A subproject's targets are merged into the plan by name; a subproject may not declare a
-    bin, and target names must be unique across the project and its subprojects.
+    bin, and target names must be globally unique and case-insensitive.
   - Static dependencies are ordered dependent-first (consumers before dependencies); cycles are errors.
   - shared_lib may link only static_lib; bin/test may link both; shared -> shared is not supported.
   - extern_links is accepted only on test targets; framework discovery/download is not handled.
@@ -261,16 +269,17 @@ cizon update — align the lock with cizon.toml
 
 Usage: cizon update <dep-name>
 
-Re-resolves a dependency from its git/tag in cizon.toml (upgrade or downgrade). Refuses
-a dirty deps/<name>. Change the tag in cizon.toml first, then run update.",
+Re-resolves a case-insensitive dependency name from the root or an included subproject's
+cizon.toml (upgrade or downgrade), writing the root cizon.lock. Refuses a dirty deps/<name>.
+Change the tag first, then run update.",
         "sync" => "\
 cizon sync — restore dependencies from the lock
 
 Usage: cizon sync [--check]
 
-Restores every dependency checkout from cizon.lock without building or changing
-cizon.toml. With --check it only verifies the lock and checkouts (no network, no
-writes) and exits non-zero on drift — the CI gate for a locked build.",
+Restores every merged dependency checkout from the root cizon.lock without building or
+changing cizon.toml. With --check it only verifies the lock and checkouts (no network,
+no writes) and exits non-zero on drift — the CI gate for a locked build.",
         "toml" => TOML_HELP,
         "help" => "\
 cizon help — show help

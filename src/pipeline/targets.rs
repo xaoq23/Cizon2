@@ -197,9 +197,36 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     }
     let dep_base = base;
 
+    let mut automatic_includes: Vec<(String, PathBuf)> = Vec::new();
+    let project_include = dir.join("include");
+    if project_include.is_dir() {
+        automatic_includes.push(("project include/".to_string(), project_include));
+    }
+    if let Some(map) = cfg.dependencies() {
+        for name in map.keys() {
+            let dep_root = dir.join("deps").join(name);
+            let dep_include = dep_root.join("include");
+            if dep_include.is_dir() {
+                automatic_includes.push((format!("dependency {name}"), dep_include));
+            }
+            if dep_root.is_dir() {
+                automatic_includes.push((format!("dependency {name}"), dep_root));
+            }
+        }
+    }
+
     let link_flags: Vec<String> = cfg.link_flags().to_vec();
     let test_flags = without_ndebug(&flags);
-    finalize_target_graph(dir, &mut bins, &mut tests, &mut libs, &mut shared, &flags, &test_flags)?;
+    finalize_target_graph(
+        dir,
+        &mut bins,
+        &mut tests,
+        &mut libs,
+        &mut shared,
+        &automatic_includes,
+        &flags,
+        &test_flags,
+    )?;
 
     for (src, names) in overlapping_exec_sources(&bins, &tests) {
         eprintln!(
@@ -231,6 +258,7 @@ fn finalize_target_graph(
     tests: &mut [BinTarget],
     libs: &mut [LibTarget],
     shared: &mut [SharedTarget],
+    automatic_includes: &[(String, PathBuf)],
     flags: &[String],
     test_flags: &[String],
 ) -> Result<(), String> {
@@ -245,7 +273,16 @@ fn finalize_target_graph(
         .map(|(i, sh)| (sh.name.to_lowercase(), i))
         .collect();
     validate_static_graph(libs, &lib_index)?;
-    validate_include_uniqueness(dir, bins, tests, libs, shared, &lib_index, &shared_index)?;
+    validate_include_uniqueness(
+        dir,
+        bins,
+        tests,
+        libs,
+        shared,
+        automatic_includes,
+        &lib_index,
+        &shared_index,
+    )?;
 
     for i in 0..libs.len() {
         let includes = lib_includes(&libs[i].name, libs, &lib_index);
@@ -453,18 +490,14 @@ fn validate_static_graph(
     Ok(())
 }
 
-/// Reject duplicate public headers across a target's link closure at plan time. Two
-/// libraries providing the same relative header path (e.g. both `include/util.hpp`)
-/// would otherwise silently shadow each other, with the winner decided by link order.
-/// Only declared target `include` directories are scanned (root include/ and deps/ are
-/// not); the check runs per link closure, so libraries that never meet in one target
-/// do not collide.
+/// Reject duplicate public headers across each target's effective include closure.
 fn validate_include_uniqueness(
     dir: &Path,
     bins: &[BinTarget],
     tests: &[BinTarget],
     libs: &[LibTarget],
     shared: &[SharedTarget],
+    automatic_includes: &[(String, PathBuf)],
     lib_index: &HashMap<String, usize>,
     shared_index: &HashMap<String, usize>,
 ) -> Result<(), String> {
@@ -476,16 +509,32 @@ fn validate_include_uniqueness(
     // different files.
     let case_insensitive = cfg!(windows);
     for lib in libs {
-        let pairs =
-            lib_closure_includes(&lib.name, lib.include.as_ref(), &lib.links, libs, lib_index);
+        let mut pairs = automatic_includes.to_vec();
+        pairs.extend(lib_closure_includes(
+            &lib.name,
+            lib.include.as_ref(),
+            &lib.links,
+            libs,
+            lib_index,
+        ));
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for sh in shared {
-        let pairs = lib_closure_includes(&sh.name, sh.include.as_ref(), &sh.links, libs, lib_index);
+        let mut pairs = automatic_includes.to_vec();
+        pairs.extend(lib_closure_includes(
+            &sh.name,
+            sh.include.as_ref(),
+            &sh.links,
+            libs,
+            lib_index,
+        ));
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for target in bins.iter().chain(tests.iter()) {
-        let pairs = exec_closure_includes(target, libs, shared, lib_index, shared_index);
+        let mut pairs = automatic_includes.to_vec();
+        pairs.extend(exec_closure_includes(
+            target, libs, shared, lib_index, shared_index,
+        ));
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     Ok(())
@@ -591,15 +640,13 @@ fn header_key(rel: &Path, case_insensitive: bool) -> String {
     }
 }
 
-/// Scan one link closure's include directories for the same relative header path
-/// provided by two different directories. Directories are identified by canonical
-/// path (identity only, never shown) so the same directory spelled two ways is
-/// scanned once; file labels in the error stay project-relative.
+/// Scan one link closure's include directories for duplicate relative header paths.
 pub(crate) fn check_closure_includes(
     dir: &Path,
     pairs: &[(String, PathBuf)],
     case_insensitive: bool,
 ) -> Result<(), String> {
+    let canonical_root = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let mut scanned: HashSet<PathBuf> = HashSet::new();
     let mut seen: HashMap<String, (String, PathBuf)> = HashMap::new();
     for (owner, include) in pairs {
@@ -608,11 +655,16 @@ pub(crate) fn check_closure_includes(
             continue;
         }
         let mut files = Vec::new();
-        collect_include_files(include, &mut files)?;
+        collect_include_files(dir, &canonical_root, include, &mut files, &mut HashSet::new())?;
+        files.sort();
         for file in files {
             let rel = file.strip_prefix(include).unwrap_or(&file).to_path_buf();
             let key = header_key(&rel, case_insensitive);
             if let Some((first_owner, first_file)) = seen.get(&key) {
+                // Dependencies may reuse generic headers; preserve their existing search order.
+                if first_owner.starts_with("dependency ") && owner.starts_with("dependency ") {
+                    continue;
+                }
                 return Err(format!(
                     "duplicate header \"{}\" provided by \"{}\" ({}) and \"{}\" ({}); move one under include/<project>/ or rename it.",
                     rel.to_string_lossy().replace('\\', "/"),
@@ -628,21 +680,46 @@ pub(crate) fn check_closure_includes(
     Ok(())
 }
 
-/// All files under an include directory (any extension: everything under an include
-/// root is includable). Symlinked directories are not followed (cycle guard, same as
-/// `collect_recursive`); symlinked files are collected.
-fn collect_include_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+/// Collect includable files, following directory links with containment and cycle guards.
+fn collect_include_files(
+    project_root: &Path,
+    canonical_root: &Path,
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<(), String> {
+    let label = rel_display(project_root, dir).replace('\\', "/");
+    let canonical = std::fs::canonicalize(dir)
+        .map_err(|e| format!("Cannot resolve include directory {label}: {e}"))?;
+    if !canonical.starts_with(canonical_root) {
+        return Err(format!("include directory {label} resolves outside the project."));
+    }
+    if !visited.insert(canonical) {
+        return Ok(());
+    }
     let entries =
-        std::fs::read_dir(dir).map_err(|e| format!("Cannot read {}: {e}", dir.display()))?;
+        std::fs::read_dir(dir).map_err(|e| format!("Cannot read {label}: {e}"))?;
     for entry in entries {
         let entry = entry
-            .map_err(|e| format!("Cannot read directory entries of {}: {e}", dir.display()))?;
+            .map_err(|e| format!("Cannot read directory entries of {label}: {e}"))?;
         let path = entry.path();
+        let path_label = rel_display(project_root, &path).replace('\\', "/");
         let file_type = entry
             .file_type()
-            .map_err(|e| format!("Cannot read type of {}: {e}", path.display()))?;
+            .map_err(|e| format!("Cannot read type of {path_label}: {e}"))?;
         if file_type.is_dir() {
-            collect_include_files(&path, out)?;
+            collect_include_files(project_root, canonical_root, &path, out, visited)?;
+        } else if file_type.is_symlink() {
+            let target = std::fs::canonicalize(&path)
+                .map_err(|e| format!("Cannot resolve include link {path_label}: {e}"))?;
+            if target.is_dir() {
+                collect_include_files(project_root, canonical_root, &path, out, visited)?;
+            } else if path.is_file() {
+                if !target.starts_with(canonical_root) {
+                    return Err(format!("include file {path_label} resolves outside the project."));
+                }
+                out.push(path);
+            }
         } else if path.is_file() {
             out.push(path);
         }

@@ -17,6 +17,7 @@
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
 - 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，include 与归档顺序由依赖图解析
+- v0.10（开发中）：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
@@ -220,9 +221,10 @@ cizon add https://github.com/fmtlib/fmt --tag 11.0.2
 
 ### `cizon update <依赖名>`
 
-按 `cizon.toml` 中的 `git` / `tag` 重新解析依赖。升级和降级使用同一条命令：先改 `tag`，再执行 `update`。
+按根目录或任一被包含子项目的 `cizon.toml` 中的 `git` / `tag` 重新解析依赖。升级和降级使用同一条命令：先改 `tag`，再执行 `update`。
 
-- 依赖名必须在 `[dependencies]` 中存在
+- 依赖名不区分大小写，必须存在于合并后的 `[dependencies]` 集合中
+- 有子项目时，`update` 只写根目录的 `cizon.lock`；`sync` 按该锁恢复合并后的依赖集
 - `deps/<名字>` 有未提交改动时拒绝执行；需要保留的本地提交请先推送
 - 先克隆到临时目录，成功后替换旧目录；失败时保留原有 checkout
 - `build` 永远按 `cizon.lock` 的既定提交构建，不会自动追 `cizon.toml` 的新 `tag`
@@ -368,23 +370,50 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 ```
 
-- 每个依赖只支持 `git` 与 `tag` 两个键。键名即依赖名和 `deps/<名字>` 目录名，只允许字母、数字、`-`、`_`；`git` 必填，`tag` 可选（省略时使用远端默认分支）。
+- 每个依赖只支持 `git` 与 `tag` 两个键。键名即依赖名和 `deps/<名字>` 目录名，只允许字母、数字、`-`、`_`；依赖名不区分大小写，但所有文件必须使用相同的拼写。`git` 必填，`tag` 可选（省略时使用远端默认分支）。
 - `cizon.lock` 是构建的唯一真相：`build` 只执行锁中已确定的提交，不会自动追随尚未 `update` 的新 `tag`。
 - 依赖是项目级的，不支持 per-target 依赖；添加、更新、锁恢复与目录布局见下文[依赖与锁文件](#依赖与锁文件)。
 
-### `[subproject]`
+### `[subproject]`（v0.10 开发中）
+
+`[subproject]` 计划随 v0.10.0 提供，v0.9.6 尚不支持。它让本地库/test 目录把 target 并入同一个根构建，无需重复声明，也无需搬动公开头。它**不是 workspace**：只有一个根 build、锁文件、compiler 和 edition；子项目没有独立的构建或发布生命周期。
+
+根目录 `cizon.toml`：
 
 ```toml
+[project]
+name = "mesh"
+version = "0.1.0"
+edition = "c++20"
+
 [subproject]
 net = "libs/net"
 storage = "libs/storage"
+
+[[target]]
+name = "mesh"
+kind = "bin"
+sources = ["src/main.cpp"]
+links = ["net", "storage"]
 ```
 
-- 子项目是一个嵌套的 cizon 项目：指定目录下有自己的 `cizon.toml`，它的 target 会合并进本项目的构建计划，按名字链接（`links = ["net"]`）。把某个库从多库项目里拷出来后，在这里声明即可，不必在新项目的 toml 里把 target 重写一遍。
-- 每个子项目的 `sources`、`include`、`prefix` 都相对它自己的目录解析，而不是根目录。库的公开头留在自己的 `include/` 里，用 target 的 `include` 字段声明，沿 `links` 照常传播。
-- 子项目只提供 `static_lib`、`shared_lib` 和 `test` target；里面写 `bin` 会在 plan 阶段报错，target 名在整个项目（含子项目）内必须唯一（不区分大小写）。
-- 子项目的 `[compiler]` 会被忽略（以根项目的编译器和 flags 为准），它的 `[dependencies]` 会合并进项目的依赖集——同名依赖配不同的 git URL 或 tag 会报错，完全相同的声明去重。`cizon update` 与 `cizon sync` 把这些依赖解析进根目录的 `cizon.lock` 与 `deps/`。
-- 子项目可以嵌套（子项目自己也能声明 `[subproject]`）。包含环是 plan 错误；菱形包含（两条路到达同一目录）只包含一次。
+`libs/net/cizon.toml`（`libs/storage/cizon.toml` 同理）：
+
+```toml
+[[target]]
+name = "net"
+kind = "static_lib"
+sources = ["src"]
+include = "include"
+```
+
+- 子项目只提供 `static_lib`、`shared_lib` 和 `test` target；里面写 `bin` 会在 plan 阶段报错。声明 `[subproject]` 的文件和每个子项目自身都必须至少声明一个 `[[target]]`。target 名全局唯一且不区分大小写。
+- 路径必须位于根项目内，解析符号链接/junction 后也不能越界。每个子项目的 `sources`、`include`、`prefix` 都相对它自己的目录解析。公开头留在所属库内，并沿 target `include` 照常传播。
+- 根项目的 `[compiler]` 和 `[project].edition` 优先。子项目的 `[compiler]` 会被忽略并给出警告，不同的 edition 也会被忽略；两者都不会形成独立的工具链配置。
+- 子项目的 `[dependencies]` 合并进根依赖集。依赖名不区分大小写，但所有文件必须使用相同的 key 拼写：仅大小写不同的重复项会报错，完全相同的 key 配不同的 git URL 或 tag 会报错，完全相同的声明去重。由于 checkout 从根目录克隆，子项目的 git 来源必须是绝对路径或 URL/SSH 形式，不能是相对路径。
+- `cizon update <名字>` 可以更新任一被包含文件声明的依赖，但只写根目录的 `cizon.lock`。`cizon sync` 按该锁把合并后的全部依赖恢复到根目录 `deps/`；`sync --check` 不联网、不写文件，只做校验。
+- 子项目可以嵌套。包含环是 plan 错误；菱形包含（两条路到达同一个规范目录）只包含一次。
+- workspace/包生命周期、独立 compiler 或锁、条件化或大型 target 图、install/export 等需求请改用 CMake。
 
 ### `[[target]]`：库与 bin
 
@@ -459,6 +488,8 @@ kind = "bin"
 - target 名大小写不敏感且不能重复，还必须满足文件名校验：不能是 `obj` / `lib` / `deps-obj`、不能以 `.` 开头、不能使用 Windows 设备名等；target 名叫 `shared` 是允许的，内部目录是 `.shared`
 - `sources` 必须是项目内相对路径（不能是绝对路径或包含 `..`）；文件或目录均可，目录递归扫描；允许跨目录同名源文件
 - `include` 在自动的项目根 `include/` 之上增加 target 自己的公共头根目录；路径必须存在、是目录、在项目内，且不能是项目根。缺失路径在 plan 阶段直接报错，不拖到编译
+- cizon 会检查根 `include/`、自动加入的依赖 include 根，以及 target/库的 `include` 根中的公开头相对路径冲突。根 `include/` 遮蔽已链接库/依赖的头，或多个已链接库的 include 根出现同名头，都会在 plan 阶段报错；Windows 上比较不区分大小写。两个依赖 include 根之间的冲突仍然允许，按依赖搜索顺序处理
+- include 目录的符号链接/junction 也会参与重复检查，解析后必须仍在项目内；环保护会避免重复扫描
 - 对 `static_lib` / `shared_lib`，`include` 是 PUBLIC：库自己的源码使用它，所有通过 `links` 直接/间接链接它的消费者也继承；对 bin/test 只作用于自身
 - `static_lib` 可以链接已存在的 `static_lib`（公共依赖）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
 - 静态依赖图内的链接顺序按“依赖方在前”自动推导，消费者无需手排归档顺序；出现环直接报错（cizon 不加 `--start-group`）
@@ -510,7 +541,7 @@ cizon update fmt
 - `add` / `update` 做浅克隆；`build` 在 `deps/` 缺失时按锁恢复。
 - 升级/降级都只改 `cizon.toml` 里的 `tag`，再运行 `cizon update <名字>`。
 - `update` 会替换整个 `deps/<name>`；目录有未提交改动时会拒绝。需要保留的本地提交请先推送到远端并更新 `cizon.toml` 后再更新。
-- 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。其他布局或需要构建脚本的库请使用 CMake。
+- 依赖约定布局：`include/` 头文件 + 平铺的 `src/*.cpp`。cizon 会 checkout git 源码并直接编译这些源文件，但不执行依赖自带的构建系统或安装步骤。其他布局请使用 CMake。
 - `deps/<name>` 缺少 `include/` 时，`add` 会给出一次性布局提示（后续 `build`/`test` 不再重复刷屏）：header-only 库可能已可用，需编译的库改用系统包管理器 + `extern_links`，或 vendor header-only 框架。
 - 依赖源码对象会链接进 bin 与每个共享库；依赖是项目级的，不支持 per-target 依赖。
 - 外部依赖若需自行 cmake 构建/安装，构建树与安装产物放在 `deps/.build/<name>`、`deps/.install/<name>`，不要散落在项目根；项目根只保留源码目录 + `deps/` + `build/`。
@@ -689,8 +720,9 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 
 ## 什么时候该用 CMake
 
-Cizon 面向中小型项目（一个或多个 bin，可带静态库/共享库 target，支持无环的静态库公共依赖及其 include 传播）。出现以下需求时，请直接使用 CMake：
+Cizon 面向中小型项目（一个或多个 bin，可带静态库/共享库 target，支持无环的静态库公共依赖及其 include 传播）。v0.10 的 `[subproject]` 边界允许在单一根构建下组合本地库/test，但不提供独立的包生命周期。出现以下需求时，请直接使用 CMake：
 
+- 具有独立构建、compiler、锁或发布生命周期的 workspace/monorepo 包
 - 条件化或非常庞大的 target 图、per-target 编译 flags/宏定义、生成源码
 - install/export/find_package/打包发布、DLL 版本号/SONAME
 - 共享库依赖共享库、直接分发 C++ ABI

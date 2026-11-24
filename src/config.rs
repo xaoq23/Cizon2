@@ -141,6 +141,31 @@ pub(crate) fn is_valid_dep_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// Relative git sources change meaning when subproject dependencies are cloned from the root.
+fn is_relative_git_source(source: &str) -> bool {
+    let source = source.trim();
+    if source.is_empty() || source.contains("://") {
+        return source.is_empty();
+    }
+    let bytes = source.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return !(bytes.len() >= 3 && matches!(bytes[2], b'/' | b'\\'));
+    }
+    if source.starts_with('/') || source.starts_with('\\') {
+        return false;
+    }
+    if let Some((host, path)) = source.split_once(':') {
+        if !host.is_empty()
+            && !host.contains('/')
+            && !host.contains('\\')
+            && !path.is_empty()
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Both the project name and a target name end up in an artifact file name: each must be a single
 /// file name that cannot escape the build scope.
 fn validate_file_component(name: &str, what: &str) -> Result<(), String> {
@@ -510,10 +535,16 @@ fn parse(dir: &Path) -> Result<Config, String> {
         validate_edition(edition)?;
     }
     if let Some(deps) = &cfg.dependencies {
+        let mut seen = HashMap::new();
         for name in deps.keys() {
             if !is_valid_dep_name(name) {
                 return Err(format!(
                     "dependency name {name:?} is invalid: only letters, digits, - and _ are allowed (it is also the directory name under deps/)."
+                ));
+            }
+            if let Some(first) = seen.insert(name.to_lowercase(), name.clone()) {
+                return Err(format!(
+                    "dependency names are case-insensitive: {first:?} and {name:?} describe the same dependency; use one spelling."
                 ));
             }
         }
@@ -670,19 +701,37 @@ pub fn load_resolved(dir: &Path) -> Result<Config, String> {
         }
         if let Some(map) = file.cfg.dependencies() {
             for (name, info) in map {
-                match deps.get(name) {
-                    Some(existing) if existing.git != info.git || existing.tag != info.tag => {
+                if file.name.is_some() && is_relative_git_source(&info.git) {
+                    return Err(format!(
+                        "subproject {} ({label}) dependency {name} uses a relative git URL {:?}. Subproject dependencies are cloned from the root directory; use an absolute path, a URL (https://, ssh://, git://, file://), or an SCP-style SSH source.",
+                        file.name.as_deref().unwrap_or("?"),
+                        info.git
+                    ));
+                }
+                let existing_key = deps
+                    .keys()
+                    .find(|key| key.eq_ignore_ascii_case(name))
+                    .cloned();
+                match existing_key {
+                    Some(key) => {
+                        let existing = &deps[&key];
                         let first = dep_source
-                            .get(name)
+                            .get(&key)
                             .map(|s| s.as_str())
                             .unwrap_or("cizon.toml");
-                        return Err(format!(
-                            "dependency {name} is declared with different sources: {} (from {first}) and {} (from {label}). A dependency name must resolve to one git URL and tag across the project and its subprojects.",
-                            describe_dep(existing),
-                            describe_dep(info)
-                        ));
+                        if key != *name {
+                            return Err(format!(
+                                "dependency names are case-insensitive: {key:?} (from {first}) and {name:?} (from {label}) describe the same dependency; use the same key spelling in every cizon.toml."
+                            ));
+                        }
+                        if existing.git != info.git || existing.tag != info.tag {
+                            return Err(format!(
+                                "dependency {name} is declared with different sources: {} (from {first}) and {} (from {label}). A dependency name must resolve to one git URL and tag across the project and its subprojects.",
+                                describe_dep(existing),
+                                describe_dep(info)
+                            ));
+                        }
                     }
-                    Some(_) => {} // Identical declaration: deduplicate.
                     None => {
                         dep_source.insert(name.clone(), label.clone());
                         deps.insert(name.clone(), info.clone());
@@ -925,6 +974,9 @@ impl Config {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
     fn write_config(text: &str) -> (PathBuf, Config) {
         let dir = temp_dir("parse");
@@ -936,14 +988,17 @@ mod tests {
     }
 
     fn temp_dir(tag: &str) -> PathBuf {
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "cizon-cfg-{tag}-{}",
+            "cizon-cfg-{tag}-{}-{}-{}",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .subsec_nanos()
+                .as_nanos(),
+            id
         ));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir(&dir).unwrap();
         dir
     }
 
@@ -2026,6 +2081,60 @@ mod tests {
             resolved.dependencies().unwrap().get("tiny").map(|d| d.git.as_str()),
             Some("https://example.com/tiny")
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_resolved_rejects_relative_subproject_dependency_url() {
+        let dir = temp_dir("sub-relative-dep");
+        write_file(&dir, "cizon.toml", &format!(
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n{}",
+            bin_target(&["net"])
+        ));
+        write_file(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n[dependencies]\ndep = { git = \"../dep\" }\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("relative git URL"), "got: {err}");
+        assert!(err.contains("libs/net/cizon.toml"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dependency_names_are_case_insensitive() {
+        let dir = temp_dir("dep-case-file");
+        write_file(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[dependencies]\n\
+             fmt = { git = \"https://example.com/fmt\" }\n\
+             Fmt = { git = \"https://example.com/fmt\" }\n",
+        );
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("case-insensitive"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = temp_dir("dep-case-merged");
+        write_file(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"app\"\n\n[subproject]\nnet = \"libs/net\"\n\n\
+             [dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_file(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\n\n[dependencies]\n\
+             Fmt = { git = \"https://example.com/fmt\" }\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("case-insensitive"), "got: {err}");
+        assert!(err.contains("libs/net/cizon.toml"), "got: {err}");
         std::fs::remove_dir_all(dir).ok();
     }
 
