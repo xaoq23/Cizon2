@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.9.6**。可靠性版本：exe、构建状态、`cizon.lock` 与 `compile_commands.json` 改为临时文件替换写入；项目级构建锁会拒绝并发 build；回归测试覆盖 include 变更、静态链接变更、target 删除与 shared include 传播。无 CLI 变化。在此前 v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理，以及子项目 git 源与 include 根的校验。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进；已在小型真实项目上 dogfood，minor 版本之间可能有 breaking changes。
 
@@ -47,21 +47,21 @@ cargo install --path .
 
 在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-- Windows：`cizon-v0.9.6-windows-x86_64.exe`
-- Linux：`cizon-v0.9.6-linux-x86_64`
+- Windows：`cizon-v0.10.0-windows-x86_64.exe`
+- Linux：`cizon-v0.10.0-linux-x86_64`
 
 Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon-v0.9.6-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.9.6-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.10.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.10.0-windows-x86_64.exe.sha256
 ```
 
 Linux 校验：
 
 ```bash
-sha256sum -c cizon-v0.9.6-linux-x86_64.sha256
-chmod +x cizon-v0.9.6-linux-x86_64
+sha256sum -c cizon-v0.10.0-linux-x86_64.sha256
+chmod +x cizon-v0.10.0-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
@@ -79,7 +79,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-v0.9.6-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.10.0-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -376,7 +376,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 ### `[subproject]`（v0.10 开发中）
 
-`[subproject]` 计划随 v0.10.0 提供，v0.9.6 尚不支持。它让本地库/test 目录把 target 并入同一个根构建，无需重复声明，也无需搬动公开头。它**不是 workspace**：只有一个根 build、锁文件、compiler 和 edition；子项目没有独立的构建或发布生命周期。
+`[subproject]` 随 v0.10.0 提供。它让本地库/test 目录把 target 并入同一个根构建，无需重复声明，也无需搬动公开头。它**不是 workspace**：只有一个根 build、锁文件、compiler 和 edition；子项目没有独立的构建或发布生命周期。
 
 根目录 `cizon.toml`：
 
@@ -742,6 +742,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.9.6`）。Windows 测试仍在本地跑。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.10.0`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。

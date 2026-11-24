@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.9.6**. Reliability release: exe/build-state/`cizon.lock`/`compile_commands.json` writes use temporary-file replacement, a project-level build lock rejects concurrent builds, and regression coverage now includes include-path changes, static link changes, target removal, and shared include propagation. No CLI changes. This sits on top of v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, and validation of subproject git sources and include roots. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -51,21 +51,21 @@ cargo install --path .
 
 Download the asset for your platform and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed.
 
-- Windows: `cizon-v0.9.6-windows-x86_64.exe`
-- Linux: `cizon-v0.9.6-linux-x86_64`
+- Windows: `cizon-v0.10.0-windows-x86_64.exe`
+- Linux: `cizon-v0.10.0-linux-x86_64`
 
 Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\cizon-v0.9.6-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.9.6-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.10.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.10.0-windows-x86_64.exe.sha256
 ```
 
 Linux:
 
 ```bash
-sha256sum -c cizon-v0.9.6-linux-x86_64.sha256
-chmod +x cizon-v0.9.6-linux-x86_64
+sha256sum -c cizon-v0.10.0-linux-x86_64.sha256
+chmod +x cizon-v0.10.0-linux-x86_64
 ```
 
 Both SHA-256 values must match exactly.
@@ -83,7 +83,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux:
 
 ```bash
-install -Dm755 cizon-v0.9.6-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.10.0-linux-x86_64 ~/.local/bin/cizon
 # If ~/.local/bin is not on PATH, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -380,7 +380,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 ### `[subproject]` (v0.10, in development)
 
-`[subproject]` is planned for v0.10.0 and is not available in v0.9.6. It lets local library/test directories contribute targets to one root build without duplicate declarations or moving public headers. It is **not** a workspace: there is one root build, lock file, compiler, and edition; no subproject has an independent build or release lifecycle.
+`[subproject]` is available in v0.10.0. It lets local library/test directories contribute targets to one root build without duplicate declarations or moving public headers. It is **not** a workspace: there is one root build, lock file, compiler, and edition; no subproject has an independent build or release lifecycle.
 
 Root `cizon.toml`:
 
@@ -746,6 +746,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.9.6`). Windows tests stay local.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.10.0`). Windows tests stay local.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).
