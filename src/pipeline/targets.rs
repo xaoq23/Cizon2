@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::compiler::{self, Cxx};
-use crate::config::{Config, Target, TargetKind};
+use crate::config::{define_parts, Config, Target, TargetKind};
 
 use super::output::rel_display;
 use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
@@ -35,6 +35,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 name: name.to_string(),
                 sources: lib_sources,
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                defines: target.defines.clone(),
                 links: target
                     .links
                     .iter()
@@ -77,6 +78,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 name: name.to_string(),
                 sources: shared_sources,
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                defines: target.defines.clone(),
                 links: shared_links,
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
@@ -102,6 +104,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 out_name: exe_name(name),
                 extern_links: Vec::new(),
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                defines: target.defines.clone(),
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
@@ -126,6 +129,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
                 out_name: exe_name(name),
                 extern_links: target.extern_links.clone(),
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
+                defines: target.defines.clone(),
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
             });
@@ -155,6 +159,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             links: Vec::new(),
             extern_links: Vec::new(),
             include: None,
+            defines: Vec::new(),
             prefix: None,
             compile_flags: Vec::new(),
         }];
@@ -250,8 +255,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
     })
 }
 
-/// Resolve the include interface and static-library order, then materialize each target's
-/// effective compile flags. Root `include/` and dependency includes are already in `flags`.
+/// Resolve public compile requirements and static-library order into effective target flags.
 fn finalize_target_graph(
     dir: &Path,
     bins: &mut [BinTarget],
@@ -286,13 +290,15 @@ fn finalize_target_graph(
 
     for i in 0..libs.len() {
         let includes = lib_includes(&libs[i].name, libs, &lib_index);
+        let defines = lib_defines(&libs[i].name, libs, &lib_index)?;
         let prefix = libs[i].prefix.clone();
-        libs[i].compile_flags = flags_with_includes(flags, &includes, &prefix);
+        libs[i].compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
     }
     for i in 0..shared.len() {
         let includes = shared_includes(&shared[i], libs, &lib_index);
+        let defines = shared_defines(&shared[i], libs, &lib_index)?;
         let prefix = shared[i].prefix.clone();
-        shared[i].compile_flags = flags_with_includes(flags, &includes, &prefix);
+        shared[i].compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
         let ordered = ordered_static_roots(&shared[i].links, libs, &lib_index)?;
         shared[i].links = ordered;
     }
@@ -305,8 +311,9 @@ fn finalize_target_graph(
             &lib_index,
             &shared_index,
         );
+        let defines = exec_defines(bin, libs, shared, &lib_index, &shared_index)?;
         let prefix = bin.prefix.clone();
-        bin.compile_flags = flags_with_includes(flags, &includes, &prefix);
+        bin.compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
         let ordered = ordered_exec_links(&bin.links, libs, &lib_index)?;
         bin.links = ordered;
     }
@@ -319,16 +326,28 @@ fn finalize_target_graph(
             &lib_index,
             &shared_index,
         );
+        let defines = exec_defines(test, libs, shared, &lib_index, &shared_index)?;
         let prefix = test.prefix.clone();
-        test.compile_flags = flags_with_includes(test_flags, &includes, &prefix);
+        let flags = flags_with_requirements(test_flags, &defines, &includes, &prefix);
+        test.compile_flags = without_ndebug(&flags);
         let ordered = ordered_exec_links(&test.links, libs, &lib_index)?;
         test.links = ordered;
     }
     Ok(())
 }
 
-fn flags_with_includes(base: &[String], includes: &[PathBuf], prefix: &Option<PathBuf>) -> Vec<String> {
+fn flags_with_requirements(
+    base: &[String],
+    defines: &[String],
+    includes: &[PathBuf],
+    prefix: &Option<PathBuf>,
+) -> Vec<String> {
     let mut flags = base.to_vec();
+    for define in defines {
+        let (name, _) = define_parts(define);
+        flags.push(format!("-U{name}"));
+        flags.push(format!("-D{define}"));
+    }
     for include in includes {
         flags.push(format!("-I{}", include.display()));
     }
@@ -438,6 +457,114 @@ fn exec_includes(
         }
     }
     out
+}
+
+fn lib_defines(
+    start: &str,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Result<Vec<String>, String> {
+    let mut defines = Vec::new();
+    collect_lib_defines(start, libs, index, &mut HashSet::new(), &mut defines);
+    merge_defines(defines)
+}
+
+fn collect_lib_defines(
+    name: &str,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+    visited: &mut HashSet<String>,
+    out: &mut Vec<(String, String)>,
+) {
+    let lower = name.to_lowercase();
+    if !visited.insert(lower.clone()) {
+        return;
+    }
+    let Some(&i) = index.get(&lower) else {
+        return;
+    };
+    for define in &libs[i].defines {
+        out.push((libs[i].name.clone(), define.clone()));
+    }
+    for dep in &libs[i].links {
+        collect_lib_defines(dep, libs, index, visited, out);
+    }
+}
+
+fn shared_defines(
+    shared: &SharedTarget,
+    libs: &[LibTarget],
+    index: &HashMap<String, usize>,
+) -> Result<Vec<String>, String> {
+    let mut defines: Vec<(String, String)> = shared
+        .defines
+        .iter()
+        .cloned()
+        .map(|define| (shared.name.clone(), define))
+        .collect();
+    let mut visited = HashSet::new();
+    for dep in &shared.links {
+        collect_lib_defines(dep, libs, index, &mut visited, &mut defines);
+    }
+    merge_defines(defines)
+}
+
+fn exec_defines(
+    target: &BinTarget,
+    libs: &[LibTarget],
+    shared: &[SharedTarget],
+    lib_index: &HashMap<String, usize>,
+    shared_index: &HashMap<String, usize>,
+) -> Result<Vec<String>, String> {
+    let mut defines: Vec<(String, String)> = target
+        .defines
+        .iter()
+        .cloned()
+        .map(|define| (target.name.clone(), define))
+        .collect();
+    let mut visited_libs = HashSet::new();
+    let mut visited_shared = HashSet::new();
+    for link in &target.links {
+        match link {
+            LinkTarget::Static(name) => {
+                collect_lib_defines(name, libs, lib_index, &mut visited_libs, &mut defines);
+            }
+            LinkTarget::Shared(name) => {
+                let lower = name.to_lowercase();
+                if !visited_shared.insert(lower.clone()) {
+                    continue;
+                }
+                if let Some(&i) = shared_index.get(&lower) {
+                    for define in &shared[i].defines {
+                        defines.push((shared[i].name.clone(), define.clone()));
+                    }
+                    for dep in &shared[i].links {
+                        collect_lib_defines(dep, libs, lib_index, &mut visited_libs, &mut defines);
+                    }
+                }
+            }
+        }
+    }
+    merge_defines(defines)
+}
+
+fn merge_defines(defines: Vec<(String, String)>) -> Result<Vec<String>, String> {
+    let mut seen: HashMap<String, (String, String)> = HashMap::new();
+    let mut out = Vec::with_capacity(defines.len());
+    for (owner, define) in defines {
+        let (name, value) = define_parts(&define);
+        if let Some((first_owner, first_define)) = seen.get(name) {
+            if define_parts(first_define).1 != value {
+                return Err(format!(
+                    "conflicting definition {name:?}: {owner:?} requires {define:?}, but {first_owner:?} requires {first_define:?}."
+                ));
+            }
+            continue;
+        }
+        seen.insert(name.to_string(), (owner, define.clone()));
+        out.push(define);
+    }
+    Ok(out)
 }
 
 /// Reject static-library cycles globally, including libraries that no executable consumes.
@@ -819,13 +946,20 @@ fn ordered_exec_links(
     Ok(ordered)
 }
 
-/// Remove every `-DNDEBUG` spelling from test-source flags. Tests must not silently compile out
-/// their own asserts: the exit-code contract is only meaningful while `assert` is live.
+/// Strip NDEBUG definitions and undefinitions from test-source flags so asserts stay live.
 fn without_ndebug(flags: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(flags.len());
     let mut i = 0;
     while i < flags.len() {
         let flag = &flags[i];
+        if flag == "-U" && flags.get(i + 1).is_some_and(|v| v == "NDEBUG") {
+            i += 2;
+            continue;
+        }
+        if flag == "-UNDEBUG" {
+            i += 1;
+            continue;
+        }
         if flag == "-D"
             && flags
                 .get(i + 1)
@@ -1350,6 +1484,9 @@ mod tests {
             "-D".to_string(),
             "NDEBUG=1".to_string(),
             "-DNDEBUG=1".to_string(),
+            "-UNDEBUG".to_string(),
+            "-U".to_string(),
+            "NDEBUG".to_string(),
             "-Wall".to_string(),
         ];
         assert_eq!(without_ndebug(&flags), ["-std=c++23", "-Wall"]);
@@ -1369,6 +1506,7 @@ mod tests {
             out_name: format!("{name}.exe"),
             extern_links: vec![],
             include: None,
+            defines: vec![],
             prefix: None,
             compile_flags: vec![],
         };

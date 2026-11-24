@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, and validation of subproject git sources and include roots. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, validation of subproject git sources and include roots, and PUBLIC per-target compile definitions. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -20,7 +20,7 @@ Current version: **v0.10.0**. Adds local `[subproject]` composition: library/tes
 - Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
-- Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with includes and archive order resolved from the graph
+- Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with public includes/definitions and archive order resolved from the graph
 - v0.10: `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon run <bin>` selects a target to run; `build` builds every bin/library target
@@ -364,7 +364,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 - `cpp` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored. An explicitly selected compiler that cannot be probed is a hard error; without one, a missing g++ falls back to clang++ with a notice.
 - `strict` and `werror` are convenience switches over warning policy: `strict = true` is exactly `-Wall -Wextra -Wpedantic`, `werror = true` adds `-Werror`. They apply to project sources only (never dependencies), and user `flags` come after so they can still override (e.g. `-Wno-...`). Prefer these over hand-writing the same `-W` flags.
-- `flags` applies to every project target and is global; per-target flags do not exist. Do not expose private directories to every target with `-Ilib` — use a target's `prefix` for installed packages instead. Dependency sources compile with `edition`, the optimization level, and dependency includes; they do not inherit `flags`.
+- `flags` applies to every project target and is global; arbitrary per-target flags do not exist. Use target `defines` for compile macros. Do not expose private directories to every target with `-Ilib` — use a target's `prefix` for installed packages instead. Dependency sources compile with `edition`, the optimization level, and dependency includes; they do not inherit `flags` or target `defines`.
 - `link_flags` is appended only to bin and shared-library links; static libraries are archived, not linked. For example, GCC needs `-lstdc++exp` for `std::print`.
 
 ### `[dependencies]`
@@ -429,6 +429,7 @@ name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # required; file or directory (recursive)
 include = "lib/shape/include" # optional public header root; inherited by consumers
+defines = ["SHAPE_DIAGNOSTICS"] # optional public compile definitions; NAME or NAME=VALUE
 
 [[target]]
 name = "shape_dll"
@@ -464,7 +465,7 @@ Declaring the first `[[target]]` switches the project from implicit to explicit 
 kind = "bin"
 ```
 
-Each target accepts seven keys:
+Each target accepts eight keys:
 
 | Key | Required | Meaning |
 |---|---|---|
@@ -472,6 +473,7 @@ Each target accepts seven keys:
 | `kind` | Yes | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | Depends | A bin may omit it and scan `src/`; libraries and tests must provide it and it cannot be empty |
 | `include` | No | Project-relative public header root. Libraries propagate it through `links`; bins/tests use it only for themselves |
+| `defines` | No | Compile macros in `NAME` or `NAME=VALUE` form. Libraries propagate them through `links`; bins/tests use them only for themselves |
 | `links` | No | Project libraries linked by a bin/test, static libraries packed into a shared library, or public static dependencies of a static library |
 | `prefix` | No | Installed-package root; cizon expands it to `-I<prefix>/include` (compile) and `-L<prefix>/lib` (link) for this target only |
 | `extern_links` | No | Test targets only: external library names mapped to `-l<name>` at link time |
@@ -495,6 +497,9 @@ Rules:
 - Cizon checks root `include/`, automatic dependency include roots, and target/library `include` roots for duplicate public-header relative paths. Root `include/` shadowing a linked library/dependency header, or duplicates between linked library include roots, is a plan error; comparisons are case-insensitive on Windows. Collisions between two dependency include roots remain allowed and follow dependency search order
 - Include-directory symlinks/junctions are scanned for duplicates and must stay inside the project; cycle guards prevent repeated scanning
 - For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
+- `defines` accepts simple object macros as `NAME` or `NAME=VALUE`, with an ASCII identifier and no `-D` prefix. Library definitions are PUBLIC and propagate through direct/transitive `links`; bin/test definitions apply only to their own sources
+- Target definitions follow `[compiler].flags` and override global definitions for project targets without redefinition warnings. Git dependency sources do not inherit them. Identical definitions in one link closure deduplicate; the same macro with different values is a plan error
+- Test sources strip `NDEBUG` after definition propagation, even when a library or the test target declares it; release libraries and normal bins still receive it
 - `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
 - Link order inside the static dependency graph is derived dependent-first (consumers before their dependencies), so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
@@ -716,7 +721,7 @@ The goal is first-class breakpoint debugging, but **cizon does not implement a d
 
 ### Wait for real demand
 
-- Per-target compile flags/definitions and conditional target selection
+- Arbitrary per-target compile flags, PRIVATE/INTERFACE definitions, and conditional target selection
 - install/export, a one-shot CMake export command
 - MSVC, cross-compilation, external package managers
 - Consumers of a generated header/compile macro for `[project].version`
@@ -727,7 +732,7 @@ The goal is first-class breakpoint debugging, but **cizon does not implement a d
 Cizon targets small-to-medium projects with one or more bins (optionally with static/shared library targets, including acyclic static-library dependencies and their public includes). The v0.10 `[subproject]` boundary allows local library/test composition under one root build, not independent package lifecycles. Reach for CMake when you need:
 
 - Workspaces or monorepo packages with independent builds, compilers, locks, or releases
-- Conditional or very large target graphs, per-target compile flags/definitions, generated sources
+- Conditional or very large target graphs, arbitrary per-target compile flags, PRIVATE/INTERFACE definitions, generated sources
 - install/export/find_package/packaging, DLL versioning/SONAME
 - Shared libraries depending on other shared libraries, direct C++ ABI distribution
 - Code generation (protobuf, Qt moc), custom build steps

@@ -2119,6 +2119,195 @@
     }
 
     #[test]
+    fn target_defines_propagate_through_static_and_shared_closures() {
+        let dir = temp_dir("target-defines");
+        for path in [
+            "libs/core/src",
+            "libs/wrapper/src",
+            "libs/api/src",
+            "app/src",
+            "other/src",
+            "tests",
+        ] {
+            write_sub(&dir, &format!("{path}/unit.cpp"), "// unit\n");
+        }
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DCORE=99\"]\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"libs/core/src\"]\n\
+             defines = [\"CORE=1\", \"CORE\", \"NDEBUG\"]\n\n\
+             [[target]]\nname = \"wrapper\"\nkind = \"static_lib\"\nsources = [\"libs/wrapper/src\"]\n\
+             links = [\"core\"]\ndefines = [\"WRAPPER=1\", \"CORE=1\"]\n\n\
+             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"libs/api/src\"]\n\
+             links = [\"wrapper\"]\ndefines = [\"API=1\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\n\
+             links = [\"api\"]\ndefines = [\"APP=1\"]\n\n\
+             [[target]]\nname = \"other\"\nkind = \"bin\"\nsources = [\"other/src\"]\n\
+             defines = [\"OTHER=1\"]\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n\
+             links = [\"api\"]\ndefines = [\"TEST=1\", \"NDEBUG\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let has = |flags: &[String], define: &str| flags.iter().any(|f| *f == format!("-D{define}"));
+        let core = p.libs.iter().find(|l| l.name == "core").unwrap();
+        let wrapper = p.libs.iter().find(|l| l.name == "wrapper").unwrap();
+        let api = p.shared.iter().find(|s| s.name == "api").unwrap();
+        let app = p.bins.iter().find(|b| b.name == "app").unwrap();
+        let other = p.bins.iter().find(|b| b.name == "other").unwrap();
+        assert!(has(&core.compile_flags, "CORE=1"));
+        assert!(has(&wrapper.compile_flags, "CORE=1"));
+        assert!(has(&wrapper.compile_flags, "WRAPPER=1"));
+        for define in ["CORE=1", "WRAPPER=1", "API=1"] {
+            assert!(has(&api.compile_flags, define), "missing {define}: {:?}", api.compile_flags);
+        }
+        for define in ["CORE=1", "WRAPPER=1", "API=1", "APP=1"] {
+            assert!(has(&app.compile_flags, define), "missing {define}: {:?}", app.compile_flags);
+        }
+        let global = app.compile_flags.iter().position(|f| f == "-DCORE=99").unwrap();
+        let local = app.compile_flags.iter().position(|f| f == "-DCORE=1").unwrap();
+        assert!(global < local, "target definitions must follow global flags: {:?}", app.compile_flags);
+        assert_eq!(
+            app.compile_flags.iter().filter(|f| *f == "-DCORE=1").count(),
+            1,
+            "identical public definitions must deduplicate: {:?}",
+            app.compile_flags
+        );
+        assert!(has(&other.compile_flags, "OTHER=1"));
+        assert!(!has(&other.compile_flags, "CORE=1"));
+        for define in ["CORE=1", "WRAPPER=1", "API=1", "TEST=1"] {
+            assert!(has(&p.tests[0].compile_flags, define), "missing {define}: {:?}", p.tests[0].compile_flags);
+        }
+        assert!(
+            !p.tests[0].compile_flags.iter().any(|f| f.contains("NDEBUG")),
+            "test sources must strip propagated NDEBUG: {:?}",
+            p.tests[0].compile_flags
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn link_state_tracks_effective_compile_definitions() {
+        let dir = temp_dir("define-link-state");
+        write_sub(&dir, "src/main.cpp", "int main(){return 0;}\n");
+        write_sub(&dir, "api/unit.cpp", "// unit\n");
+        let config = |value: u32| {
+            format!(
+                "[project]\nname = \"t\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n\
+                 defines = [\"VALUE={value}\"]\n\n\
+                 [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api\"]\n\
+                 defines = [\"VALUE={value}\"]\n"
+            )
+        };
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        write_sub(&dir, "cizon.toml", &config(1));
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let first = plan(&dir, &cfg, cxx.clone(), false).unwrap();
+        let bin_state = super::state::link_state_text(&first, &first.bins[0], &[], &[], &[]);
+        let shared_state =
+            super::state::shared_link_state_text(&first, &first.shared[0], &[], &[]);
+        assert!(bin_state.contains("-DVALUE=1"), "got: {bin_state}");
+        assert!(shared_state.contains("-DVALUE=1"), "got: {shared_state}");
+
+        write_sub(&dir, "cizon.toml", &config(2));
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let second = plan(&dir, &cfg, cxx, false).unwrap();
+        let next_bin = super::state::link_state_text(&second, &second.bins[0], &[], &[], &[]);
+        let next_shared =
+            super::state::shared_link_state_text(&second, &second.shared[0], &[], &[]);
+        assert_ne!(bin_state, next_bin, "definition changes must force an executable relink");
+        assert_ne!(shared_state, next_shared, "definition changes must force a shared relink");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_defines_conflict_in_one_link_closure_is_rejected() {
+        let dir = temp_dir("target-defines-conflict");
+        for path in ["a/src", "b/src", "app/src"] {
+            write_sub(&dir, &format!("{path}/unit.cpp"), "// unit\n");
+        }
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"a\"\nkind = \"static_lib\"\nsources = [\"a/src\"]\n\
+             defines = [\"FEATURE=1\"]\n\n\
+             [[target]]\nname = \"b\"\nkind = \"static_lib\"\nsources = [\"b/src\"]\n\
+             defines = [\"FEATURE=2\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"a\", \"b\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("conflicting definition"), "got: {err}");
+        assert!(err.contains("FEATURE"), "got: {err}");
+        assert!(err.contains("\"a\"") && err.contains("\"b\""), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn public_defines_keep_abi_and_rebuild_when_changed() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("target-defines-abi");
+        write_sub(
+            &dir,
+            "libs/core/include/core.hpp",
+            "#pragma once\n#ifndef CORE_LAYOUT\n#define CORE_LAYOUT 1\n#endif\n\
+             struct CoreLayout { unsigned char bytes[CORE_LAYOUT]; };\nint core_layout_size();\n",
+        );
+        write_sub(
+            &dir,
+            "libs/core/src/core.cpp",
+            "#include \"core.hpp\"\nint core_layout_size(){return sizeof(CoreLayout);}\n",
+        );
+        write_sub(
+            &dir,
+            "app/src/main.cpp",
+            "#include \"core.hpp\"\n#include <cstdio>\n\
+             int main(){std::printf(\"%zu %zu\\n\", sizeof(CoreLayout), core_layout_size());\
+             return sizeof(CoreLayout)==core_layout_size()?0:1;}\n",
+        );
+        let config = |layout: u32| {
+            format!(
+                "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DCORE_LAYOUT=99\"]\nwerror = true\n\n\
+                 [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"libs/core/src\"]\n\
+                 include = \"libs/core/include\"\ndefines = [\"CORE_LAYOUT={layout}\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"core\"]\n"
+            )
+        };
+        write_sub(&dir, "cizon.toml", &config(4));
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_stdout(&exe).trim(), "4 4");
+        assert_eq!(run_code(&exe), 0);
+        let scope = scope_of(&dir, &exe);
+        let core_obj = find_named(&scope, "core.o").expect("core object");
+        let main_obj = obj_path(&dir, "main");
+        let (core_t, main_t, exe_t) = (mtime(&core_obj), mtime(&main_obj), mtime(&exe));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        write_sub(&dir, "cizon.toml", &config(8));
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_stdout(&exe).trim(), "8 8");
+        assert_eq!(run_code(&exe), 0);
+        assert_ne!(mtime(&core_obj), core_t, "the library definition change must rebuild its object");
+        assert_ne!(mtime(&main_obj), main_t, "the public definition change must rebuild consumers");
+        assert_ne!(mtime(&exe), exe_t, "the ABI change must relink the executable");
+
+        let (core_t, main_t, exe_t) = (mtime(&core_obj), mtime(&main_obj), mtime(&exe));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        build_project(&dir).unwrap();
+        assert_eq!(mtime(&core_obj), core_t, "a no-op build must keep library objects");
+        assert_eq!(mtime(&main_obj), main_t, "a no-op build must keep consumer objects");
+        assert_eq!(mtime(&exe), exe_t, "a no-op build must keep the executable");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn target_include_propagates_transitively_and_links_static_deps() {
         if !have_compiler() {
             return;

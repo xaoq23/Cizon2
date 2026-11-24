@@ -78,6 +78,7 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   kind = "bin"                 # bin | static_lib | shared_lib | test
   sources = ["src"]            # bin defaults to scanning src/; libraries and tests must provide it
   include = "libs/net/include" # optional public include root; libraries propagate it through links
+  defines = ["FEATURE", "LEVEL=3"] # NAME or NAME=VALUE; library definitions propagate through links
   links = ["storage"]          # project libraries; static_lib may publicly depend on static_lib
   prefix = "deps/.install/pkg" # optional installed package root; target-local -I/-L, not propagated
   extern_links = ["gtest_main", "gtest"] # test only; mapped to -l in declaration order
@@ -88,6 +89,11 @@ Rules:
     run reports no bin, and test reports no test targets.
   - include is added to the target's own compile; library includes propagate transitively through
     links. The project-root include/ remains automatic for every target.
+  - defines accepts simple NAME or NAME=VALUE object macros without a -D prefix. Library definitions
+    propagate transitively through links; bin/test definitions apply only to themselves. They follow
+    [compiler].flags, so target definitions override global ones without redefinition warnings.
+    Git dependency sources do not inherit them. Identical definitions deduplicate; conflicting values
+    in one link closure are plan errors. Test sources strip NDEBUG after propagation.
   - Duplicate public-header paths across root include/, dependency include roots, and target/library
     include roots are plan errors; Windows compares case-insensitively. Dependency-vs-dependency
     collisions remain allowed. Include directory links must stay inside the project, are scanned,
@@ -578,7 +584,7 @@ mod tests {
         assert_eq!(dispatch(&args(&["help", "build"])), 0);
         assert_eq!(dispatch(&args(&["help", "toml"])), 0);
         let toml = command_usage("toml").expect("toml reference");
-        for needle in ["[project]", "[compiler]", "[dependencies]", "[subproject]", "[[target]]", "edition", "extern_links"] {
+        for needle in ["[project]", "[compiler]", "[dependencies]", "[subproject]", "[[target]]", "edition", "defines", "extern_links"] {
             assert!(toml.contains(needle), "toml help is missing {needle}");
         }
         assert_eq!(dispatch(&args(&["build", "--help"])), 0);

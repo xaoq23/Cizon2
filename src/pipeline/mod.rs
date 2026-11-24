@@ -45,6 +45,8 @@ struct LibTarget {
     sources: Vec<PathBuf>,
     /// Public include root; inherited by consumers through `links`.
     include: Option<PathBuf>,
+    /// Own compile definitions; inherited by consumers through `links`.
+    defines: Vec<String>,
     /// Direct static-library dependencies.
     links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include for this target.
@@ -64,6 +66,8 @@ pub(super) struct BinTarget {
     pub(super) extern_links: Vec<String>,
     /// Optional project-relative include root used by this target only.
     pub(super) include: Option<PathBuf>,
+    /// Own compile definitions; bins/tests do not expose them to other targets.
+    pub(super) defines: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include (compile) and
     /// -L<prefix>/lib (link) for this target only.
     pub(super) prefix: Option<PathBuf>,
@@ -77,6 +81,8 @@ struct SharedTarget {
     sources: Vec<PathBuf>,
     /// Public include root; inherited by consumers through `links`.
     include: Option<PathBuf>,
+    /// Own compile definitions; inherited by consumers through `links`.
+    defines: Vec<String>,
     /// Static libraries built into this DLL, in dependency order.
     links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include and -L<prefix>/lib.

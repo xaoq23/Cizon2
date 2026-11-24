@@ -52,8 +52,8 @@ pub(super) fn project_state_text(plan: &Plan) -> String {
         s.push_str(f);
         s.push('\n');
     }
-    // Effective per-target flags capture include propagation, includes and prefixes: a change
-    // to any link edge that affects search paths invalidates project objects (coarse but correct).
+    // Effective per-target flags capture public definitions, includes and prefixes: a change
+    // to any link edge that affects compile requirements invalidates project objects (coarse but correct).
     s.push_str("targets:\n");
     for (label, target) in plan
         .bins
@@ -142,8 +142,7 @@ pub(super) fn shared_state_text(plan: &Plan) -> String {
     s
 }
 
-/// Link state: exe name, objects, archives, import libraries, external libraries, link flags. Any
-/// change requires a relink; import libraries carry their semantic fingerprint rather than mtime.
+/// Link state includes effective compile flags so definition changes force a relink directly.
 pub(super) fn link_state_text(
     plan: &Plan,
     bin: &BinTarget,
@@ -175,6 +174,11 @@ pub(super) fn link_state_text(
     }
     if let Some(p) = &bin.prefix {
         s.push_str(&format!("prefix: {}\n", p.display()));
+    }
+    s.push_str("compile-flags:\n");
+    for f in &bin.compile_flags {
+        s.push_str(f);
+        s.push('\n');
     }
     s.push_str("link-flags:\n");
     for f in &plan.link_flags {
@@ -244,7 +248,7 @@ pub(super) fn stale_exec_paths(
     stale
 }
 
-/// State for one shared target: its objects, static archives built into it, and link flags.
+/// Shared link state includes effective compile flags and static archives.
 pub(super) fn shared_link_state_text(
     plan: &Plan,
     shared: &SharedTarget,
@@ -264,6 +268,11 @@ pub(super) fn shared_link_state_text(
     }
     if let Some(p) = &shared.prefix {
         s.push_str(&format!("prefix: {}\n", p.display()));
+    }
+    s.push_str("compile-flags:\n");
+    for f in &shared.compile_flags {
+        s.push_str(f);
+        s.push('\n');
     }
     s.push_str("link-flags:\n");
     for f in &plan.link_flags {

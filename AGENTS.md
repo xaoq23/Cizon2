@@ -25,7 +25,7 @@
 | CI 原语：`sync --check`（只校验）、`--quiet` | `init --ci`、企业级 CI |
 | `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
 | test target 的 `extern_links`（仅 `-l<name>`）+ per-target `prefix`（推导 `-I`/`-L`） | vcpkg / Conan / conda / CMake provision |
-| `[compiler] strict`/`werror` 警告开关；`help <command>\|toml` 详细帮助；target `include` 公共传播 | 完整 per-target 编译 flags/宏定义作用域 |
+| `[compiler] strict`/`werror` 警告开关；`help <command>\|toml` 详细帮助；target `include`/`defines` PUBLIC 传播 | 任意 per-target 编译 flags、PRIVATE/INTERFACE include 与宏定义作用域 |
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]`、`[subproject]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | 交叉编译 / 复杂工具链 |
@@ -41,6 +41,7 @@
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
 - target `include` 是项目内公共头根目录：库的 include 沿 `links` PUBLIC 传播（可传递），bin/test 只作用于自身；与根 `include/` 叠加；路径必须在 plan 阶段校验存在、是目录、在项目内且不是项目根。`prefix` 是消费已安装包的输入，只作用于当前 target，不传播
+- target `defines` 接受 `NAME` / `NAME=VALUE` 简单对象宏；库的 defines 沿 `links` PUBLIC 传播，bin/test 只作用于自身。target defines 位于全局 `flags` 之后并覆盖同名全局定义、不产生重定义警告，同一闭包同宏不同值报错、同值去重；git 依赖源码不继承，test 源码在传播后剥离 NDEBUG
 - 公开头相对路径冲突在 plan 阶段检查：根 `include/`、target/库 include 与自动依赖 include 共同参与，Windows 不区分大小写；include 目录链接会被跟随，并做项目内约束与规范路径环保护。两个依赖 include 根之间的冲突仍按既有依赖搜索顺序允许
 - `[subproject]` 不是 workspace：根统一 compiler/edition/deps/lock；子项目只提供 static_lib/shared_lib/test，路径必须在根内，依赖 git URL 必须绝对、URL 或 SCP 风格 SSH，target 名全局唯一且不区分大小写；声明文件与子项目自身都必须有 `[[target]]`。依赖名不区分大小写，但 key 拼写必须一致；完全重复声明去重，git/tag 冲突或仅大小写不同的重复报错。嵌套允许、环报错、菱形去重
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`

@@ -73,7 +73,7 @@ pub struct Target {
     pub sources: Option<Vec<String>>,
     /// Bin/test: static/shared library target names, linked in declaration order.
     /// Shared library: static library target names, built into the DLL.
-    /// Static library: public static dependencies; their includes and archives propagate.
+    /// Static library: public static dependencies; their includes, definitions, and archives propagate.
     #[serde(default)]
     pub links: Vec<String>,
     /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
@@ -86,6 +86,9 @@ pub struct Target {
     /// their own sources. The project-root include/ remains automatic for every target.
     #[serde(default)]
     pub include: Option<String>,
+    /// Compile definitions in NAME or NAME=VALUE form; library definitions are public.
+    #[serde(default)]
+    pub defines: Vec<String>,
     /// Optional installed-package prefix (project-relative directory). cizon expands it to
     /// `-I<prefix>/include` for this target's sources and `-L<prefix>/lib` at link time, so
     /// consuming an installed library never requires hand-written search-path flags.
@@ -220,6 +223,54 @@ fn validate_system_link_name(name: &str) -> Result<(), String> {
     }
 }
 
+pub(crate) fn define_parts(define: &str) -> (&str, &str) {
+    define
+        .split_once('=')
+        .map_or((define, "1"), |(name, value)| (name, value))
+}
+
+fn is_macro_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+    {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn validate_target_defines(target: &Target) -> Result<(), String> {
+    let name = target.name.as_deref().expect("target name resolved");
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for define in &target.defines {
+        if define.is_empty()
+            || define.trim() != define
+            || define.chars().any(char::is_control)
+        {
+            return Err(format!(
+                "target {name} define {define:?} must be a non-empty NAME or NAME=VALUE string without surrounding whitespace or control characters."
+            ));
+        }
+        let (macro_name, value) = define_parts(define);
+        if !is_macro_name(macro_name) {
+            return Err(format!(
+                "target {name} define {define:?} has an invalid macro name; use NAME or NAME=VALUE with an ASCII identifier and no -D prefix."
+            ));
+        }
+        if let Some(first) = seen.get(macro_name) {
+            if first != value {
+                return Err(format!(
+                    "target {name} has conflicting define {macro_name:?}: {first:?} and {value:?}."
+                ));
+            }
+            continue;
+        }
+        seen.insert(macro_name.to_string(), value.to_string());
+    }
+    Ok(())
+}
+
 /// Validate and resolve `[[target]]`: a single bin without a name uses the project name; with
 /// multiple bins every bin must be named explicitly; libraries must be named explicitly.
 fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> {
@@ -265,6 +316,7 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
             }
         }
         validate_target_name(target.name.as_deref().expect("name resolved"))?;
+        validate_target_defines(target)?;
     }
 
     let mut names = HashSet::new();
@@ -1164,6 +1216,38 @@ mod tests {
         assert_eq!(targets[1].kind, TargetKind::Bin);
         assert_eq!(targets[1].links, ["foo"]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn target_defines_validate_syntax_and_conflicts() {
+        let (dir, _) = write_config(&target_config(
+            "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"src\"]\n\
+             defines = [\"FEATURE\", \"LEVEL=3\", \"EMPTY=\", \"TEXT=\\\"quoted\\\"\", \"DUP\", \"DUP=1\"]\n",
+        ));
+        std::fs::remove_dir_all(dir).ok();
+
+        for defines in [
+            r#"[""]"#,
+            r#"["1BAD"]"#,
+            r#"["BAD-NAME"]"#,
+            r#"["-DFOO"]"#,
+            r#"[" FOO"]"#,
+            r#"["FOO\nBAR"]"#,
+            r#"["FOO=1", "FOO=2"]"#,
+        ] {
+            let dir = temp_dir("bad-define");
+            std::fs::write(
+                dir.join("cizon.toml"),
+                format!(
+                    "[project]\nname = \"t\"\n\n[[target]]\nname = \"core\"\nkind = \"static_lib\"\n\
+                     sources = [\"src\"]\ndefines = {defines}\n"
+                ),
+            )
+            .unwrap();
+            let err = parse(&dir).unwrap_err();
+            assert!(err.contains("define"), "got: {err}");
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     fn target_config(targets: &str) -> String {

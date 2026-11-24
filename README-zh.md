@@ -6,9 +6,9 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理，以及子项目 git 源与 include 根的校验。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验，以及 PUBLIC per-target 编译定义。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
-> **状态说明：** 个人维护的 pre-1.0 项目，持续演进；已在小型真实项目上 dogfood，minor 版本之间可能有 breaking changes。
+> **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
 ## 特性
 
@@ -16,7 +16,7 @@
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
-- 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，include 与归档顺序由依赖图解析
+- 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，公共 include/defines 与归档顺序由依赖图解析
 - v0.10：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
@@ -79,7 +79,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-v0.10.0-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-vX.X.X-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -360,7 +360,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 
 - `cpp` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略。显式指定的编译器不可用时报错，不会回退；未指定时 g++ 缺失会回退到 clang++ 并打印提示。
 - `strict` 与 `werror` 是警告策略的便利开关：`strict = true` 等价于 `-Wall -Wextra -Wpedantic`，`werror = true` 追加 `-Werror`。只作用于项目源码（不含依赖），用户 `flags` 在其后、仍可覆盖（如 `-Wno-...`）。优先用它们，而不是手抄同样的 `-W` flag。
-- `flags` 作用于所有 project target 的源码，是全局的，没有 per-target flags；不要用 `-Ilib` 把私有目录暴露给所有 target——安装包请用 target 的 `prefix`。依赖源码按 `edition`、优化级与依赖 include 编译，不继承 `flags`。
+- `flags` 作用于所有 project target 的源码，是全局的，没有任意 per-target flags；编译宏请用 target 的 `defines`。不要用 `-Ilib` 把私有目录暴露给所有 target——安装包请用 target 的 `prefix`。依赖源码按 `edition`、优化级与依赖 include 编译，不继承 `flags` 或 target `defines`。
 - `link_flags` 只追加到 bin 和共享库的链接命令；静态库只归档、不链接。例如 GCC 下 `std::print` 需要 `-lstdc++exp`。
 
 ### `[dependencies]`
@@ -425,6 +425,7 @@ name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
 include = "lib/shape/include" # 可选公共头根目录；消费者自动继承
+defines = ["SHAPE_DIAGNOSTICS"] # 可选公共编译宏；NAME 或 NAME=VALUE
 
 [[target]]
 name = "shape_dll"
@@ -460,7 +461,7 @@ extern_links = ["gtest_main", "gtest"]  # 外部已安装库，按声明顺序�
 kind = "bin"
 ```
 
-每个 target 支持七个键：
+每个 target 支持八个键：
 
 | 键 | 必填 | 说明 |
 |---|---|---|
@@ -468,6 +469,7 @@ kind = "bin"
 | `kind` | 是 | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | 视情况 | bin 可省略并扫描 `src/`；库和 test 必填且不能为空 |
 | `include` | 否 | 项目内公共头根目录；库会沿 `links` 传播给消费者，bin/test 只作用于自身 |
+| `defines` | 否 | `NAME` 或 `NAME=VALUE` 形式的编译宏；库沿 `links` 传播，bin/test 只作用于自身 |
 | `links` | 否 | bin/test 链接的项目内库、共享库打包的静态库，或静态库的公共静态依赖 |
 | `prefix` | 否 | 已安装包根目录；cizon 为该 target 展开 `-I<prefix>/include`（编译）与 `-L<prefix>/lib`（链接） |
 | `extern_links` | 否 | 仅 test target：外部库名，链接时映射为 `-l<name>` |
@@ -491,6 +493,9 @@ kind = "bin"
 - cizon 会检查根 `include/`、自动加入的依赖 include 根，以及 target/库的 `include` 根中的公开头相对路径冲突。根 `include/` 遮蔽已链接库/依赖的头，或多个已链接库的 include 根出现同名头，都会在 plan 阶段报错；Windows 上比较不区分大小写。两个依赖 include 根之间的冲突仍然允许，按依赖搜索顺序处理
 - include 目录的符号链接/junction 也会参与重复检查，解析后必须仍在项目内；环保护会避免重复扫描
 - 对 `static_lib` / `shared_lib`，`include` 是 PUBLIC：库自己的源码使用它，所有通过 `links` 直接/间接链接它的消费者也继承；对 bin/test 只作用于自身
+- `defines` 接受 `NAME` 或 `NAME=VALUE` 形式的简单对象宏，宏名必须是 ASCII 标识符，且不带 `-D` 前缀。库的 defines 是 PUBLIC，沿直接/间接 `links` 传播；bin/test 的 defines 只作用于自己的源码
+- target defines 位于 `[compiler].flags` 之后，并会覆盖项目 target 的全局同名定义，且不产生重定义警告。git 依赖源码不继承它们。同一链接闭包内的相同定义去重；同一宏配不同值会在 plan 阶段报错
+- test 源码会在 defines 传播后剥离 `NDEBUG`，即使库或 test target 自己声明了它；release 库与普通 bin 仍会收到该定义
 - `static_lib` 可以链接已存在的 `static_lib`（公共依赖）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
 - 静态依赖图内的链接顺序按“依赖方在前”自动推导，消费者无需手排归档顺序；出现环直接报错（cizon 不加 `--start-group`）
 - `links` 必须引用配置中已存在的 target，重复条目会报错；共享库不能链接其他共享库，DLL 之间的传递依赖交给 CMake
@@ -712,7 +717,7 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 
 ### 等真实需求再开
 
-- per-target 编译 flags/宏定义、条件化 target 选择
+- 任意 per-target 编译 flags、PRIVATE/INTERFACE 宏定义、条件化 target 选择
 - install/export、一次性 CMake 导出命令
 - MSVC、交叉编译、外部包管理
 - `[project].version` 的生成头/编译宏消费者
@@ -723,7 +728,7 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 Cizon 面向中小型项目（一个或多个 bin，可带静态库/共享库 target，支持无环的静态库公共依赖及其 include 传播）。v0.10 的 `[subproject]` 边界允许在单一根构建下组合本地库/test，但不提供独立的包生命周期。出现以下需求时，请直接使用 CMake：
 
 - 具有独立构建、compiler、锁或发布生命周期的 workspace/monorepo 包
-- 条件化或非常庞大的 target 图、per-target 编译 flags/宏定义、生成源码
+- 条件化或非常庞大的 target 图、任意 per-target 编译 flags、PRIVATE/INTERFACE 宏定义、生成源码
 - install/export/find_package/打包发布、DLL 版本号/SONAME
 - 共享库依赖共享库、直接分发 C++ ABI
 - 代码生成（protobuf、Qt moc）、自定义构建步骤
