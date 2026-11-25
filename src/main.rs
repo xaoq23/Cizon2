@@ -159,6 +159,24 @@ fn style_help_usage(text: &str, color: bool) -> String {
     paint_help(text, YELLOW, color)
 }
 
+/// TOML section headers may carry a trailing comment on the same line (for example
+/// `[subproject]    # local composition, not a workspace`). Recognize the bracket
+/// token first, then allow only whitespace/comment after it.
+fn is_toml_section_header(line: &str) -> bool {
+    let Some(end) = (if line.starts_with("[[") {
+        line.find("]]").map(|pos| pos + 2)
+    } else {
+        line.find(']').map(|pos| pos + 1)
+    }) else {
+        return false;
+    };
+    if !line.starts_with('[') {
+        return false;
+    }
+    let rest = line[end..].trim_start();
+    rest.is_empty() || rest.starts_with('#')
+}
+
 fn render_help(text: &str, color: bool) -> String {
     let mut out = String::new();
     let mut section = "";
@@ -191,7 +209,7 @@ fn render_help(text: &str, color: bool) -> String {
             section = "";
             continue;
         }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        if is_toml_section_header(trimmed) {
             out.push_str(&paint_help(line, CYAN, color));
             continue;
         }
@@ -991,6 +1009,26 @@ mod tests {
             TOML_HELP.trim_end(),
             "TOML help indentation must be preserved without color"
         );
+        let toml_colored = render_help(TOML_HELP, true);
+        let toml_plain = render_help(TOML_HELP, false);
+        let colored_lines: Vec<&str> = toml_colored.lines().collect();
+        // A section header may have a trailing comment; it must still be colored.
+        for header in ["[project]", "[compiler]", "[dependencies]", "[subproject]", "[[target]]"] {
+            let index = toml_plain
+                .lines()
+                .position(|line| line.trim_start().starts_with(header))
+                .unwrap_or_else(|| panic!("missing header {header}"));
+            assert!(
+                colored_lines[index].contains(CYAN),
+                "section header must be colored: {:?}",
+                colored_lines[index]
+            );
+        }
+        let prose = toml_colored
+            .lines()
+            .find(|line| line.contains("A subproject's targets"))
+            .unwrap();
+        assert!(!prose.contains(CYAN), "prose mentioning a section must stay plain: {prose:?}");
     }
 
     #[test]
