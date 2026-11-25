@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.11.0**. Adds built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes (CI tag hardening, git URL validation, help equivalence, duplicate-header coverage, build/clean race fixes) and v0.10's local `[subproject]` composition, PUBLIC per-target compile definitions, `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML section headers that carry a trailing comment, including `[subproject]`. v0.11.0 added built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes and v0.10's local `[subproject]` composition, PUBLIC per-target compile definitions, `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -53,21 +53,21 @@ cargo install --path .
 
 Download the asset for your platform and its `.sha256` file from the [Releases](https://github.com/xaoq23/Cizon2/releases) page; no Rust toolchain is needed.
 
-- Windows: `cizon-v0.11.0-windows-x86_64.exe`
-- Linux: `cizon-v0.11.0-linux-x86_64`
+- Windows: `cizon-v0.11.1-windows-x86_64.exe`
+- Linux: `cizon-v0.11.1-linux-x86_64`
 
 Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\cizon-v0.11.0-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.11.0-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.11.1-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.11.1-windows-x86_64.exe.sha256
 ```
 
 Linux:
 
 ```bash
-sha256sum -c cizon-v0.11.0-linux-x86_64.sha256
-chmod +x cizon-v0.11.0-linux-x86_64
+sha256sum -c cizon-v0.11.1-linux-x86_64.sha256
+chmod +x cizon-v0.11.1-linux-x86_64
 ```
 
 Both SHA-256 values must match exactly.
@@ -85,7 +85,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux:
 
 ```bash
-install -Dm755 cizon-v0.11.0-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.11.1-linux-x86_64 ~/.local/bin/cizon
 # If ~/.local/bin is not on PATH, add it:
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -774,6 +774,6 @@ cargo build --release
 Single crate, depending only on `serde` and `toml`; no clap / rayon / sha2.
 Features and fixes go to `dev`, then merge into `main` once releasable.
 
-Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.11.0`). Windows tests stay local.
+Pushing a `v*` tag runs `.github/workflows/release.yml`: it builds the Windows and Linux binaries, runs the test suite on Linux (the only gate for `.so` support), uploads `cizon-v<version>-windows-x86_64.exe` and `cizon-v<version>-linux-x86_64` plus SHA-256 files, and creates or updates the GitHub Release. Manual dispatch accepts an existing tag (for example `v0.11.1`). Windows tests stay local.
 
 See [AGENTS.md](AGENTS.md) for detailed boundaries, gates, and roadmap (currently in Chinese).
