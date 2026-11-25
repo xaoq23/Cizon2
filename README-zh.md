@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.10.2**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验、PUBLIC per-target 编译定义、隐式项目的 `[project].defines`，以及临时 CLI `-D` 覆盖。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际工具命令，帮助采用 Cargo 风格彩色分节。v0.10.2 是审计修复补丁版本：CI 的 tag 输入不再直接插入 shell 命令、git 源在克隆前校验、`<command> --help` 与 `help <command>` 等价、重复头文件检查覆盖恢复后的依赖、安装包 prefix 同名头改为警告、Windows 上构建可容忍仍在运行的 exe；功能集与 v0.10.1 相同。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.11.0**。新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复（CI tag 加固、git URL 校验、帮助等价、重复头检查覆盖、构建/clean 竞态），v0.10 提供本地 `[subproject]` 组合、PUBLIC per-target 编译定义、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -49,21 +49,21 @@ cargo install --path .
 
 在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-- Windows：`cizon-v0.10.2-windows-x86_64.exe`
-- Linux：`cizon-v0.10.2-linux-x86_64`
+- Windows：`cizon-v0.11.0-windows-x86_64.exe`
+- Linux：`cizon-v0.11.0-linux-x86_64`
 
 Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon-v0.10.2-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.10.2-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.11.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.11.0-windows-x86_64.exe.sha256
 ```
 
 Linux 校验：
 
 ```bash
-sha256sum -c cizon-v0.10.2-linux-x86_64.sha256
-chmod +x cizon-v0.10.2-linux-x86_64
+sha256sum -c cizon-v0.11.0-linux-x86_64.sha256
+chmod +x cizon-v0.11.0-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
@@ -81,7 +81,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-v0.10.2-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.11.0-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -770,6 +770,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.10.2`）。Windows 测试仍在本地跑。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.11.0`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
