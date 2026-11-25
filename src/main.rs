@@ -52,7 +52,8 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   edition = "c++23"            # optional; default c++23; validated before compilation
   sources = ["src"]            # optional; only without [[target]]; files/dirs recursive
   defines = ["FEATURE"]        # optional; implicit single-bin only, rejected with [[target]]
-  compile_commands = false     # optional; write compile_commands.json + missing VS Code config
+  compile_commands = false     # optional; write compile_commands.json + missing VS Code IntelliSense config
+  vscode = false               # optional; write .vscode/tasks.json + launch.json from the debug plan
 
   edition values: 98/03/11/14/17/20/23/26, optionally c++ or gnu++ prefixed;
   0x/1y/1z/2a/2b/2c aliases are also accepted.
@@ -116,6 +117,11 @@ Rules:
     placed in defines, never propagated through links, and never given to git dependencies. A root
     target and a subproject library therefore see their own values without conflicting. The CIZON_
     prefix is reserved: defining a CIZON_* macro in defines, -D, or [compiler].flags is an error.
+  - vscode = true writes .vscode/tasks.json and .vscode/launch.json during a debug build, one
+    launch configuration per bin, with cppdbg + gdb and preLaunchTask "cizon: build". It is
+    independent of compile_commands (set both for full IntelliSense). Existing files are never
+    overwritten. If gdb is not found, miDebuggerPath is omitted and a warning is printed.
+    No debugger is implemented by cizon; breakpoints belong to VS Code + gdb.
   - Duplicate public-header paths across root include/, dependency include roots, and target/library
     include roots are plan errors; Windows compares case-insensitively. Dependency-vs-dependency
     collisions remain allowed. Include directory links must stay inside the project, are scanned,

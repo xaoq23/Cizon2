@@ -599,7 +599,11 @@ If clangd was already running before the database was generated, restart the lan
 
 `cizon build` is a debug build (`-g`) by default with a fixed artifact path, but breakpoint debugging requires VS Code's debug extension (cpptools + gdb) to own the process; `cizon run` itself only executes the artifact.
 
-One-time `.vscode/tasks.json`:
+With `[project] vscode = true`, every debug build writes `.vscode/tasks.json` and `.vscode/launch.json` from the current plan: one `cppdbg` + gdb configuration per bin, pointing at `build/debug-<compiler>/<bin>`, with `preLaunchTask: "cizon: build"`. Files are created only when missing; existing user configurations are never overwritten. `miDebuggerPath` is filled in when gdb is found (compiler bin directory first, then PATH), otherwise omitted with a warning. This is independent of `compile_commands` — set both for full IntelliSense. Release builds do not generate debug configurations.
+
+The generated files are equivalent to these hand-written examples:
+
+`.vscode/tasks.json`:
 
 ```json
 {
@@ -641,8 +645,8 @@ One-time `.vscode/tasks.json`:
 }
 ```
 
-- Replace `hello.exe` in `program` with the bin target name (the project name when `name` is omitted); replace `debug-g++` with the actual `<mode>-<compiler>` scope
-- Point `miDebuggerPath` at your local gdb; if `cizon` is not on PATH, set the task `command` to its full path
+- With generation enabled, `program` and the `<mode>-<compiler>` scope are filled from the plan automatically; edit the files yourself only if you wrote them before enabling `vscode`
+- If gdb was not found, add `miDebuggerPath` manually; if `cizon` is not on PATH, set the task `command` to its full path
 - g++/MinGW uses `cppdbg + gdb`; clang++ (MSVC target) needs cpptools' `cppvsdbg` or the LLDB extension, configured differently
 - On MSYS2 UCRT64, install gdb with `pacman -S mingw-w64-ucrt-x86_64-gdb`
 - `--release` artifacts are poor debugging targets; use the default debug build for breakpoints
@@ -723,12 +727,12 @@ Items that are not committed work yet advance on real demand and the gates in AG
 
 The goal is first-class breakpoint debugging, but **cizon does not implement a debugger, the DAP/MI protocol, or breakpoint UI**; breakpoints, variables, and call stacks remain gdb / lldb / cppvsdbg's job.
 
-- Artifact contract: debug builds use `-g`, are not stripped, and land at the fixed path `build/debug-<compiler>/<bin>.exe`
+- Artifact contract: debug builds use `-g`, are not stripped, and land at the fixed path `build/debug-<compiler>/<bin>` (`<bin>.exe` on Windows)
 - `cizon run` stays a direct executor and will not become a debugger launcher; debugging is driven by an editor launch configuration plus a `preLaunchTask` build
-- Preferred trigger: `[project] vscode = true` (off by default), generating `.vscode/launch.json` and `.vscode/tasks.json` at build time from the current plan; a one-shot `build --vscode` is the fallback, while a standalone `debug` command would trip the "no new commands" gate and is not planned
-- Generation is non-destructive: existing files are never overwritten; only missing files are added or paste-ready snippets printed; a target rename or compiler switch refreshes them on the next build
-- Debugger choice: g++/MinGW → `cppdbg` + gdb; clang++ (MSVC target) → `cppvsdbg`/PDB; LLDB for clang++ (GNU target) comes later
-- v1 is validated on float_test with g++/MinGW + gdb; tests cover configuration content, scope/paths, non-overwrite behavior, and a clear error when gdb is missing—without actually starting a debugger
+- Implemented: `[project] vscode = true` (off by default) generates `.vscode/launch.json` and `.vscode/tasks.json` during debug builds from the current plan; no `debug` command was added
+- Generation is non-destructive: existing files are never overwritten; delete them and rebuild to regenerate after a target rename or compiler switch
+- Debugger choice for this version: g++/clang++ (GNU driver) → `cppdbg` + gdb; clang-cl/MSVC (`cppvsdbg`/PDB) and LLDB remain outside the current boundary
+- Tests cover configuration content, scope/paths, non-overwrite behavior, and a warning when gdb is missing—without actually starting a debugger
 - Terminal-only `cizon run --debug` cannot provide VS Code breakpoints and is not a substitute
 
 ### Reliability

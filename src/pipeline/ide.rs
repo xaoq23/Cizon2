@@ -159,6 +159,91 @@ pub(super) fn render_compile_db(dir: &Path, cxx: &str, entries: &[(&Path, &[Stri
     out
 }
 
+/// Fixed build task used as `preLaunchTask` by generated debug configurations.
+pub(super) fn render_tasks() -> String {
+    "{\n  \"version\": \"2.0.0\",\n  \"tasks\": [\n    {\n      \"label\": \"cizon: build\",\n      \"type\": \"shell\",\n      \"command\": \"cizon\",\n      \"args\": [\"build\"],\n      \"options\": { \"cwd\": \"${workspaceFolder}\" },\n      \"problemMatcher\": [\"$gcc\"]\n    }\n  ]\n}\n".to_string()
+}
+
+/// Launch configurations for the project's bin targets. Test targets are intentionally
+/// not included in this first version; MSVC / lldb are outside the current boundary.
+pub(super) fn render_launch(entries: &[(String, String)], scope: &str, gdb: Option<&Path>) -> String {
+    let mut configs = Vec::new();
+    for (name, out_name) in entries {
+        let program = format!("${{workspaceFolder}}/build/{scope}/{out_name}");
+        let mut lines = vec![
+            "      \"name\": \"cizon: debug (".to_string() + &json_escape(name) + ")\",",
+            "      \"type\": \"cppdbg\",".to_string(),
+            "      \"request\": \"launch\",".to_string(),
+            "      \"program\": \"".to_string() + &json_escape(&program) + "\",",
+            "      \"args\": [],".to_string(),
+            "      \"stopAtEntry\": false,".to_string(),
+            "      \"cwd\": \"${workspaceFolder}\",".to_string(),
+            "      \"environment\": [],".to_string(),
+            "      \"externalConsole\": false,".to_string(),
+            "      \"MIMode\": \"gdb\",".to_string(),
+        ];
+        if let Some(gdb) = gdb {
+            lines.push(format!(
+                "      \"miDebuggerPath\": \"{}\",",
+                json_escape(&gdb.display().to_string().replace('\\', "/"))
+            ));
+        }
+        lines.push("      \"preLaunchTask\": \"cizon: build\"".to_string());
+        configs.push(format!("    {{\n{}\n    }}", lines.join("\n")));
+    }
+    format!(
+        "{{\n  \"version\": \"0.2.0\",\n  \"configurations\": [\n{}\n  ]\n}}\n",
+        configs.join(",\n")
+    )
+}
+
+/// Locate gdb: prefer the compiler's own bin directory (MSYS2 installs it there), then PATH.
+pub(super) fn find_debugger(cxx_name: &str) -> Option<PathBuf> {
+    if let Some(exe) = crate::compiler::executable_path(cxx_name) {
+        if let Some(bin) = exe.parent() {
+            let names = if cfg!(windows) { &["gdb.exe", "gdb"][..] } else { &["gdb"][..] };
+            for name in names {
+                let candidate = bin.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    crate::compiler::executable_path("gdb")
+}
+
+/// Create .vscode/launch.json and tasks.json only when missing. Existing user files are
+/// never touched; the returned paths are the ones actually written this run.
+pub(super) fn ensure_vscode_configs(
+    dir: &Path,
+    entries: &[(String, String)],
+    scope: &str,
+    gdb: Option<&Path>,
+) -> Result<Vec<PathBuf>, String> {
+    let vscode = dir.join(".vscode");
+    std::fs::create_dir_all(&vscode)
+        .map_err(|e| format!("Failed to create {}: {e}", rel_display(dir, &vscode)))?;
+    let files = [("tasks.json", render_tasks()), ("launch.json", render_launch(entries, scope, gdb))];
+    let mut written = Vec::new();
+    for (name, content) in files {
+        let path = vscode.join(name);
+        match crate::atomic::write_new(&path, content.as_bytes()) {
+            Ok(true) => written.push(path),
+            Ok(false) => {}
+            Err(e) => {
+                // Roll back everything created in this run: a half-generated .vscode
+                // directory would never be completed by later builds (create_new skips it).
+                for created in &written {
+                    let _ = std::fs::remove_file(created);
+                }
+                return Err(e);
+            }
+        }
+    }
+    Ok(written)
+}
+
 pub(super) fn json_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 4);
     for c in s.chars() {
@@ -173,4 +258,54 @@ pub(super) fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tasks_config_uses_cizon_build() {
+        let text = render_tasks();
+        assert!(text.contains("\"label\": \"cizon: build\""));
+        assert!(text.contains("\"command\": \"cizon\""));
+        assert!(text.contains("\"args\": [\"build\"]"));
+        assert!(text.contains("\"problemMatcher\": [\"$gcc\"]"));
+    }
+
+    #[test]
+    fn launch_config_has_one_configuration_per_bin() {
+        let entries = [("app".to_string(), "app.exe".to_string()), ("tool".to_string(), "tool".to_string())];
+        let gdb = Path::new("/opt/toolchain/bin/gdb");
+        let text = render_launch(&entries, "debug-g++", Some(gdb));
+        assert_eq!(text.matches("\"type\": \"cppdbg\"").count(), 2);
+        assert!(text.contains("\"name\": \"cizon: debug (app)\""));
+        assert!(text.contains("${workspaceFolder}/build/debug-g++/app.exe"));
+        assert!(text.contains("${workspaceFolder}/build/debug-g++/tool"));
+        assert!(text.contains("\"miDebuggerPath\": \"/opt/toolchain/bin/gdb\""));
+        assert!(text.contains("\"preLaunchTask\": \"cizon: build\""));
+        let without = render_launch(&entries, "debug-g++", None);
+        assert!(!without.contains("miDebuggerPath"));
+    }
+
+    #[test]
+    fn ensure_vscode_configs_never_overwrites_existing_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "cizon-vscode-config-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        let vscode = dir.join(".vscode");
+        std::fs::create_dir_all(&vscode).unwrap();
+        let sentinel = "// user owned\n";
+        std::fs::write(vscode.join("launch.json"), sentinel).unwrap();
+        let entries = [("app".to_string(), "app".to_string())];
+        let written = ensure_vscode_configs(&dir, &entries, "debug-g++", None).unwrap();
+        assert_eq!(written.len(), 1, "only tasks.json should be created");
+        assert_eq!(std::fs::read_to_string(vscode.join("launch.json")).unwrap(), sentinel);
+        assert!(vscode.join("tasks.json").is_file());
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

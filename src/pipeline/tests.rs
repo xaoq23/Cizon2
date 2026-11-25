@@ -920,6 +920,46 @@
     }
 
     #[test]
+    fn vscode_debug_config_is_generated_only_when_enabled() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("vscode-debug");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        build_project(&dir).unwrap();
+        assert!(!dir.join(".vscode/launch.json").exists());
+        assert!(!dir.join(".vscode/tasks.json").exists());
+
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nvscode = true\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        build_bins(&dir, &cfg, &p).unwrap();
+        let launch = fs::read_to_string(dir.join(".vscode/launch.json")).unwrap();
+        assert!(launch.contains("\"name\": \"cizon: debug (app)\""), "got: {launch}");
+        assert!(launch.contains("/build/debug-"), "got: {launch}");
+        assert!(dir.join(".vscode/tasks.json").is_file());
+        assert!(
+            !dir.join("compile_commands.json").exists(),
+            "vscode and compile_commands are independent switches"
+        );
+
+        // Existing user files must survive a later build untouched.
+        let marker = "// mine\n";
+        fs::write(dir.join(".vscode/launch.json"), marker).unwrap();
+        build_bins(&dir, &cfg, &p).unwrap();
+        assert_eq!(fs::read_to_string(dir.join(".vscode/launch.json")).unwrap(), marker);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn compile_db_absent_by_default() {
         if !have_compiler() {
             return;

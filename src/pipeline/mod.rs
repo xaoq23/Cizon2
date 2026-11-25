@@ -470,6 +470,42 @@ fn build_execs(
         }
     }
 
+    // 0.6) Optional VS Code debug configuration. Independent from compile_commands; only the
+    // debug bin build writes it, and only when files are missing (existing config wins).
+    if set == ExecSet::Bins && cfg.vscode() && plan.mode == "debug" {
+        let entries: Vec<(String, String)> = plan
+            .bins
+            .iter()
+            .map(|bin| (bin.name.clone(), bin.out_name.clone()))
+            .collect();
+        if entries.is_empty() {
+            eprintln!(
+                "{}",
+                output::warning_line("vscode = true needs a bin target; no launch.json generated")
+            );
+        } else {
+            let gdb = ide::find_debugger(&plan.cxx.name);
+            let scope = format!("{}-{}", plan.mode, scope_label(&plan.cxx.name));
+            match ide::ensure_vscode_configs(dir, &entries, &scope, gdb.as_deref()) {
+                Ok(written) => {
+                    if gdb.is_none() && written.iter().any(|p| p.ends_with("launch.json")) {
+                        eprintln!(
+                            "{}",
+                            output::warning_line("gdb not found; set miDebuggerPath in .vscode/launch.json manually if cpptools cannot find it")
+                        );
+                    }
+                    for path in written {
+                        step_line("Writing", &rel_display(dir, &path));
+                    }
+                }
+                Err(e) => eprintln!(
+                    "{}",
+                    output::warning_line(&format!("failed to generate VS Code debug config: {e}"))
+                ),
+            }
+        }
+    }
+
     // Linux shared libraries need position-independent objects: the .so itself, plus the static
     // libraries and dependency objects linked into it. Resolve the flavor once, before compiling,
     // so an unsupported toolchain fails early.

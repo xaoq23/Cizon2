@@ -29,7 +29,7 @@
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]`、`[subproject]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | 交叉编译 / 复杂工具链 |
-| compile_commands.json + VS Code IntelliSense 配置（默认关闭，`[project].compile_commands` 开启） | 自定义错误格式化器 |
+| compile_commands.json + VS Code IntelliSense 配置（默认关闭，`[project].compile_commands` 开启）；`[project].vscode = true` 非破坏生成 launch.json/tasks.json（debug 构建、gdb 先行） | 自定义错误格式化器 |
 | 编译器 stderr 捕获回放（UTF-8 有损解码）、退出码翻译 | 与 CMake 全功能对齐 |
 
 未知配置段与已知段内的未知键一律报错，不静默忽略。
@@ -98,7 +98,7 @@
 
 ## 已知待办（未排期）
 
-- VSCode 断点调试当前靠手工 `.vscode/launch.json` + `tasks.json`；未来优先按 `[project] vscode = true` 非破坏生成（不实现调试器，gdb 先行），详见 README「后续改进」
+- VSCode 断点调试已按 `[project].vscode = true` 在非破坏模式下生成 `launch.json` / `tasks.json`（debug 构建、gdb 先行，已有文件不覆盖）；clang-cl/MSVC 的 `cppvsdbg` 与 LLDB 仍待真实需求
 - 候选工程改进：compile_commands 关闭清理、依赖移除后的锁/目录清理
 - 详细清单与真实需求触发条件见 README「后续改进」；开工前按三道闸确认
 
@@ -118,5 +118,5 @@
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。v0.10.2 为审计修复补丁：CI tag 输入注入防护、依赖 URL 校验与 update 状态一致性、`<command> --help` 等价性、重复头检查覆盖与构建/clean 竞态加固；功能集不变。v0.11.0 新增 per-target 内置身份宏（`CIZON_PROJECT_NAME` / `CIZON_PROJECT_VERSION`），按声明该 target 的项目计算、不传播、`CIZON_` 前缀保留；不是 workspace，也不引入独立包生命周期。v0.11.1 为补丁版本，修复 `cizon help toml` 中带行尾注释的 section 标题（如 `[subproject]`）未着色的问题；功能集不变。v0.12.0 新增 link 可见性：`links` 默认私有（裸名字等价于 `{ name, visible = "private" }`），仅 public 边传播 include/defines，私有边归档仍进入最终链接；两种写法可混用。v0.12.1 为补丁版本：`--verbose` 不再倾倒子进程的整条 PATH；v0.12.2 进一步显示实际注入的 PATH 前缀（`[PATH + <编译器 bin> first]`），不再只写死标记；功能集不变。
+15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。v0.10.2 为审计修复补丁：CI tag 输入注入防护、依赖 URL 校验与 update 状态一致性、`<command> --help` 等价性、重复头检查覆盖与构建/clean 竞态加固；功能集不变。v0.11.0 新增 per-target 内置身份宏（`CIZON_PROJECT_NAME` / `CIZON_PROJECT_VERSION`），按声明该 target 的项目计算、不传播、`CIZON_` 前缀保留；不是 workspace，也不引入独立包生命周期。v0.11.1 为补丁版本，修复 `cizon help toml` 中带行尾注释的 section 标题（如 `[subproject]`）未着色的问题；功能集不变。v0.12.0 新增 link 可见性：`links` 默认私有（裸名字等价于 `{ name, visible = "private" }`），仅 public 边传播 include/defines，私有边归档仍进入最终链接；两种写法可混用。v0.12.1 为补丁版本：`--verbose` 不再倾倒子进程的整条 PATH；v0.12.2 进一步显示实际注入的 PATH 前缀（`[PATH + <编译器 bin> first]`），不再只写死标记；功能集不变。开发中（未发布）：`[project].vscode = true` 在 debug 构建时非破坏生成 VS Code launch/tasks（gdb 先行，不实现调试器）。
 16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

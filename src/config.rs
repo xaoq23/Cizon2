@@ -46,6 +46,10 @@ pub struct Project {
     /// VS Code IntelliSense configuration).
     #[serde(default)]
     pub compile_commands: Option<bool>,
+    /// Whether to generate .vscode/tasks.json and .vscode/launch.json from the build plan.
+    /// Independent of `compile_commands`: set both for a complete VS Code setup.
+    #[serde(default)]
+    pub vscode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -1242,6 +1246,14 @@ impl Config {
         self.project
             .as_ref()
             .and_then(|p| p.compile_commands)
+            .unwrap_or(false)
+    }
+
+    /// Off by default; independent of `compile_commands`.
+    pub fn vscode(&self) -> bool {
+        self.project
+            .as_ref()
+            .and_then(|p| p.vscode)
             .unwrap_or(false)
     }
 

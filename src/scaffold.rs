@@ -48,6 +48,7 @@ const TOML_TEMPLATE: &str = r#"[project]
 name = "{name}"
 edition = "c++23"
 # compile_commands = true     # generate the compilation database; add the VS Code IntelliSense configuration when missing (never overwrite an existing one)
+# vscode = true               # generate .vscode/tasks.json + launch.json on debug builds (independent of compile_commands)
 
 # [compiler]
 # flags = ["-Wall"]        # extra compile flags
@@ -112,8 +113,8 @@ int main() {
 }
 "#;
 
-const GITIGNORE_TEMPLATE: &str =
-    "build/\ndeps/\ncompile_commands.json\n.vscode/c_cpp_properties.json\n";
+const GITIGNORE_TEMPLATE: &str = "build/\ndeps/\ncompile_commands.json\n\
+                                  .vscode/c_cpp_properties.json\n.vscode/launch.json\n.vscode/tasks.json\n";
 
 fn new_usage() -> String {
     format!(
@@ -696,6 +697,8 @@ mod tests {
             "deps/",
             "compile_commands.json",
             ".vscode/c_cpp_properties.json",
+            ".vscode/launch.json",
+            ".vscode/tasks.json",
         ] {
             assert_eq!(
                 text.lines().filter(|l| *l == entry).count(),

@@ -595,7 +595,11 @@ compile_commands = true
 
 `cizon build` 默认是 debug 构建（`-g`），产物路径固定，但断点调试需要 VSCode 的调试扩展（cpptools + gdb）接管进程；`cizon run` 本身只是直接执行产物。
 
-一次性配置 `.vscode/tasks.json`：
+设置 `[project] vscode = true` 后，每次 debug 构建都会按当前 plan 写入 `.vscode/tasks.json` 与 `.vscode/launch.json`：每个 bin 生成一个 `cppdbg` + gdb 配置，指向 `build/debug-<编译器>/<bin>`，`preLaunchTask` 为 `cizon: build`。文件只在缺失时创建，绝不覆盖已有配置。找到 gdb 时会填入 `miDebuggerPath`（先查编译器 bin 目录，再查 PATH），否则省略并给出警告。它与 `compile_commands` 是两个独立开关——都打开才有完整 IntelliSense。release 构建不生成调试配置。
+
+生成内容与以下手写示例等价：
+
+`.vscode/tasks.json`：
 
 ```json
 {
@@ -637,8 +641,8 @@ compile_commands = true
 }
 ```
 
-- `program` 的 `hello.exe` 换成 bin target 名（省略 name 时为项目名）；`debug-g++` 换成实际的 `<mode>-<compiler>` 作用域
-- `miDebuggerPath` 指向本机 gdb；`cizon` 不在 PATH 时把 task 的 `command` 改成完整路径
+- 启用生成后，`program` 与 `<mode>-<compiler>` 作用域由 plan 自动填入；只有启用前就手写过文件时才需要自己改
+- 若没找到 gdb，请手动补 `miDebuggerPath`；`cizon` 不在 PATH 时把 task 的 `command` 改成完整路径
 - g++/MinGW 用 `cppdbg + gdb`；clang++（MSVC target）需要 cpptools 的 `cppvsdbg` 或 LLDB 扩展，配置方式不同
 - MSYS2 UCRT64 下用 `pacman -S mingw-w64-ucrt-x86_64-gdb` 安装 gdb
 - 用 `--release` 的产物调试体验较差；断点调试请使用默认 debug
@@ -714,16 +718,16 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 
 尚未承诺的事项按真实需求与 AGENTS.md 的闸门推进。
 
-### 调试集成（未排期）
+### 调试集成（已实现）
 
 目标是让断点调试成为一等开发体验，但 **cizon 不实现调试器、DAP/MI 协议或断点 UI**；断点、变量和调用栈仍由 gdb / lldb / cppvsdbg 负责。
 
-- 产物契约：默认 debug `-g`、不 strip，产物路径固定为 `build/debug-<compiler>/<bin>.exe`
+- 产物契约：默认 debug `-g`、不 strip，产物路径固定为 `build/debug-<compiler>/<bin>`
 - `cizon run` 保持直接执行，不改成调试器启动器；调试通过编辑器的 launch 配置 + `preLaunchTask` 构建
-- 触发方式优先 `[project] vscode = true`（默认关闭）：build 时按当前 plan 生成 `.vscode/launch.json` 与 `.vscode/tasks.json`；备选是一次性的 `build --vscode`，独立 `debug` 命令会触发“不加新命令”的闸门，暂不考虑
-- 生成策略非破坏：已有文件不覆盖；只补缺失文件或打印可粘贴的配置片段；目标改名/切编译器后重新 build 刷新
-- 调试器选择：g++/MinGW → `cppdbg` + gdb；clang++（MSVC target）→ `cppvsdbg`/PDB；clang++（GNU target）的 LLDB 配置后置
-- v1 先用 float_test 验收 g++/MinGW + gdb；测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时明确报错，不需要真正启动调试器
+- 已实现：`[project] vscode = true`（默认关闭）在 debug 构建时按当前 plan 生成 `.vscode/launch.json` 与 `.vscode/tasks.json`；没有新增 `debug` 命令
+- 生成策略非破坏：已有文件不覆盖；目标改名/切编译器后需删除文件再构建才会重新生成
+- 本版调试器选择：g++/clang++（GNU 驱动）→ `cppdbg` + gdb；clang-cl/MSVC（`cppvsdbg`/PDB）与 LLDB 仍在边界外
+- 测试覆盖配置内容、作用域/路径、已有文件不覆盖、找不到 gdb 时警告，不需要真正启动调试器
 - 终端内 `cizon run --debug` 不能提供 VSCode 断点，不作为替代方案
 
 ### 可靠性
