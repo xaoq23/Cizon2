@@ -1439,7 +1439,7 @@
         let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = crate::compiler::pick(None).unwrap();
         let p = plan(&dir, &cfg, cxx, false).unwrap();
-        assert!(p.flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
+        assert!(p.bins[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
         assert!(p.bins[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_VERSION")));
         assert!(p.tests[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
         let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
@@ -1475,6 +1475,107 @@
     }
 
     #[test]
+    fn builtin_macros_reach_libraries() {
+        let dir = temp_dir("builtin-libs");
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nversion = \"1.2.3\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"lib\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"core\"]\n",
+        )
+        .unwrap();
+        for sub in ["lib", "src"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("lib/core.cpp"), "int core(){return 1;}\n").unwrap();
+        fs::write(dir.join("src/main.cpp"), "int core();\nint main(){return core()-1;}\n").unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        for flags in [&p.libs[0].compile_flags, &p.bins[0].compile_flags] {
+            assert!(flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")), "flags={flags:?}");
+            assert!(flags.iter().any(|f| f.contains("CIZON_PROJECT_VERSION")), "flags={flags:?}");
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_targets_get_their_own_identity_macros_without_propagation() {
+        let dir = temp_dir("builtin-subproject");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"root\"\nversion = \"1.0.0\"\n\n\
+             [subproject]\nnet = \"libs/net\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\nlinks = [\"net\"]\n",
+        );
+        write_sub(
+            &dir,
+            "libs/net/cizon.toml",
+            "[project]\nname = \"net\"\nversion = \"9.9.9\"\n\n\
+             [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+        );
+        write_sub(&dir, "libs/net/src/net.cpp", "int net(){return 1;}\n");
+        write_sub(&dir, "src/main.cpp", "int net();\nint main(){return net()-1;}\n");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        // No "conflicting definition" error: identity macros are not part of `defines`.
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let bin_flags = &p.bins[0].compile_flags;
+        let lib_flags = &p.libs[0].compile_flags;
+        assert!(bin_flags.contains(&"-DCIZON_PROJECT_NAME=\"root\"".to_string()), "flags={bin_flags:?}");
+        assert!(bin_flags.contains(&"-DCIZON_PROJECT_VERSION=\"1.0.0\"".to_string()), "flags={bin_flags:?}");
+        assert!(lib_flags.contains(&"-DCIZON_PROJECT_NAME=\"net\"".to_string()), "flags={lib_flags:?}");
+        assert!(lib_flags.contains(&"-DCIZON_PROJECT_VERSION=\"9.9.9\"".to_string()), "flags={lib_flags:?}");
+        assert!(
+            !bin_flags.iter().any(|f| f.contains("\"net\"")),
+            "the root bin must not inherit the subproject's identity: {bin_flags:?}"
+        );
+        if have_compiler() {
+            let cfg = crate::config::load_resolved(&dir).unwrap();
+            let cxx = crate::compiler::pick(None).unwrap();
+            let p = plan(&dir, &cfg, cxx, false).unwrap();
+            let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+            assert_eq!(run_code(&exe), 0, "subproject link must work without identity conflicts");
+        }
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_version_macro_handles_quotes_and_backslashes() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("builtin-version-escape");
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            r#"#include <cstring>
+int main(){ return std::strcmp(CIZON_PROJECT_VERSION, "1.0-\"x\\y") == 0 ? 0 : 1; }
+"#,
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            r#"[project]
+name = "t"
+version = "1.0-\"x\\y"
+
+[[target]]
+name = "app"
+kind = "bin"
+sources = ["src"]
+"#,
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn builtin_macros_do_not_reach_git_dependency_sources() {
         let dir = temp_dir("builtin-deps");
         fs::write(
@@ -1489,7 +1590,7 @@
         let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
         let p = plan(&dir, &cfg, cxx, false).unwrap();
-        assert!(p.flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
+        assert!(p.bins[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
         assert!(
             !p.dep_base.iter().any(|f| f.contains("CIZON_")),
             "git dependency sources must not inherit project metadata: {:?}",

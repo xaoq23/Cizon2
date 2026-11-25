@@ -30,8 +30,8 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct Project {
     pub name: Option<String>,
-    /// Project version (metadata only); currently used neither for compilation nor for artifact
-    /// naming, reserved for install/export.
+    /// Optional project version; when present it defines the CIZON_PROJECT_VERSION string macro.
+    /// It does not affect artifact naming (that remains an install/export concern).
     #[serde(default)]
     pub version: Option<String>,
     pub edition: Option<String>,
@@ -71,6 +71,13 @@ pub struct Target {
     /// project's own directory for its own targets); never read from the file.
     #[serde(skip)]
     pub base_dir: PathBuf,
+    /// Effective project name from the cizon.toml that declared this target (root or
+    /// subproject). Used only for this target's identity macros; never propagated.
+    #[serde(skip)]
+    pub project_name: String,
+    /// Optional project version from the declaring cizon.toml, for identity macros.
+    #[serde(skip)]
+    pub project_version: Option<String>,
     /// A file or a directory; directories are scanned recursively. Defaults to src/ for bin,
     /// required for static_lib/shared_lib.
     #[serde(default)]
@@ -322,21 +329,14 @@ fn validate_defines(defines: &[String], owner: &str) -> Result<(), String> {
 /// `CIZON_` is reserved for built-in macros. Also catch raw `-D` flags in
 /// `[compiler].flags`, which bypass the structured `defines` validation.
 fn validate_compiler_flags(flags: &[String]) -> Result<(), String> {
-    for (i, flag) in flags.iter().enumerate() {
-        let name = flag.strip_prefix("-D").or_else(|| {
-            if i > 0 && flags[i - 1] == "-D" {
-                Some(flag.as_str())
-            } else {
-                None
-            }
-        });
-        if let Some(name) = name {
-            let name = name.split('=').next().unwrap_or(name);
-            if name.starts_with("CIZON_") {
-                return Err(format!(
-                    "compiler flag {flag:?} uses the reserved CIZON_ prefix; built-in macros cannot be redefined by a project."
-                ));
-            }
+    // The prefix is reserved, so no user flag should mention it at all. A strict
+    // substring check also catches escaped forms such as `-Wp,-UCIZON_...`,
+    // `-Xpreprocessor -U CIZON_...` and response-file arguments.
+    for flag in flags {
+        if flag.contains("CIZON_") {
+            return Err(format!(
+                "compiler flag {flag:?} uses the reserved CIZON_ prefix; built-in macros cannot be redefined or undefined by a project."
+            ));
         }
     }
     Ok(())
@@ -749,9 +749,15 @@ fn parse(dir: &Path) -> Result<Config, String> {
         }
     }
     validate_targets(&mut cfg, &effective_name)?;
+    let project_version = cfg
+        .project
+        .as_ref()
+        .and_then(|p| p.version.clone());
     if let Some(targets) = &mut cfg.targets {
         for target in targets.iter_mut() {
             target.base_dir = dir.to_path_buf();
+            target.project_name = effective_name.clone();
+            target.project_version = project_version.clone();
         }
     }
     Ok(cfg)
@@ -1093,15 +1099,15 @@ impl Config {
             .and_then(|p| p.version.as_deref())
     }
 
-    /// Built-in macros describing the project itself. These are prepended to project
-    /// compile flags (never to dependency flags), so they are the lowest-priority
-    /// definitions and cannot be shadowed because the `CIZON_` prefix is reserved.
-    pub fn builtin_defines(&self, dir: &Path) -> Vec<String> {
+    /// Built-in macros describing one project. They are identity ("who I am"), not
+    /// interface ("what I give downstream"): each target gets the metadata of the
+    /// cizon.toml that declared it, and these macros never enter a link closure.
+    pub fn builtin_defines(name: &str, version: Option<&str>) -> Vec<String> {
         let mut out = vec![format!(
             "CIZON_PROJECT_NAME={}",
-            c_string_literal(&self.name(dir))
+            c_string_literal(name)
         )];
-        if let Some(version) = self.version() {
+        if let Some(version) = version {
             out.push(format!(
                 "CIZON_PROJECT_VERSION={}",
                 c_string_literal(version)
@@ -1213,7 +1219,7 @@ mod tests {
     fn project_version_feeds_builtin_macro() {
         let (dir, cfg) = write_config("[project]\nname = \"a\"\nversion = \"1.2.3\"\n");
         assert_eq!(cfg.version(), Some("1.2.3"));
-        let builtins = cfg.builtin_defines(&dir);
+        let builtins = Config::builtin_defines("a", Some("1.2.3"));
         assert!(builtins.iter().any(|d| d == "CIZON_PROJECT_NAME=\"a\""), "got: {builtins:?}");
         assert!(
             builtins.iter().any(|d| d == "CIZON_PROJECT_VERSION=\"1.2.3\""),
@@ -1224,8 +1230,8 @@ mod tests {
 
     #[test]
     fn builtin_version_macro_absent_without_version() {
-        let (dir, cfg) = write_config("[project]\nname = \"a\"\n");
-        let builtins = cfg.builtin_defines(&dir);
+        let (dir, _cfg) = write_config("[project]\nname = \"a\"\n");
+        let builtins = Config::builtin_defines("a", None);
         assert_eq!(builtins.len(), 1, "got: {builtins:?}");
         assert!(builtins[0].starts_with("CIZON_PROJECT_NAME="));
         std::fs::remove_dir_all(dir).ok();
@@ -1242,6 +1248,11 @@ mod tests {
             "[project]\nname = \"a\"\ndefines = [\"CIZON_FOO=1\"]\n",
             "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-DCIZON_FOO=1\"]\n",
             "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-D\", \"CIZON_FOO=1\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-UCIZON_PROJECT_NAME\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-U\", \"CIZON_PROJECT_NAME\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-Wp,-UCIZON_PROJECT_NAME\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-Xpreprocessor\", \"-UCIZON_PROJECT_NAME\"]\n",
+            "[project]\nname = \"a\"\n\n[[target]]\nname = \"app\"\nkind = \"bin\"\ndefines = [\"CIZON_FOO=1\"]\n",
         ] {
             let dir = temp_dir("cizon-prefix");
             std::fs::write(dir.join("cizon.toml"), bad).unwrap();

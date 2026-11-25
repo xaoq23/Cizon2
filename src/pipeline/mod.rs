@@ -55,6 +55,9 @@ struct LibTarget {
     prefix: Option<PathBuf>,
     /// Base flags + own/propagated include paths + prefix include.
     compile_flags: Vec<String>,
+    /// Identity macros of the declaring project; appended to this target's own
+    /// compile flags only, never added to `defines` (which propagate through links).
+    builtin_defines: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +78,8 @@ pub(super) struct BinTarget {
     pub(super) prefix: Option<PathBuf>,
     /// Base flags + own/propagated include paths + prefix include.
     pub(super) compile_flags: Vec<String>,
+    /// Identity macros of the declaring project; target-local, never propagated.
+    pub(super) builtin_defines: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -91,6 +96,8 @@ struct SharedTarget {
     prefix: Option<PathBuf>,
     /// Base flags + own/propagated include paths + prefix include.
     compile_flags: Vec<String>,
+    /// Identity macros of the declaring project; target-local, never propagated.
+    builtin_defines: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

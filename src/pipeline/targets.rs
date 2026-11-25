@@ -62,6 +62,10 @@ pub fn plan_with_defines(
                     .collect::<Result<_, _>>()?,
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
+                builtin_defines: Config::builtin_defines(
+                    &target.project_name,
+                    target.project_version.as_deref(),
+                ),
             });
         }
         let mut shared = Vec::new();
@@ -96,6 +100,10 @@ pub fn plan_with_defines(
                 links: shared_links,
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
+                builtin_defines: Config::builtin_defines(
+                    &target.project_name,
+                    target.project_version.as_deref(),
+                ),
             });
         }
         let mut bins = Vec::new();
@@ -121,6 +129,10 @@ pub fn plan_with_defines(
                 defines: target.defines.clone(),
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
+                builtin_defines: Config::builtin_defines(
+                    &target.project_name,
+                    target.project_version.as_deref(),
+                ),
             });
         }
         let mut tests = Vec::new();
@@ -146,6 +158,10 @@ pub fn plan_with_defines(
                 defines: target.defines.clone(),
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
+                builtin_defines: Config::builtin_defines(
+                    &target.project_name,
+                    target.project_version.as_deref(),
+                ),
             });
         }
         // Every target's base dir gets its src/ scanned for uncompiled files: a
@@ -166,6 +182,7 @@ pub fn plan_with_defines(
             });
         }
         let name = cfg.name(dir);
+        let builtin_defines = Config::builtin_defines(&name, cfg.version());
         let bins = vec![BinTarget {
             out_name: exe_name(&name),
             name,
@@ -176,6 +193,7 @@ pub fn plan_with_defines(
             defines: cfg.project_defines().to_vec(),
             prefix: None,
             compile_flags: Vec::new(),
+            builtin_defines,
         }];
         (bins, Vec::new(), Vec::new(), Vec::new())
     };
@@ -189,12 +207,6 @@ pub fn plan_with_defines(
         base.push("-DNDEBUG".into());
     }
     let mut flags = base.clone();
-    // Tool-provided project identity macros come first: they are the lowest-priority
-    // definitions, and the reserved CIZON_ prefix means users cannot redefine them.
-    // They are deliberately not part of `base`, so git dependency sources never see them.
-    for define in cfg.builtin_defines(dir) {
-        flags.push(format!("-D{define}"));
-    }
     // Convenience warning switches expand to fixed flag bundles; user flags come after so they
     // can still override (e.g. -Wno-... or -UNDEBUG). These apply to project sources only, never deps.
     if cfg.strict() {
@@ -253,6 +265,18 @@ pub fn plan_with_defines(
         &flags,
         &test_flags,
     )?;
+
+    // Identity macros are appended after propagation: they are target-local and must
+    // never appear in `defines`, which is what the link-closure collectors read.
+    for target in bins.iter_mut().chain(tests.iter_mut()) {
+        append_builtins(&mut target.compile_flags, &target.builtin_defines);
+    }
+    for lib in &mut libs {
+        append_builtins(&mut lib.compile_flags, &lib.builtin_defines);
+    }
+    for sh in &mut shared {
+        append_builtins(&mut sh.compile_flags, &sh.builtin_defines);
+    }
 
     for (src, names) in overlapping_exec_sources(&bins, &tests) {
         eprintln!(
@@ -361,6 +385,15 @@ fn finalize_target_graph(
         test.links = ordered;
     }
     Ok(())
+}
+
+/// Append a target's own identity macros to its effective compile flags. This is
+/// deliberately separate from `flags_with_requirements`, whose defines feed the
+/// PUBLIC propagation collectors.
+fn append_builtins(flags: &mut Vec<String>, defines: &[String]) {
+    for define in defines {
+        flags.push(format!("-D{define}"));
+    }
 }
 
 fn flags_with_requirements(
@@ -1645,6 +1678,7 @@ mod tests {
             defines: vec![],
             prefix: None,
             compile_flags: vec![],
+            builtin_defines: vec![],
         };
         let bins = vec![mk("app", "src/main.cpp")];
         let tests = vec![mk("t1", "tests/a.cpp"), mk("t2", "tests/a.cpp")];

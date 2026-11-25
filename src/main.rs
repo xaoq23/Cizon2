@@ -106,10 +106,12 @@ Rules:
     [compiler].flags, so target definitions override global ones without redefinition warnings.
     Git dependency sources do not inherit them. Identical definitions deduplicate; conflicting values
     in one link closure are plan errors. Test sources strip NDEBUG after propagation.
-  - Built-in macros CIZON_PROJECT_NAME (always) and CIZON_PROJECT_VERSION (only when version is
-    declared) are string literals available to every project target, never to git dependencies.
-    They are added before all user flags. The CIZON_ prefix is reserved: defining a CIZON_* macro
-    in defines, -D, or [compiler].flags is an error. Changing a built-in value rebuilds the project.
+  - Built-in macros CIZON_PROJECT_NAME (always) and CIZON_PROJECT_VERSION (only when that project
+    declares version) are string literals computed from the cizon.toml that declared each target.
+    They are target-local identity: added to that target's compile flags before user flags, never
+    placed in defines, never propagated through links, and never given to git dependencies. A root
+    target and a subproject library therefore see their own values without conflicting. The CIZON_
+    prefix is reserved: defining a CIZON_* macro in defines, -D, or [compiler].flags is an error.
   - Duplicate public-header paths across root include/, dependency include roots, and target/library
     include roots are plan errors; Windows compares case-insensitively. Dependency-vs-dependency
     collisions remain allowed. Include directory links must stay inside the project, are scanned,

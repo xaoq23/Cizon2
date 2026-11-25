@@ -364,8 +364,8 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | `compile_commands` | 否 | `false` | 生成 `compile_commands.json` 与 VS Code 配置 |
 
 - `name` 会成为文件名：不能包含路径分隔符或 Windows 保留字符，不能是 `.` / `..`、不能以 `.` 开头，也不能使用 `con`、`nul` 等设备名或 `obj` / `lib` / `deps-obj` 这些内部目录名。
-- `version` 不能为空，也不能包含控制字符。声明后成为字符串宏 `CIZON_PROJECT_VERSION`；未声明则该宏不存在（可用 `#ifdef` 判断）。改动会触发所有 project target 重编。
-- 内置宏：`CIZON_PROJECT_NAME`（有效项目名，始终定义）与 `CIZON_PROJECT_VERSION`（仅在声明 `version` 时定义）是字符串字面量，作用于所有 project target（含 test），不传给 git 依赖源码。它们最先注入，`CIZON_` 前缀保留给 cizon：在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义 `CIZON_*` 宏会报错。
+- `version` 不能为空，也不能包含控制字符。声明后成为该项目自身 target 的字符串宏 `CIZON_PROJECT_VERSION`；未声明则该宏不存在（可用 `#ifdef` 判断）。改动只触发该项目 target 重编。
+- 内置宏是“我是谁”而非“我给谁”：`CIZON_PROJECT_NAME`（始终定义）与 `CIZON_PROJECT_VERSION`（仅在该项目声明 `version` 时定义）由声明该 target 的 cizon.toml 计算，只拼进该 target 自己的 `compile_flags`，不进入 `defines`、不沿 `links` 传播，也不传给 git 依赖源码；根 bin 与子项目库因此各看各的名字/版本，不会冲突，消费方也不会继承依赖的身份。它们位于用户 flags 之前，`CIZON_` 前缀保留给 cizon：在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义 `CIZON_*` 宏会报错。
 - `edition` 在加载 `cizon.toml` 时校验：接受 98 / 03 / 11 / 14 / 17 / 20 / 23 / 26，可带 `c++` 或 `gnu++` 前缀，另接受别名 0x / 1y / 1z / 2a / 2b / 2c；裸值（如 `"17"`）会补成 `c++17`。非法值在编译器启动前直接报错
 - `sources` 是项目内相对路径，可同时列文件和目录；目录会递归扫描 `.cpp` / `.cc` / `.cxx`。路径必须存在，不能是绝对路径或包含 `..`，目录也不能通过符号链接/junction 指向项目外。
 - `sources` 与 `[[target]]` 互斥：一旦声明 target，源码必须写进各自的 target。省略 `sources` 时扫描 `src/`。

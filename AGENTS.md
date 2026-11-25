@@ -50,7 +50,7 @@
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
 - `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；对象路径镜像源相对路径，同目录同 stem 冲突
-- 内置宏：`CIZON_PROJECT_NAME`（字符串，始终定义）与 `CIZON_PROJECT_VERSION`（字符串，仅在声明 `[project].version` 时定义）注入所有项目 target，不注入 git 依赖；内置宏最先注入、无覆盖机制，`CIZON_` 前缀保留给 cizon（用户在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义即报错）；改动触发全项目重编
+- 内置宏是“我是谁”而非“我给谁”：`CIZON_PROJECT_NAME`（字符串，始终定义）与 `CIZON_PROJECT_VERSION`（字符串，仅在所属项目的 cizon.toml 声明 `version` 时定义）按每个 target 所属项目（根或子项目）单独计算，只拼进该 target 自己的 `compile_flags`，不进入 `defines` 闭包、不沿 `links` 传播、不注入 git 依赖；在用户 flags 之前注入，`CIZON_` 前缀保留给 cizon（用户在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义即报错）；改动只触发该 target 重编
 - release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `build/<mode>-<compiler>/test-obj/<name>/`，`build` / `run` 不构建 test target
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - git 依赖约定为 `deps/<name>/include/` 头文件与平铺的 `src/*.cpp`；cizon 直接 checkout 并编译这些源码，不执行依赖自带的构建/安装步骤；其他布局交给 CMake
