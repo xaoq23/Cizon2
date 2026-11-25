@@ -458,8 +458,10 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
         // discarding it is surprising, so require an explicit deletion first.
         if let Some(text) = &original_lock {
             if let Ok(table) = text.parse::<toml::Table>() {
-                if let Some(expected) = table
-                    .get(&name)
+                // Lock keys are case-insensitive like dependency names; a changed key
+                // spelling in cizon.toml must not skip the HEAD check.
+                let entry = table.iter().find(|(key, _)| key.eq_ignore_ascii_case(&name)).map(|(_, value)| value);
+                if let Some(expected) = entry
                     .and_then(|entry| entry.get("commit"))
                     .and_then(|value| value.as_str())
                 {

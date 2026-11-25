@@ -380,12 +380,11 @@ fn build_execs(
     let wanted_execs = execs_state_text(execs_state_label, all);
     let multi = plan.bins.len() > 1;
     if !state_current(&project_state, &wanted_project)? {
-        // Only invalidate the object tree of the set being built: `build` must not
-        // throw away test objects, and `test` must not throw away bin objects.
-        match set {
-            ExecSet::Bins => clear_project_objects(&obj_dir)?,
-            ExecSet::Tests => reset_dir(&test_obj_root)?,
-        }
+        // Both executable trees share this state: when flags change, a `cizon test`
+        // must invalidate bin objects too, otherwise a following `build` would reuse
+        // stale objects. Rebuilding a few extra files is the safe tradeoff.
+        clear_project_objects(&obj_dir)?;
+        reset_dir(&test_obj_root)?;
         // Project flags apply to library and shared-library sources too
         clear_lib_artifacts(&scope_dir)?;
         clear_shared_artifacts(&scope_dir)?;
@@ -703,7 +702,7 @@ fn build_execs(
                     matches!(flavor, ImportLibFlavor::Gnu),
                 );
                 if let Err(e) = link_result {
-                    let _ = std::fs::remove_file(&tmp_dll);
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
                     let _ = std::fs::remove_file(&tmp_import);
                     return Err(format!(
                         "Shared library link failed: {}\n{}",
@@ -712,9 +711,12 @@ fn build_execs(
                     ));
                 }
                 crate::atomic::replace(&tmp_dll, &dll).map_err(|e| {
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
                     let _ = std::fs::remove_file(&tmp_import);
                     format!("Failed to install shared library {}:\n{e}", rel_display(dir, &dll))
                 })?;
+                // Drop linker sidecars (PDB/ILK) together with the temporary directory.
+                let _ = std::fs::remove_dir_all(&tmp_dir);
                 import_fp = if matches!(flavor, ImportLibFlavor::Elf) {
                     fingerprint(&dll)?
                 } else {

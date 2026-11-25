@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.10.2**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验、PUBLIC per-target 编译定义、隐式项目的 `[project].defines`，以及临时 CLI `-D` 覆盖。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际工具命令，帮助采用 Cargo 风格彩色分节。v0.10.2 是审计修复补丁版本：CI 的 tag 输入不再直接插入 shell 命令、git 源在克隆前校验、`<command> --help` 与 `help <command>` 等价、重复头文件检查覆盖恢复后的依赖与安装包 prefix、Windows 上构建可容忍仍在运行的 exe；功能集与 v0.10.1 相同。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.10.2**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验、PUBLIC per-target 编译定义、隐式项目的 `[project].defines`，以及临时 CLI `-D` 覆盖。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际工具命令，帮助采用 Cargo 风格彩色分节。v0.10.2 是审计修复补丁版本：CI 的 tag 输入不再直接插入 shell 命令、git 源在克隆前校验、`<command> --help` 与 `help <command>` 等价、重复头文件检查覆盖恢复后的依赖、安装包 prefix 同名头改为警告、Windows 上构建可容忍仍在运行的 exe；功能集与 v0.10.1 相同。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 

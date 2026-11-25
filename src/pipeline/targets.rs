@@ -699,6 +699,11 @@ pub(crate) fn validate_includes_after_prepare(
     cfg: &Config,
     plan: &Plan,
 ) -> Result<(), String> {
+    // Without dependencies nothing materializes during prepare, and `plan` already
+    // checked every include root (including prefixes); skip the second full scan.
+    if cfg.dependencies().is_none_or(|map| map.is_empty()) {
+        return Ok(());
+    }
     let mut automatic_includes: Vec<(String, PathBuf)> = Vec::new();
     let project_include = dir.join("include");
     if project_include.is_dir() {
@@ -876,6 +881,23 @@ pub(crate) fn check_closure_includes(
                 if first_owner.starts_with("dependency ") && owner.starts_with("dependency ") {
                     continue;
                 }
+                // A prefix include is appended last, so it can never shadow a project or
+                // library header. Installed packages commonly share generic header names;
+                // surface the shadowing but do not reject an otherwise valid build.
+                if first_owner.ends_with(" prefix") || owner.ends_with(" prefix") {
+                    eprintln!(
+                        "{}",
+                        super::output::warning_line(&format!(
+                            "header \"{}\" is provided by both \"{}\" ({}) and \"{}\" ({}); the prefix include is searched last and will be shadowed. Use a namespaced include path to disambiguate.",
+                            rel.to_string_lossy().replace('\\', "/"),
+                            first_owner,
+                            rel_display(dir, first_file).replace('\\', "/"),
+                            owner,
+                            rel_display(dir, &file).replace('\\', "/")
+                        ))
+                    );
+                    continue;
+                }
                 return Err(format!(
                     "duplicate header \"{}\" provided by \"{}\" ({}) and \"{}\" ({}); move one under include/<project>/ or rename it.",
                     rel.to_string_lossy().replace('\\', "/"),
@@ -894,7 +916,7 @@ pub(crate) fn check_closure_includes(
 /// Extensions treated as publicly includable headers by the duplicate-header scan.
 /// Files such as README/LICENSE in an include tree must not be reported as collisions.
 fn is_header_file(path: &Path) -> bool {
-    const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "ipp", "tpp"];
+    const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "inl", "ipp", "tpp"];
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| HEADER_EXTS.iter().any(|ext| ext.eq_ignore_ascii_case(e)))

@@ -72,11 +72,12 @@ cizon build && cizon run
 
 ### v0.10.2（待发布）：六路审计修复
 
-- CI：tag / dispatch 输入改经 `env:` 传递（消除 shell 注入）、权限最小化为 release job 才有 `contents: write`、按归一化 tag 设 `concurrency`、Linux 测试补 `--locked`
+- CI：tag / dispatch 输入改经 `env:` 传递（消除 shell 注入）、tag 格式校验、权限最小化为 release job 才有 `contents: write`、按归一化 tag 设 `concurrency`、Linux 测试补 `--locked`
 - 依赖：根 `[dependencies].git` 与 `add` 的 URL 校验（拒绝相对路径/前导 `-`）、`git clone --`、SCP 无斜杠源派生名、`update` 先写锁再换 checkout 且失败回滚、`update` 校验 HEAD 与锁一致
 - CLI：帮助标志在命令选项中任意位置都等价于 `help <command>`（`--` 之后不算）；`help` / `version` 拒绝多余参数；USAGE 补 `-v`
 - 构建共享库：先链接到 `.tmp-shared/<原名>` 再原子替换（避免失败留损坏产物、保留 Windows import lib 内嵌 DLL 名）；成功链接的 stderr 也做相对路径化；Windows exe 占用时短时重试并给出可操作提示
-- 头文件检查：`prefix/include` 纳入重复检查、非头文件扩展名不再误报、`deps::prepare` 之后重新检查恢复的依赖头
+- 头文件检查：`prefix/include` 同名头改为警告（prefix 搜索顺序最后，不遮蔽库头）、非头文件扩展名不再误报、`deps::prepare` 之后重新检查恢复的依赖头；无依赖项目跳过二次扫描
+- 增量：共享 project-state 变化时同时清理 `obj/` 与 `test-obj/`，避免 `test → build` 复用旧 bin 对象；共享库临时目录含 sidecar 一并回收
 - clean：符号链接/junction 分支也检查活动构建锁；锁记录解析后的绝对路径，删链接后仍可清除目标中的锁；删除非幂等问题修复；VS Code 生成失败改用标准 Warning 样式
 
 ---
@@ -193,7 +194,7 @@ CLI 支持形式：
 
 ## 5. 验证与常用命令
 
-当前测试总数：**291**（v0.10.2 新增 12 项审计回归测试）。
+当前测试总数：**292**（v0.10.2 新增 13 项审计回归测试）。
 
 本机验证过的命令：
 
@@ -211,9 +212,9 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 
 最近结果：
 
-- Windows debug：291/291
-- Windows release：291/291
-- Arch WSL release：291/291
+- Windows debug：292/292
+- Windows release：292/292
+- Arch WSL release：292/292（待复审后最终确认）
 - Release 工作流 Linux 测试：v0.10.1 成功；v0.10.2 待验证
 
 注意：

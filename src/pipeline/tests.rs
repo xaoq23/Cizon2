@@ -1414,6 +1414,44 @@
     }
 
     #[test]
+    fn test_then_build_uses_current_flags_for_bin_objects() {
+        // `cizon test` and `cizon build` share the project-state fingerprint. When flags
+        // change, running tests first must not leave stale bin objects behind.
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("flags-test-build");
+        write_sub(&dir, "src/main.cpp", "#ifndef VAL\n#define VAL 0\n#endif\nint main(){return VAL;}\n");
+        write_sub(&dir, "tests/t.cpp", "int main(){return 0;}\n");
+        let toml = |val: u32| {
+            format!(
+                "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DVAL={val}\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n\n\
+                 [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n"
+            )
+        };
+        fs::write(dir.join("cizon.toml"), toml(1)).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p1 = plan(&dir, &cfg, cxx, false).unwrap();
+        let exe = build_bins(&dir, &cfg, &p1).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 1);
+
+        fs::write(dir.join("cizon.toml"), toml(3)).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p2 = plan(&dir, &cfg, cxx, false).unwrap();
+        build_tests(&dir, &cfg, &p2, &[]).unwrap();
+
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p3 = plan(&dir, &cfg, cxx, false).unwrap();
+        let exe = build_bins(&dir, &cfg, &p3).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 3, "bin must be rebuilt with the new flags");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn target_sources_reject_empty_entry() {
         let dir = target_project("lib-empty-src");
         fs::write(
@@ -2985,7 +3023,7 @@
     }
 
     #[test]
-    fn prefix_include_participates_in_duplicate_header_check() {
+    fn prefix_header_collision_warns_but_does_not_block() {
         let dir = temp_dir("prefix-dup-header");
         fs::create_dir_all(dir.join("tests")).unwrap();
         fs::create_dir_all(dir.join("pkg/include")).unwrap();
@@ -3001,9 +3039,9 @@
         .unwrap();
         let cfg = crate::config::load_resolved(&dir).unwrap();
         let cxx = Cxx { name: "g++".into(), version: "test".into() };
-        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
-        assert!(err.contains("duplicate header \"api.hpp\""), "got: {err}");
-        assert!(err.contains("prefix"), "got: {err}");
+        // A prefix include is searched last, so it cannot shadow the project header.
+        // Warn about the collision but keep the build usable.
+        assert!(plan(&dir, &cfg, cxx, false).is_ok());
         fs::remove_dir_all(dir).ok();
     }
 
