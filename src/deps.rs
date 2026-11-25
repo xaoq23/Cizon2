@@ -102,7 +102,7 @@ fn remove_dep_dir(path: &Path) -> bool {
     }
 }
 
-/// Dependency layout hint, shown at acquisition time (add/update). A non-standard layout does not
+/// Dependency layout hint, shown at acquisition time (`add` only). A non-standard layout does not
 /// block the build; this tells the user whether the dep is usable as-is (header-only) or must be
 /// built externally and linked through extern_links.
 fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
@@ -120,6 +120,19 @@ fn layout_warning(dep_dir: &Path, name: &str) -> Option<String> {
     Some(format!(
         "Warning: deps/{name} is missing include/, which does not match the cizon dependency layout (include/ + flat src/*.cpp). Build it with its own build system; compiled test libraries belong in a test target's extern_links, header-only frameworks can be vendored under include/."
     ))
+}
+
+/// Clean up a temporary checkout; a failure must be visible, otherwise the next `add`
+/// with the same dependency name can be blocked by the leftover directory.
+fn remove_tmp_dir(path: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "Warning: failed to remove temporary checkout {}; remove it manually: {e}",
+                path.display()
+            );
+        }
+    }
 }
 
 fn remove_file_if_exists(path: &Path) -> bool {
@@ -147,6 +160,7 @@ fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
         Some(u) if !u.is_empty() => u.clone(),
         _ => return Err(usage.into()),
     };
+    config::validate_git_source(&url, "git source")?;
     let mut tag = None;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -164,7 +178,12 @@ fn parse_args(args: &[String]) -> Result<(String, Option<String>), String> {
 /// Only letters, digits, - and _ are allowed (the intersection of a valid TOML bare key
 /// and a valid Windows directory name).
 fn dep_name(url: &str) -> Result<String, String> {
-    let mut name = url
+    // SCP-style SSH sources (`git@host:repo.git`) have no slash after the colon.
+    let candidate = match url.rsplit_once(':') {
+        Some((_, tail)) if !tail.contains('/') && !tail.contains('\\') => tail,
+        _ => url,
+    };
+    let mut name = candidate
         .replace('\\', "/")
         .trim_end_matches('/')
         .rsplit('/')
@@ -191,9 +210,13 @@ fn shallow_clone(dir: &Path, url: &str, tag: Option<&str>, rel: &str) -> Result<
         .map(|s| (*s).into())
         .collect();
     if let Some(t) = tag {
+        // `--branch` consumes the next argument even when it starts with '-'.
         args.push("--branch".into());
         args.push(t.into());
     }
+    // Everything after `--` is positional: a URL starting with '-' can never be read
+    // as a git option, even if it slipped through config validation.
+    args.push("--".into());
     args.push(url.into());
     args.push(rel.into());
     git_cmd(dir, &args)?;
@@ -333,6 +356,16 @@ fn write_lock_entry(
         .map_err(|e| format!("failed to write {CIZON_LOCK}: {e}"))
 }
 
+/// Restore the lock file after a failed checkout swap. Returns false when the caller must
+/// ask the user to repair it by hand.
+fn restore_lock(dir: &Path, original: Option<&str>) -> bool {
+    let path = dir.join(CIZON_LOCK);
+    match original {
+        Some(text) => crate::atomic::write(&path, text.as_bytes()).is_ok(),
+        None => remove_file_if_exists(&path),
+    }
+}
+
 /// Best-effort add deps/ to .gitignore (create it if missing; leave it alone if a deps/
 /// line already exists). On a read failure only warn, never overwrite the user's file with
 /// empty content.
@@ -399,6 +432,12 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     std::fs::create_dir_all(&deps_dir)
         .map_err(|e| format!("failed to create {}: {e}", deps_dir.display()))?;
     let dep_dir = deps_dir.join(&name);
+    let lock_path = dir.join(CIZON_LOCK);
+    let original_lock = match std::fs::read_to_string(&lock_path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("failed to read {CIZON_LOCK}: {e}")),
+    };
     // update replaces the whole checkout; uncommitted changes must be explicitly discarded
     if dep_dir.exists() {
         let status = git_cmd(
@@ -415,6 +454,33 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
                 "deps/{name} has uncommitted changes, update would discard them. Commit and push to the remote, update cizon.toml, then retry; or delete the directory to discard the changes."
             ));
         }
+        // A clean checkout could still have been moved to another commit by hand; silently
+        // discarding it is surprising, so require an explicit deletion first.
+        if let Some(text) = &original_lock {
+            if let Ok(table) = text.parse::<toml::Table>() {
+                if let Some(expected) = table
+                    .get(&name)
+                    .and_then(|entry| entry.get("commit"))
+                    .and_then(|value| value.as_str())
+                {
+                    let head = git_cmd(
+                        dir,
+                        &[
+                            "-C".into(),
+                            format!("deps/{name}"),
+                            "rev-parse".into(),
+                            "HEAD".into(),
+                        ],
+                    )?;
+                    if head.trim() != expected {
+                        return Err(format!(
+                            "deps/{name} is at {}, but {CIZON_LOCK} locks {expected}. Restore that commit or delete deps/{name} before running update.",
+                            head.trim()
+                        ));
+                    }
+                }
+            }
+        }
     }
     // Clone to a temp directory first: on a network failure keep the old checkout instead of
     // deleting then pulling
@@ -429,23 +495,42 @@ pub fn update_in(dir: &Path, args: &[String]) -> Result<i32, String> {
     let commit = match shallow_clone(dir, &info.git, info.tag.as_deref(), &tmp_rel) {
         Ok(c) => c,
         Err(e) => {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
+            remove_tmp_dir(&tmp_dir);
             return Err(e);
         }
     };
+    // Write the lock first: a lock failure leaves the checkout untouched. A later swap
+    // failure rolls the lock back, so the two never disagree on the locked commit.
+    if let Err(e) = write_lock_entry(dir, &name, &info.git, info.tag.as_deref(), &commit) {
+        remove_tmp_dir(&tmp_dir);
+        return Err(format!(
+            "{e}\ndeps/{name} was left unchanged; fix the lock and rerun cizon update {name}."
+        ));
+    }
     if dep_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dep_dir) {
-            let _ = std::fs::remove_dir_all(&tmp_dir);
-            return Err(format!("failed to delete deps/{name}: {e}"));
+            let lock_ok = restore_lock(dir, original_lock.as_deref());
+            remove_tmp_dir(&tmp_dir);
+            return Err(format!(
+                "failed to delete deps/{name}: {e}\n{}",
+                if lock_ok {
+                    "The lock was rolled back."
+                } else {
+                    "The lock could not be rolled back; repair it manually."
+                }
+            ));
         }
     }
     if let Err(e) = std::fs::rename(&tmp_dir, &dep_dir) {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(format!("failed to move {tmp_rel} to deps/{name}: {e}"));
-    }
-    if let Err(e) = write_lock_entry(dir, &name, &info.git, info.tag.as_deref(), &commit) {
+        let lock_ok = restore_lock(dir, original_lock.as_deref());
+        remove_tmp_dir(&tmp_dir);
         return Err(format!(
-            "{e}\nThe dependency directory was updated, but writing the lock failed; fix it and rerun cizon update {name}."
+            "failed to move {tmp_rel} to deps/{name}: {e}\n{}",
+            if lock_ok {
+                "The lock was rolled back."
+            } else {
+                "The lock could not be rolled back; repair it manually."
+            }
         ));
     }
     println!("{} {name} @ {commit}", style_out("   Updated", GREEN));
@@ -1162,12 +1247,28 @@ mod tests {
 
     #[test]
     fn parse_args_validation() {
+        let url = "https://example.com/u";
         assert!(parse_args(&[]).is_err());
-        assert!(parse_args(&["u".into(), "--tag".into()]).is_err());
-        assert!(parse_args(&["u".into(), "--nope".into()]).is_err());
+        assert!(parse_args(&[url.into(), "--tag".into()]).is_err());
+        assert!(parse_args(&[url.into(), "--nope".into()]).is_err());
+        // A leading '-' must never reach git as a positional URL.
+        assert!(parse_args(&["--upload-pack=evil".into()]).is_err());
         assert_eq!(
-            parse_args(&["u".into(), "--tag".into(), "v1".into()]).unwrap(),
-            ("u".into(), Some("v1".into()))
+            parse_args(&[url.into(), "--tag".into(), "v1".into()]).unwrap(),
+            (url.into(), Some("v1".into()))
+        );
+    }
+
+    #[test]
+    fn dep_name_accepts_scp_style_sources() {
+        assert_eq!(
+            dep_name("git@host:repo.git").unwrap(),
+            "repo",
+            "SCP-style SSH sources have no slash after the colon"
+        );
+        assert_eq!(
+            dep_name("https://example.com/group/repo.git").unwrap(),
+            "repo"
         );
     }
 
@@ -1723,7 +1824,7 @@ mod tests {
         fs::create_dir_all(&proj).unwrap();
         fs::write(
             proj.join("cizon.toml"),
-            "[project]\nname = \"t\"\n\n[dependencies]\nfoo = { git = \"x\" }\n",
+            "[project]\nname = \"t\"\n\n[dependencies]\nfoo = { git = \"https://example.com/foo\" }\n",
         )
         .unwrap();
         let cfg = config::load_resolved(&proj).unwrap();
@@ -1738,12 +1839,12 @@ mod tests {
         fs::create_dir_all(&proj).unwrap();
         fs::write(
             proj.join("cizon.toml"),
-            "[project]\nname = \"t\"\n\n[dependencies]\nfoo = { git = \"x\" }\n",
+            "[project]\nname = \"t\"\n\n[dependencies]\nfoo = { git = \"https://example.com/foo\" }\n",
         )
         .unwrap();
         fs::write(
             proj.join(CIZON_LOCK),
-            "foo = { git = \"x\", commit = \"main\" }\n",
+            "foo = { git = \"https://example.com/foo\", commit = \"main\" }\n",
         )
         .unwrap();
         let cfg = config::load_resolved(&proj).unwrap();

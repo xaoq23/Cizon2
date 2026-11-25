@@ -27,7 +27,7 @@ Usage:
 
 Options:
   -h, --help      Print help
-  -V, --version   Print version information
+  -V, -v, --version   Print version information
 
 Commands:
   new       Create a project skeleton
@@ -224,7 +224,13 @@ fn dispatch(args: &[String]) -> i32 {
         return 0;
     }
     let cmd = args[0].as_str();
-    if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h")) {
+    // `--help` is equivalent to `help <command>` wherever it appears among the
+    // command's options. Stop at `--`: after it the tokens belong to the child program.
+    let wants_help = args[1..]
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"));
+    if wants_help {
         if let Some(text) = command_usage(cmd) {
             print_help(text);
             return 0;
@@ -232,6 +238,10 @@ fn dispatch(args: &[String]) -> i32 {
     }
     match cmd {
         "help" => {
+            if args.len() > 2 {
+                eprint_top("cizon help accepts at most one command name.");
+                return 2;
+            }
             match args.get(1).map(|s| s.as_str()) {
                 Some(sub) => match command_usage(sub) {
                     Some(text) => print_help(text),
@@ -245,10 +255,18 @@ fn dispatch(args: &[String]) -> i32 {
             return 0;
         }
         "--help" | "-h" => {
+            if args.len() > 1 {
+                eprint_top("cizon --help does not take arguments.");
+                return 2;
+            }
             print_help(USAGE);
             return 0;
         }
         "version" | "--version" | "-V" | "-v" => {
+            if args.len() > 1 {
+                eprint_top("cizon version does not take arguments.");
+                return 2;
+            }
             println!("{NAME} v{VERSION}");
             return 0;
         }
@@ -924,6 +942,27 @@ mod tests {
     fn clean_rejects_arguments() {
         let err = clean_cmd(&args(&["--force"])).unwrap_err();
         assert_eq!(err, "Usage: cizon clean");
+    }
+
+    #[test]
+    fn help_flag_is_equivalent_after_other_options() {
+        // `cizon <command> --help` must mirror `cizon help <command>` regardless of
+        // where the help flag appears among the command's options.
+        for input in [
+            args(&["build", "--help"]),
+            args(&["build", "--release", "--help"]),
+            args(&["run", "--verbose", "-h"]),
+            args(&["test", "--quiet", "--help"]),
+        ] {
+            assert_eq!(dispatch(&input), 0, "input={input:?}");
+        }
+    }
+
+    #[test]
+    fn help_and_version_reject_extra_arguments() {
+        assert_eq!(dispatch(&args(&["help", "build", "extra"])), 2);
+        assert_eq!(dispatch(&args(&["version", "foo"])), 2);
+        assert_eq!(dispatch(&args(&["--version", "foo"])), 2);
     }
 
     #[test]

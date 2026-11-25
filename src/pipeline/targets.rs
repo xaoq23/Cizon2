@@ -665,6 +665,7 @@ fn validate_include_uniqueness(
             libs,
             lib_index,
         ));
+        extend_prefix_include(&mut pairs, &lib.name, lib.prefix.as_ref());
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for sh in shared {
@@ -676,6 +677,7 @@ fn validate_include_uniqueness(
             libs,
             lib_index,
         ));
+        extend_prefix_include(&mut pairs, &sh.name, sh.prefix.as_ref());
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for target in bins.iter().chain(tests.iter()) {
@@ -683,9 +685,70 @@ fn validate_include_uniqueness(
         pairs.extend(exec_closure_includes(
             target, libs, shared, lib_index, shared_index,
         ));
+        extend_prefix_include(&mut pairs, &target.name, target.prefix.as_ref());
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     Ok(())
+}
+
+/// Re-check include uniqueness after dependencies have been restored. `plan` runs before
+/// `deps::prepare`, so on a fresh clone the dependency include roots did not exist during
+/// the first check; this pass closes that gap.
+pub(crate) fn validate_includes_after_prepare(
+    dir: &Path,
+    cfg: &Config,
+    plan: &Plan,
+) -> Result<(), String> {
+    let mut automatic_includes: Vec<(String, PathBuf)> = Vec::new();
+    let project_include = dir.join("include");
+    if project_include.is_dir() {
+        automatic_includes.push(("project include/".to_string(), project_include));
+    }
+    if let Some(map) = cfg.dependencies() {
+        for name in map.keys() {
+            let dep_root = dir.join("deps").join(name);
+            let dep_include = dep_root.join("include");
+            if dep_include.is_dir() {
+                automatic_includes.push((format!("dependency {name}"), dep_include));
+            }
+            if dep_root.is_dir() {
+                automatic_includes.push((format!("dependency {name}"), dep_root));
+            }
+        }
+    }
+    let lib_index: HashMap<String, usize> = plan
+        .libs
+        .iter()
+        .enumerate()
+        .map(|(i, lib)| (lib.name.to_lowercase(), i))
+        .collect();
+    let shared_index: HashMap<String, usize> = plan
+        .shared
+        .iter()
+        .enumerate()
+        .map(|(i, sh)| (sh.name.to_lowercase(), i))
+        .collect();
+    validate_include_uniqueness(
+        dir,
+        &plan.bins,
+        &plan.tests,
+        &plan.libs,
+        &plan.shared,
+        &automatic_includes,
+        &lib_index,
+        &shared_index,
+    )
+}
+
+/// A target's `prefix` adds `-I<prefix>/include` to its own compile command (it is not
+/// propagated), so that directory participates in this target's duplicate-header check.
+fn extend_prefix_include(pairs: &mut Vec<(String, PathBuf)>, name: &str, prefix: Option<&PathBuf>) {
+    if let Some(prefix) = prefix {
+        let include = prefix.join("include");
+        if include.is_dir() {
+            pairs.push((format!("{name} prefix"), include));
+        }
+    }
 }
 
 /// (owning target, include directory) pairs in a static library's link closure, in
@@ -828,6 +891,15 @@ pub(crate) fn check_closure_includes(
     Ok(())
 }
 
+/// Extensions treated as publicly includable headers by the duplicate-header scan.
+/// Files such as README/LICENSE in an include tree must not be reported as collisions.
+fn is_header_file(path: &Path) -> bool {
+    const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "ipp", "tpp"];
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| HEADER_EXTS.iter().any(|ext| ext.eq_ignore_ascii_case(e)))
+}
+
 /// Collect includable files, following directory links with containment and cycle guards.
 fn collect_include_files(
     project_root: &Path,
@@ -866,9 +938,11 @@ fn collect_include_files(
                 if !target.starts_with(canonical_root) {
                     return Err(format!("include file {path_label} resolves outside the project."));
                 }
-                out.push(path);
+                if is_header_file(&path) {
+                    out.push(path);
+                }
             }
-        } else if path.is_file() {
+        } else if path.is_file() && is_header_file(&path) {
             out.push(path);
         }
     }

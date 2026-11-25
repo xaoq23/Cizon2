@@ -2,7 +2,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::compile::{replace_file, temp_sibling};
+use super::compile::{relativize_diagnostics, replace_file, temp_sibling};
 use super::output::verbose_command;
 use super::state::reset_dir;
 
@@ -54,6 +54,7 @@ pub(super) fn archive_lib(ar: &str, archive: &Path, objs: &[PathBuf]) -> Result<
 }
 
 pub(super) fn link_shared(
+    dir: &Path,
     cxx: &str,
     objs: &[PathBuf],
     archives: &[PathBuf],
@@ -102,12 +103,13 @@ pub(super) fn link_shared(
     }
     if !stderr.trim().is_empty() {
         let mut err = std::io::stderr();
-        let _ = err.write_all(stderr.as_bytes());
+        let _ = err.write_all(relativize_diagnostics(dir, &stderr).as_bytes());
     }
     Ok(())
 }
 
 pub(super) fn link(
+    dir: &Path,
     cxx: &str,
     objs: &[PathBuf],
     archives: &[PathBuf],
@@ -143,7 +145,7 @@ pub(super) fn link(
     }
     if !stderr.trim().is_empty() {
         let mut err = std::io::stderr();
-        let _ = err.write_all(stderr.as_bytes());
+        let _ = err.write_all(relativize_diagnostics(dir, &stderr).as_bytes());
     }
     Ok(())
 }

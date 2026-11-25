@@ -1,5 +1,7 @@
 # Cizon — Agent Instructions
 
+> 接手开发前先读 `HANDOFF_FOR_NEXT_AGENT（先读这个）.md`：其中包含当前发布状态、近期决策与会话上下文。
+
 ## 定位
 
 个人开发者的声明式、渐进式现代 C++ 构建工具。使命：`cizon build && cizon run`，达到 cargo/uv 级的开箱即用。
@@ -14,7 +16,7 @@
 
 上一个项目 Cizon1 因 scope creep 膨胀到一万一千行。本项目的原则是边界优先于功能。
 
-## 当前边界（v0.10.1）
+## 当前边界（v0.10.2）
 
 | 在边界内 | 边界外 |
 |---|---|
@@ -117,5 +119,5 @@
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。
+15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。v0.10.2 为审计修复补丁：CI tag 输入注入防护、依赖 URL 校验与 update 状态一致性、`<command> --help` 等价性、重复头检查覆盖与构建/clean 竞态加固；功能集不变。
 16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

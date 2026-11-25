@@ -7,12 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build and release (v0.10.1 or 0.10.1)"
+        description: "Existing tag to build and release (v0.10.2 or 0.10.2)"
         required: true
         type: string
 
+# A re-run or a duplicate dispatch for the same tag must not publish concurrently.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -22,10 +27,13 @@ jobs:
     steps:
       - id: normalize
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TAG: ${{ github.ref_name }}
         run: |
-          tag="${{ inputs.tag }}"
+          tag="$INPUT_TAG"
           if [ -z "$tag" ]; then
-            tag="${{ github.ref_name }}"
+            tag="$REF_TAG"
           fi
           case "$tag" in
             v*) ;;
@@ -56,9 +64,11 @@ jobs:
 
       - name: Verify tag matches Cargo version
         shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           version=$(cargo pkgid | sed 's/.*@//')
-          tag="${{ needs.prepare.outputs.tag }}"
+          tag="$TAG"
           if [ "v$version" != "$tag" ]; then
             echo "Tag $tag does not match Cargo.toml version $version" >&2
             exit 1
@@ -72,7 +82,7 @@ jobs:
       # fails before publishing when shared libraries break.
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: cargo test --release
+        run: cargo test --release --locked
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -107,6 +117,8 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -117,8 +129,9 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          tag="${{ needs.prepare.outputs.tag }}"
+          tag="$TAG"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else

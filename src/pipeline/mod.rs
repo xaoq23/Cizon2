@@ -179,16 +179,24 @@ pub fn build_bins(dir: &Path, cfg: &Config, plan: &Plan) -> Result<BuildResult, 
 }
 
 fn remove_build_link(path: &Path) -> Result<(), std::io::Error> {
+    // A link that disappeared between inspection and removal is already clean.
     #[cfg(unix)]
-    return std::fs::remove_file(path);
+    return match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    };
 
     #[cfg(windows)]
-    std::fs::remove_dir(path).or_else(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            return Err(e);
-        }
-        std::fs::remove_file(path)
-    })
+    match std::fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        },
+    }
 }
 
 /// Remove only the project build directory, returning whether artifacts existed.
@@ -201,6 +209,16 @@ pub fn clean(dir: &Path) -> Result<bool, String> {
         Err(e) => return Err(format!("Cannot inspect {label}: {e}")),
     };
     if metadata.file_type().is_symlink() {
+        // Removing the link must not race a build running in the directory it points at.
+        // A dangling link has no target to protect and can simply be removed.
+        let target_is_dir = std::fs::canonicalize(&build)
+            .map(|target| target.is_dir())
+            .unwrap_or(false);
+        let _lock = if target_is_dir {
+            Some(BuildLock::acquire(dir)?)
+        } else {
+            None
+        };
         step_line("Cleaning", &label);
         remove_build_link(&build)
             .map_err(|e| format!("Cannot remove build link {label}: {e}"))?;
@@ -359,8 +377,12 @@ fn build_execs(
     let wanted_execs = execs_state_text(execs_state_label, all);
     let multi = plan.bins.len() > 1;
     if !state_current(&project_state, &wanted_project)? {
-        clear_project_objects(&obj_dir)?;
-        reset_dir(&test_obj_root)?;
+        // Only invalidate the object tree of the set being built: `build` must not
+        // throw away test objects, and `test` must not throw away bin objects.
+        match set {
+            ExecSet::Bins => clear_project_objects(&obj_dir)?,
+            ExecSet::Tests => reset_dir(&test_obj_root)?,
+        }
         // Project flags apply to library and shared-library sources too
         clear_lib_artifacts(&scope_dir)?;
         clear_shared_artifacts(&scope_dir)?;
@@ -410,6 +432,9 @@ fn build_execs(
     // 0) Dependency contract: restore / verify. Missing directory is restored per the lock; a
     // mismatch with the lock is a loud error.
     let dep_jobs = deps::prepare(dir, cfg, &deps_obj_dir)?;
+    // Dependency include roots may have materialized during prepare; re-check uniqueness
+    // now that every automatic include path is present on disk.
+    targets::validate_includes_after_prepare(dir, cfg, plan)?;
 
     // 0.5) Editor support: only when explicitly enabled, write the compile database at the project
     // root and add the VS Code IntelliSense config
@@ -422,7 +447,12 @@ fn build_execs(
         match ensure_cpptools_config(dir, &compiler_path, standard) {
             Ok(true) => step_line("Writing", ".vscode/c_cpp_properties.json"),
             Ok(false) => {}
-            Err(e) => eprintln!("Warning: failed to generate .vscode/c_cpp_properties.json: {e}"),
+            Err(e) => eprintln!(
+                "{}",
+                output::warning_line(&format!(
+                    "failed to generate .vscode/c_cpp_properties.json: {e}"
+                ))
+            ),
         }
     }
 
@@ -649,11 +679,20 @@ fn build_execs(
                 let soname = matches!(flavor, ImportLibFlavor::Elf)
                     .then(|| dll.file_name().unwrap().to_string_lossy().into_owned());
                 step_line("Linking", &rel_display(dir, &dll));
+                // Link into a temporary directory but keep the final file name: on Windows
+                // the import library embeds the DLL's base name, so a different name here
+                // would make consumers look for a DLL that does not exist.
+                let tmp_dir = scope_dir.join(".tmp-shared");
+                std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+                    format!("Cannot create {}: {e}", tmp_dir.display())
+                })?;
+                let tmp_dll = tmp_dir.join(dll.file_name().expect("shared library has a file name"));
                 let link_result = link_shared(
+                    dir,
                     &plan.cxx.name,
                     &shared_objs,
                     &shared_archives,
-                    &dll,
+                    &tmp_dll,
                     &plan.flags,
                     &shared_link_flags,
                     &import_arg,
@@ -661,6 +700,7 @@ fn build_execs(
                     matches!(flavor, ImportLibFlavor::Gnu),
                 );
                 if let Err(e) = link_result {
+                    let _ = std::fs::remove_file(&tmp_dll);
                     let _ = std::fs::remove_file(&tmp_import);
                     return Err(format!(
                         "Shared library link failed: {}\n{}",
@@ -668,6 +708,10 @@ fn build_execs(
                         relativize_diagnostics(dir, &e)
                     ));
                 }
+                crate::atomic::replace(&tmp_dll, &dll).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_import);
+                    format!("Failed to install shared library {}:\n{e}", rel_display(dir, &dll))
+                })?;
                 import_fp = if matches!(flavor, ImportLibFlavor::Elf) {
                     fingerprint(&dll)?
                 } else {
@@ -746,6 +790,7 @@ fn build_execs(
         step_line("Linking", &rel_display(dir, &exe));
         let tmp_exe = temp_sibling(&exe);
         if let Err(e) = link(
+            dir,
             &plan.cxx.name,
             &objs,
             &archives,

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub project: Option<Project>,
     pub dependencies: Option<BTreeMap<String, DepInfo>>,
@@ -145,6 +146,30 @@ pub(crate) fn is_valid_dep_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        // The same key names a directory under deps/, so it must also survive the
+        // file-name checks (Windows device names, internal directory names, ...).
+        && validate_file_component(name, "dependency name").is_ok()
+}
+
+/// Validate a git source before it reaches `git clone`. Relative paths change meaning when
+/// subproject dependencies are cloned from the root, and a leading `-` would be parsed as a
+/// git option rather than a URL.
+pub(crate) fn validate_git_source(source: &str, owner: &str) -> Result<(), String> {
+    let trimmed = source.trim();
+    if trimmed != source || trimmed.is_empty() {
+        return Err(format!("{owner} git source must be a non-empty string without surrounding whitespace."));
+    }
+    if source.starts_with('-') || source.chars().any(char::is_control) {
+        return Err(format!(
+            "{owner} git source {source:?} is invalid: a leading '-' would be treated as a git option and control characters are not allowed."
+        ));
+    }
+    if is_relative_git_source(source) {
+        return Err(format!(
+            "{owner} git source {source:?} is a relative git URL; use an absolute path, a URL, or an SCP-style SSH source."
+        ));
+    }
+    Ok(())
 }
 
 /// Relative git sources change meaning when subproject dependencies are cloned from the root.
@@ -176,14 +201,22 @@ fn is_relative_git_source(source: &str) -> bool {
 /// file name that cannot escape the build scope.
 fn validate_file_component(name: &str, what: &str) -> Result<(), String> {
     const RESERVED: &[&str] = &[
-        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
-        "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        "con", "prn", "aux", "nul", "conin$", "conout$", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
     ];
     const INTERNAL: &[&str] = &["obj", "lib", "deps-obj"];
     let bad_char = name
         .chars()
         .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'));
-    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
+    // "COM1 .txt" is still a device name on Windows; device matching ignores
+    // trailing spaces before the extension separator.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_lowercase();
     if name.is_empty()
         || name == "."
         || name == ".."
@@ -370,7 +403,9 @@ fn validate_targets(cfg: &mut Config, project_name: &str) -> Result<(), String> 
                 let mut seen_system = HashSet::new();
                 for link in &target.extern_links {
                     validate_system_link_name(link)?;
-                    if !seen_system.insert(link.to_lowercase()) {
+                    // -l<name> is case-sensitive on case-sensitive platforms, so only
+                    // byte-identical entries are duplicates.
+                    if !seen_system.insert(link.as_str()) {
                         return Err(format!(
                             "duplicate entry {link} in the extern_links of test target {name}."
                         ));
@@ -582,13 +617,19 @@ fn parse(dir: &Path) -> Result<Config, String> {
         .try_into::<Config>()
         .map_err(|e| format!("cizon.toml has a structural error:\n{e}"))?;
 
-    let effective_name = match cfg.project.as_ref().and_then(|p| p.name.as_deref()) {
+    let explicit_name = cfg.project.as_ref().and_then(|p| p.name.as_deref());
+    let effective_name = match explicit_name {
         Some(name) => name.to_string(),
         None => dir
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "app".into()),
     };
+    if explicit_name.is_none() && validate_project_name(&effective_name).is_err() {
+        return Err(format!(
+            "the directory name {effective_name:?} cannot be used as the default project name; set [project].name explicitly."
+        ));
+    }
     validate_project_name(&effective_name)?;
     if let Some(version) = cfg.project.as_ref().and_then(|p| p.version.as_deref()) {
         if version.trim().is_empty() {
@@ -623,10 +664,17 @@ fn parse(dir: &Path) -> Result<Config, String> {
                     "dependency names are case-insensitive: {first:?} and {name:?} describe the same dependency; use one spelling."
                 ));
             }
+            validate_git_source(&deps[name].git, &format!("dependency {name}"))?;
         }
     }
     if let Some(subs) = &cfg.subprojects {
+        let mut seen = HashSet::new();
         for (name, raw) in subs {
+            if !seen.insert(name.to_lowercase()) {
+                return Err(format!(
+                    "subproject names are case-insensitive: {name:?} conflicts with another key that differs only in case; use one spelling."
+                ));
+            }
             if !is_valid_dep_name(name) {
                 return Err(format!(
                     "subproject name {name:?} is invalid: only letters, digits, - and _ are allowed."
@@ -1798,8 +1846,21 @@ mod tests {
     }
 
     #[test]
-    fn extern_links_rejects_duplicates() {
+    fn extern_links_rejects_duplicates_but_keeps_case_distinct() {
         let dir = temp_dir("system-dup");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nextern_links = [\"gtest\", \"gtest\"]\n",
+            ),
+        )
+        .unwrap();
+        let err = load_resolved(&dir).unwrap_err();
+        assert!(err.contains("duplicate"), "got: {err}");
+        std::fs::remove_dir_all(dir).ok();
+
+        // -lfoo and -lFoo are different libraries on case-sensitive platforms.
+        let dir = temp_dir("system-case-distinct");
         std::fs::write(
             dir.join("cizon.toml"),
             target_config(
@@ -1807,8 +1868,67 @@ mod tests {
             ),
         )
         .unwrap();
-        let err = load_resolved(&dir).unwrap_err();
-        assert!(err.contains("duplicate"), "got: {err}");
+        assert!(load_resolved(&dir).is_ok());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn dependency_git_source_rejects_option_like_and_relative_values() {
+        for bad in ["--upload-pack=evil", "../local-repo", "  https://x/y"] {
+            let dir = temp_dir("bad-git-source");
+            std::fs::write(
+                dir.join("cizon.toml"),
+                format!("[project]\nname = \"a\"\n\n[dependencies]\nfmt = {{ git = {bad:?} }}\n"),
+            )
+            .unwrap();
+            assert!(
+                load_resolved(&dir).unwrap_err().contains("git source"),
+                "bad={bad:?}"
+            );
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn dependency_name_rejects_windows_device_names() {
+        let dir = temp_dir("dep-device");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[dependencies]\ncon = { git = \"https://example.com/x\" }\n",
+        )
+        .unwrap();
+        assert!(load_resolved(&dir)
+            .unwrap_err()
+            .contains("dependency name"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn subproject_names_are_case_insensitive() {
+        let dir = temp_dir("sub-case");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"a\"\n\n[[target]]\nname = \"a\"\nkind = \"bin\"\n\n\
+             [subproject]\nFoo = \"foo\"\nfoo = \"foo2\"\n",
+        )
+        .unwrap();
+        assert!(load_resolved(&dir)
+            .unwrap_err()
+            .contains("case-insensitive"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn device_name_stem_ignores_trailing_spaces() {
+        let dir = temp_dir("device-stem");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"COM1 .txt\"\nkind = \"bin\"\n",
+            ),
+        )
+        .unwrap();
+        assert!(load_resolved(&dir).unwrap_err().contains("file name"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1854,7 +1974,7 @@ mod tests {
         for bad in ["..", "a/b", "a\\b", ""] {
             std::fs::write(
                 dir.join("cizon.toml"),
-                format!("[project]\nname = \"a\"\n\n[dependencies]\n{bad:?} = {{ git = \"x\" }}\n"),
+                format!("[project]\nname = \"a\"\n\n[dependencies]\n{bad:?} = {{ git = \"https://example.com/x\" }}\n"),
             )
             .unwrap();
             let err = load_resolved(&dir).unwrap_err();
@@ -1862,7 +1982,7 @@ mod tests {
         }
         std::fs::write(
             dir.join("cizon.toml"),
-            "[project]\nname = \"a\"\n\n[dependencies]\nmy-dep_1 = { git = \"x\" }\n",
+            "[project]\nname = \"a\"\n\n[dependencies]\nmy-dep_1 = { git = \"https://example.com/x\" }\n",
         )
         .unwrap();
         assert!(load_resolved(&dir).is_ok(), "a valid dependency name should be accepted");

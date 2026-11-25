@@ -2579,6 +2579,28 @@
     }
 
     #[test]
+    fn clean_link_reports_an_active_build_lock() {
+        let parent = temp_dir("clean-link-lock");
+        let dir = parent.join("project");
+        let outside = parent.join("outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        if !make_dir_link(&dir.join("build"), &outside) {
+            fs::remove_dir_all(parent).ok();
+            return;
+        }
+        // The lock lives in the link target; removing the link must not race that build.
+        let _lock = BuildLock::acquire(&dir).unwrap();
+        let err = clean(&dir).unwrap_err();
+        assert!(err.contains("another cizon build"), "got: {err}");
+        assert!(dir.join("build").exists(), "a failed clean must preserve the link");
+        drop(_lock);
+        assert!(clean(&dir).unwrap());
+        fs::remove_dir_all(parent).ok();
+    }
+
+    #[test]
     fn clean_reports_an_active_build_lock() {
         let dir = temp_dir("clean-lock");
         fs::write(dir.join("cizon.toml"), "[project]\nname = \"t\"\n").unwrap();
@@ -2956,6 +2978,91 @@
         let err = plan(&dir, &cfg, cxx, false).unwrap_err();
         assert!(err.contains("prefix"), "got: {err}");
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn prefix_include_participates_in_duplicate_header_check() {
+        let dir = temp_dir("prefix-dup-header");
+        fs::create_dir_all(dir.join("tests")).unwrap();
+        fs::create_dir_all(dir.join("pkg/include")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::write(dir.join("include/api.hpp"), "#pragma once\n").unwrap();
+        fs::write(dir.join("pkg/include/api.hpp"), "#pragma once\n").unwrap();
+        fs::write(dir.join("tests/t.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nprefix = \"pkg\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let err = plan(&dir, &cfg, cxx, false).unwrap_err();
+        assert!(err.contains("duplicate header \"api.hpp\""), "got: {err}");
+        assert!(err.contains("prefix"), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn non_header_files_in_include_roots_do_not_collide() {
+        let dir = temp_dir("include-non-header");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        fs::create_dir_all(dir.join("own/include")).unwrap();
+        fs::write(dir.join("include/README"), "docs\n").unwrap();
+        fs::write(dir.join("own/include/README"), "more docs\n").unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\ninclude = \"own/include\"\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        assert!(plan(&dir, &cfg, cxx, false).is_ok());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn restored_dependency_headers_are_checked_before_compiling() {
+        if !have_compiler() || !have_git() {
+            return;
+        }
+        let dir = temp_dir("dup-header-restored");
+        let origin = temp_dir("dup-header-origin");
+        make_git_dep(&origin);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::create_dir_all(dir.join("include")).unwrap();
+        // Same relative path as the dependency's include/dep.h.
+        fs::write(dir.join("include/dep.h"), "#pragma once\nint dep_value();\n").unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        let url = format!("file:///{}", origin.display().to_string().replace('\\', "/"));
+        crate::deps::add_in(&dir, &[url, "--tag".into(), "v1".into()]).unwrap();
+        // Simulate a fresh clone: the lock declares the dep, but deps/ is empty until prepare.
+        let dep_name = std::fs::read_dir(dir.join("deps"))
+            .unwrap()
+            .flatten()
+            .find(|e| e.path().is_dir())
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        fs::remove_dir_all(dir.join("deps").join(&dep_name)).unwrap();
+
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let plan = plan(&dir, &cfg, cxx, false).unwrap();
+        let err = build_bins(&dir, &cfg, &plan).unwrap_err();
+        assert!(err.contains("duplicate header \"dep.h\""), "got: {err}");
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(origin).ok();
     }
 
     // ── [subproject]: nested cizon projects ──────────────────────────────────

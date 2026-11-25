@@ -110,6 +110,12 @@ pub(super) fn step_line(label: &str, detail: &str) {
     eprintln!("{} {detail}", style_err(&format!("{label:>12}"), GREEN));
 }
 
+/// Standalone warning line (for failures in optional output generation, not compiler
+/// diagnostics) using the same yellow `Warning` header as compiler warning sections.
+pub(super) fn warning_line(text: &str) -> String {
+    format!("{} {text}", style_err(&format!("{:>12}", "Warning"), YELLOW))
+}
+
 /// Compiler warning section: a blank line separates it from build status, then the source
 /// file/compiler header and the untouched diagnostics. No decorative divider lines.
 pub(super) fn warning_section_text(dir: &Path, cxx: &Cxx, warnings: &[(PathBuf, String)]) -> String {
