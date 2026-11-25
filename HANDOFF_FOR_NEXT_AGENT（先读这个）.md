@@ -2,12 +2,12 @@
 
 > 生成时间：2026-11-25  
 > 仓库：`C:\Users\zzh\NUFE\Programming\Rust\Cizon2`  
-> 当前分支：`main`（`feat/builtin-macros` 已 ff 合入）  
-> tag `v0.11.0` 指向：`d6c1d9e chore: bump to 0.11.0`（其后仅有交接文档更新提交）  
-> 当前版本：`0.11.0`  
+> 当前分支：`main`（`fix/help-toml-color` 已 ff 合入）  
+> tag `v0.11.1` 指向：`71b1c2b chore: bump to 0.11.1`（其后仅有交接文档更新提交）  
+> 当前版本：`0.11.1`  
 > 工作区：干净（本次交接更新提交后）  
-> 最新成功 Release：`v0.11.0`（工作流 run `45562894794` success）  
-> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.11.0>
+> 最新成功 Release：`v0.11.1`（工作流 run `45570504856` success）  
+> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.11.1>
 
 接手顺序建议：
 
@@ -47,16 +47,16 @@ cizon build && cizon run
 
 ### 已完成
 
-- **当前发布：`v0.11.0`** 已打 annotated tag 并 push，Release 工作流成功：run `45562894794`。
+- **当前发布：`v0.11.1`** 已打 annotated tag 并 push，Release 工作流成功：run `45570504856`。
 - 资产已上传并通过 SHA-256 校验：
-  - `cizon-v0.11.0-windows-x86_64.exe`
-  - `cizon-v0.11.0-linux-x86_64`
+  - `cizon-v0.11.1-windows-x86_64.exe`
+  - `cizon-v0.11.1-linux-x86_64`
   - 两者各自 `.sha256`
-- Windows SHA-256：`683ca42a098d7fdf8f776478f5b9ec131d01ad0e27014c01d37759dc25b1bcee`
-- Linux SHA-256：`73cd2ce4ab749be85eaafd9c81a8c2e2ec7f1e3e5e80a717a9dd2090b17fdd49`
-- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.11.0`
-- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，版本 `0.11.0`（网络受限时改在 Windows 侧下载，经 `/mnt/c` 复制后安装）
-- 历史：`v0.10.2` 已发布（run `45552996160`，Windows SHA `6d7980ef…`、Linux SHA `425d8112…`）。
+- Windows SHA-256：`f402abd11dae417baf250798407fa241c49dac5ac6938aca15b57764f38c0002`
+- Linux SHA-256：`e34f2b55ebbb35b59449c95a68c900e2bf25fab529b974c944046207200284bc`
+- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.11.1`
+- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，版本 `0.11.1`（网络受限时改在 Windows 侧下载，经 `/mnt/c` 复制后安装）
+- 历史：`v0.11.0` 已发布（run `45562894794`，Windows SHA `683ca42a…`、Linux SHA `73cd2ce4…`）；`v0.10.2` 已发布（run `45552996160`）。
 
 ### 特殊历史：`v0.10.0` tag 已公开但 Release 失败
 
@@ -88,6 +88,11 @@ cizon build && cizon run
 - 值做 C 字符串转义（`"`、`\`）；进入 per-target `compile_flags` 指纹，改 name/version 只重编该项目 target
 - 不做动态宏（git hash / 时间戳）；`@response` 等任意 flags 逃逸属既有边界
 - 相关提交：`12102be`（首版）、`4e2c51a`（改为 per-target、不传播）
+
+### v0.11.1（已发布）：help toml 着色修复
+
+- `render_help` 原判断 section 标题要求整行以 `]` 结尾，带行尾注释的 `[subproject]  # ...` 因此没着色；改为先解析方括号 token，再允许其后空白/注释
+- `866c96c fix: colorize TOML section headers with trailing comments`；WSL 伪终端确认已安装二进制输出含 cyan 转义码
 
 ---
 
@@ -242,6 +247,8 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 ```text
 4e2c51a feat: scope built-in macros to each declaring project
 12102be feat: inject built-in project identity macros
+71b1c2b chore: bump to 0.11.1
+866c96c fix: colorize TOML section headers with trailing comments
 d6c1d9e chore: bump to 0.11.0
 b9db9ce docs: handoff for built-in identity macros
 4e2c51a feat: scope built-in macros to each declaring project
@@ -266,7 +273,8 @@ Tags：
 - `v0.10.0`：已公开，但对应 Release 工作流失败；**不要移动**。
 - `v0.10.1`：当前成功发布版本。
 - `v0.10.2`：已发布；不要移动已发布 tag。
-- `v0.11.0`：当前成功发布版本；不要移动已发布 tag。
+- `v0.11.0`：已发布；不要移动已发布 tag。
+- `v0.11.1`：当前成功发布版本；不要移动已发布 tag。
 - 更早：`v0.9.6` 等，均已发布。
 
 ---
@@ -341,7 +349,7 @@ P1/P2 产品能力仍 deferred：
 默认不要立刻扩功能。优先：
 
 1. 复跑 `cargo test` + Linux release 门禁，确认环境。
-2. 若用户没有明确新需求，保持 v0.11.0 已发布状态。
+2. 若用户没有明确新需求，保持 v0.11.1 已发布状态。
 3. 剩余 P2/P3（重复头扫描成本等）先确认真实痛点，再设计/测试后动。
 4. 发布新版本时不要移动 `v0.10.0` / `v0.10.1` / `v0.10.2`；用新 tag。
 5. 任何新功能先读 AGENTS 边界并征得用户同意。
