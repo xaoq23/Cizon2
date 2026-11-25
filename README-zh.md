@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.11.1**。补丁版本：`cizon help toml` 现在会为带行尾注释的 TOML section 标题着色，包括 `[subproject]`。开发分支未发布：`links` 默认私有，`{ name = "lib", visible = "public" }` 才把依赖接口加入传播。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、per-target 编译定义（只沿 public 链接边传播）、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.12.0**。新增链接可见性：`links` 默认私有——私有边仍把依赖归档链入最终产物，但不向消费者导出它的 `include`/`defines`；`{ name = "lib", visible = "public" }` 才让该接口沿链传播。裸名字与 table 可混写。v0.11.1 修复了 `cizon help toml` 对带行尾注释的 section 标题（如 `[subproject]`）的着色。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、per-target 编译定义（只沿 public 链接边传播）、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -49,21 +49,21 @@ cargo install --path .
 
 在 [Releases](https://github.com/xaoq23/Cizon2/releases) 页面下载对应平台的资产与同名 `.sha256` 文件，不需要 Rust 工具链：
 
-- Windows：`cizon-v0.11.1-windows-x86_64.exe`
-- Linux：`cizon-v0.11.1-linux-x86_64`
+- Windows：`cizon-v0.12.0-windows-x86_64.exe`
+- Linux：`cizon-v0.12.0-linux-x86_64`
 
 Windows（PowerShell）校验：
 
 ```powershell
-Get-FileHash .\cizon-v0.11.1-windows-x86_64.exe -Algorithm SHA256
-Get-Content .\cizon-v0.11.1-windows-x86_64.exe.sha256
+Get-FileHash .\cizon-v0.12.0-windows-x86_64.exe -Algorithm SHA256
+Get-Content .\cizon-v0.12.0-windows-x86_64.exe.sha256
 ```
 
 Linux 校验：
 
 ```bash
-sha256sum -c cizon-v0.11.1-linux-x86_64.sha256
-chmod +x cizon-v0.11.1-linux-x86_64
+sha256sum -c cizon-v0.12.0-linux-x86_64.sha256
+chmod +x cizon-v0.12.0-linux-x86_64
 ```
 
 两个 SHA-256 值应完全一致。
@@ -81,7 +81,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-v0.11.1-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.12.0-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -770,6 +770,6 @@ cargo build --release
 单 crate，仅依赖 `serde` 与 `toml`；不引入 clap / rayon / sha2。
 功能与修复提交到 `dev`，确认可发布后合入 `main`。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.11.1`）。Windows 测试仍在本地跑。
+推送 `v*` 标签会触发 `.github/workflows/release.yml`：构建 Windows 与 Linux 二进制，在 Linux 上跑测试套件（`.so` 支持的唯一门禁），上传 `cizon-v<version>-windows-x86_64.exe` 与 `cizon-v<version>-linux-x86_64` 及 SHA-256 文件，并创建或更新 GitHub Release。手动触发可指定已存在的 tag（例如 `v0.12.0`）。Windows 测试仍在本地跑。
 
 更详细的边界、闸门与路线见[AGENTS.md](AGENTS.md)。
