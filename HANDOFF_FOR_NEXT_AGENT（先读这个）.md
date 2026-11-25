@@ -2,12 +2,12 @@
 
 > 生成时间：2026-11-25  
 > 仓库：`C:\Users\zzh\NUFE\Programming\Rust\Cizon2`  
-> 当前分支：`fix/audit-0.10.2`（复审通过后合回 `main`）  
-> 最新代码提交：`5a765c7 fix: polish v0.10.2 review nitpicks`  
+> 当前分支：`main`（`fix/audit-0.10.2` 已 ff 合入，tag `v0.10.2` 已推送）  
+> tag `v0.10.2` 指向：`0bf716e docs: finalize v0.10.2 handoff`（其后仅有交接文档更新提交）  
 > 当前版本：`0.10.2`  
-> 工作区：本文件待提交；其余改动已提交在 `fix/audit-0.10.2`  
-> 最新成功 Release：`v0.10.1`；`v0.10.2` 待打 tag 发布  
-> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.10.1>
+> 工作区：干净（本次交接更新提交后）  
+> 最新成功 Release：`v0.10.2`（工作流 run `45552996160` success）  
+> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.10.2>
 
 接手顺序建议：
 
@@ -47,17 +47,16 @@ cizon build && cizon run
 
 ### 已完成
 
-- `v0.10.1` 已打 annotated tag 并发布。
-- Release 工作流成功：run `45544757118`。
+- **当前发布：`v0.10.2`** 已打 annotated tag 并 push，Release 工作流成功：run `45552996160`。
 - 资产已上传并通过 SHA-256 校验：
-  - `cizon-v0.10.1-windows-x86_64.exe`
-  - `cizon-v0.10.1-linux-x86_64`
+  - `cizon-v0.10.2-windows-x86_64.exe`
+  - `cizon-v0.10.2-linux-x86_64`
   - 两者各自 `.sha256`
-- Windows SHA-256：`aab59dc0a6d45c3ed5de60e016edde043290eb93bc972de7b84a2f4cb55406a4`
-- Linux SHA-256：`88f28a7d4f42d04884cdd8678ac365fae7ccd89b7c469b86cf10d94e26903aba`
-- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.10.1`
-- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，fish PATH 可见，版本 `0.10.1`
-- `v0.10.2`：功能集不变，发布流程待完成（合 main → annotated tag → push → 验证 Release → 双平台安装）
+- Windows SHA-256：`6d7980ef9a33e7acbe71276cdb47088ab9df8b524a9010e2f2a741a07c598980`
+- Linux SHA-256：`425d811265f0d70a859fcae93d113fb3e7c83984d401a0a3cb993f2fe2da07e4`
+- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.10.2`
+- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，版本 `0.10.2`
+- 历史：`v0.10.1` 已发布（run `45544757118`，Windows SHA `aab59dc0…`、Linux SHA `88f28a7d…`）。
 
 ### 特殊历史：`v0.10.0` tag 已公开但 Release 失败
 
@@ -70,7 +69,7 @@ cizon build && cizon run
 - `fce08ba chore: bump to 0.10.1` 后重新打 `v0.10.1` 并成功发布。
 - 功能集与 v0.10.0 相同；v0.10.1 仅修复 Linux 发布测试可移植性。
 
-### v0.10.2（待发布）：六路审计修复
+### v0.10.2（已发布）：六路审计修复
 
 - CI：tag / dispatch 输入改经 `env:` 传递（消除 shell 注入）、tag 格式校验（含 semver 后缀）、权限最小化为 release job 才有 `contents: write`、按归一化 tag 设 `concurrency`、Linux 测试补 `--locked`
 - 依赖：根 `[dependencies].git` 与 `add` 的 URL 校验（拒绝相对路径/前导 `-`）、`git clone --`、SCP 无斜杠源派生名、`update` 先写锁再换 checkout 且失败回滚、`update` 校验 HEAD 与锁一致
@@ -215,7 +214,7 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 - Windows debug：292/292
 - Windows release：292/292
 - Arch WSL release：292/292
-- Release 工作流 Linux 测试：v0.10.1 成功；v0.10.2 待验证
+- Release 工作流 Linux 测试：v0.10.1、v0.10.2 均成功
 
 注意：
 
@@ -250,7 +249,7 @@ Tags：
 
 - `v0.10.0`：已公开，但对应 Release 工作流失败；**不要移动**。
 - `v0.10.1`：当前成功发布版本。
-- `v0.10.2`：待打 annotated tag 并发布；不要移动已发布 tag。
+- `v0.10.2`：当前成功发布版本；不要移动已发布 tag。
 - 更早：`v0.9.6` 等，均已发布。
 
 ---
@@ -325,7 +324,7 @@ P1/P2 产品能力仍 deferred：
 默认不要立刻扩功能。优先：
 
 1. 复跑 `cargo test` + Linux release 门禁，确认环境。
-2. 若用户没有明确新需求，保持 v0.10.2 状态（发布完成后保持 v0.10.2 已发布状态）。
+2. 若用户没有明确新需求，保持 v0.10.2 已发布状态。
 3. 剩余 P2/P3（重复头扫描成本等）先确认真实痛点，再设计/测试后动。
 4. 发布新版本时不要移动 `v0.10.0` / `v0.10.1` / `v0.10.2`；用新 tag。
 5. 任何新功能先读 AGENTS 边界并征得用户同意。
