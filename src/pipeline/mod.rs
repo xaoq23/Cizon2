@@ -295,6 +295,9 @@ impl BuildLock {
             Err(e) => return Err(format!("Cannot create build lock {}: {e}", path.display())),
         };
         let _ = writeln!(file, "pid {}", std::process::id());
+        // Store the resolved path: `cizon clean` may remove a build symlink before the
+        // lock is dropped, after which the original path no longer resolves.
+        let path = std::fs::canonicalize(&path).unwrap_or(path);
         Ok(Self { path })
     }
 }

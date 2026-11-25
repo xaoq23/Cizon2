@@ -2597,6 +2597,10 @@
         assert!(dir.join("build").exists(), "a failed clean must preserve the link");
         drop(_lock);
         assert!(clean(&dir).unwrap());
+        assert!(
+            !outside.join(".cizon-build.lock").exists(),
+            "clean must not leave the lock file in the link target"
+        );
         fs::remove_dir_all(parent).ok();
     }
 
