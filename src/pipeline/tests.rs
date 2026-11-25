@@ -2318,13 +2318,13 @@
         write_sub(
             &dir,
             "libs/core/include/core.hpp",
-            "#pragma once\n#ifndef CORE_LAYOUT\n#define CORE_LAYOUT 1\n#endif\n\
-             struct CoreLayout { unsigned char bytes[CORE_LAYOUT]; };\nint core_layout_size();\n",
+            "#pragma once\n#include <cstddef>\n#ifndef CORE_LAYOUT\n#define CORE_LAYOUT 1\n#endif\n\
+             struct CoreLayout { unsigned char bytes[CORE_LAYOUT]; };\nstd::size_t core_layout_size();\n",
         );
         write_sub(
             &dir,
             "libs/core/src/core.cpp",
-            "#include \"core.hpp\"\nint core_layout_size(){return sizeof(CoreLayout);}\n",
+            "#include \"core.hpp\"\nstd::size_t core_layout_size(){return sizeof(CoreLayout);}\n",
         );
         write_sub(
             &dir,
