@@ -726,8 +726,9 @@ fn validate_include_uniqueness(
     shared_index: &HashMap<String, usize>,
     include_prefix: bool,
 ) -> Result<(), String> {
-    // Every target's own compilation sees the same -I list as its consumers, so each
-    // closure is checked: libraries first, then shared libraries, bins and tests.
+    // A library's own compilation sees all of its link edges; consumers see only public
+    // edges. Check both views: libraries/shared libraries with all edges, then bins/tests
+    // with the public-only closure their compilation actually receives.
     // Whether two headers differing only by case count as duplicates follows the
     // host filesystem: Windows lookups are case-insensitive, so Util.hpp and
     // util.hpp shadow each other there; on case-sensitive filesystems they are

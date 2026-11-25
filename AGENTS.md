@@ -1,7 +1,5 @@
 # Cizon — Agent Instructions
 
-> 接手开发前先读 `HANDOFF_FOR_NEXT_AGENT（先读这个）.md`：其中包含当前发布状态、近期决策与会话上下文。
-
 ## 定位
 
 个人开发者的声明式、渐进式现代 C++ 构建工具。使命：`cizon build && cizon run`，达到 cargo/uv 级的开箱即用。

@@ -86,11 +86,54 @@ pub struct LinkDetail {
 }
 
 /// A target link: either a plain name (private) or an explicit `{ name, visible }` edge.
-#[derive(Debug, Deserialize, Clone)]
-#[serde(untagged)]
+/// Deserialization is hand-written because `#[serde(untagged)]` collapses inner errors into
+/// "did not match any variant", which would hide a typo like `visiable`.
+#[derive(Debug, Clone)]
 pub enum LinkSpec {
     Plain(String),
     Detailed(LinkDetail),
+}
+
+impl<'de> Deserialize<'de> for LinkSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        let value = toml::Value::deserialize(deserializer)?;
+        match value {
+            toml::Value::String(name) => Ok(Self::Plain(name)),
+            toml::Value::Table(mut table) => {
+                let name = match table.remove("name") {
+                    Some(toml::Value::String(name)) => name,
+                    Some(_) => return Err(D::Error::custom("link `name` must be a string")),
+                    None => return Err(D::Error::custom("link table requires a `name` key")),
+                };
+                let visible = match table.remove("visible") {
+                    None => LinkVisibility::Private,
+                    Some(toml::Value::String(value)) => match value.as_str() {
+                        "public" => LinkVisibility::Public,
+                        "private" => LinkVisibility::Private,
+                        other => {
+                            return Err(D::Error::custom(format!(
+                                "link `visible` must be \"public\" or \"private\", got {other:?}"
+                            )))
+                        }
+                    },
+                    Some(_) => return Err(D::Error::custom("link `visible` must be a string")),
+                };
+                if let Some(key) = table.keys().next() {
+                    return Err(D::Error::custom(format!(
+                        "unknown key `{key}` in link; expected `name` or `visible` (did you mean `visible`?)"
+                    )));
+                }
+                Ok(Self::Detailed(LinkDetail { name, visible }))
+            }
+            _ => Err(D::Error::custom(
+                "link must be a target name string or a table with `name` and `visible`",
+            )),
+        }
+    }
 }
 
 impl LinkSpec {
@@ -1585,10 +1628,16 @@ mod tests {
 
     #[test]
     fn link_detail_rejects_misspelled_and_unknown_keys() {
-        for bad in [
-            "{ name = \"core\", visiable = \"public\" }",
-            "{ name = \"core\", visible = \"protected\" }",
-            "{ name = \"core\", public = true }",
+        for (bad, needle) in [
+            (
+                "{ name = \"core\", visiable = \"public\" }",
+                "unknown key `visiable`",
+            ),
+            (
+                "{ name = \"core\", visible = \"protected\" }",
+                "`visible` must be",
+            ),
+            ("{ name = \"core\", public = true }", "unknown key `public`"),
         ] {
             let dir = temp_dir("bad-link-detail");
             std::fs::write(
@@ -1599,7 +1648,8 @@ mod tests {
                 )),
             )
             .unwrap();
-            assert!(load_resolved(&dir).is_err(), "bad={bad}");
+            let err = load_resolved(&dir).unwrap_err();
+            assert!(err.contains(needle), "bad={bad} got: {err}");
             std::fs::remove_dir_all(dir).ok();
         }
     }

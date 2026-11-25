@@ -2825,6 +2825,91 @@ sources = ["src"]
     }
 
     #[test]
+    fn shared_lib_private_edge_hides_static_interface_from_consumer() {
+        if !shared_supported() {
+            return;
+        }
+        let dir = temp_dir("shared-private-link");
+        for sub in [
+            "core/include/core",
+            "core/src",
+            "api/include/api",
+            "api/src",
+            "app/src",
+        ] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("core/include/core/core.hpp"), "int core_value();\n").unwrap();
+        fs::write(
+            dir.join("core/src/core.cpp"),
+            "#include \"core/core.hpp\"\nint core_value(){return 5;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("api/include/api/api.hpp"),
+            "#pragma once\nextern \"C\" int api_value();\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("api/src/api.cpp"),
+            "#if defined(_WIN32)\n#define CZ_EXPORT __declspec(dllexport)\n#else\n#define CZ_EXPORT\n#endif\n\
+             #include \"api/api.hpp\"\n#include \"core/core.hpp\"\n\
+             extern \"C\" CZ_EXPORT int api_value(){return core_value()+1;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app/src/main.cpp"),
+            "#include \"api/api.hpp\"\nint main(){return api_value()==6?0:1;}\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core/src\"]\ninclude = \"core/include\"\n\n\
+             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api/src\"]\ninclude = \"api/include\"\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"api\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let app_flags = &p.bins[0].compile_flags;
+        assert!(!app_flags.iter().any(|f| f.contains("core/include")), "flags={app_flags:?}");
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0, "private core objects still live inside the shared library");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn private_link_hides_defines_from_consumer() {
+        let dir = temp_dir("private-defines");
+        for sub in ["core", "api", "app"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        fs::write(dir.join("core/u.cpp"), "// core\n").unwrap();
+        fs::write(dir.join("api/a.cpp"), "// api\n").unwrap();
+        fs::write(dir.join("app/main.cpp"), "int main(){return 0;}\n").unwrap();
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core\"]\ndefines = [\"CORE=1\"]\n\n\
+             [[target]]\nname = \"api\"\nkind = \"static_lib\"\nsources = [\"api\"]\n\
+             links = [\"core\"]\ndefines = [\"API=1\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app\"]\nlinks = [\"api\"]\n",
+        )
+        .unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let api_flags = &p.libs[1].compile_flags;
+        let app_flags = &p.bins[0].compile_flags;
+        assert!(api_flags.iter().any(|f| f == "-DCORE=1"), "flags={api_flags:?}");
+        assert!(app_flags.iter().any(|f| f == "-DAPI=1"));
+        assert!(!app_flags.iter().any(|f| f == "-DCORE=1"), "flags={app_flags:?}");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn build_lock_rejects_a_second_build() {
         if !have_compiler() {
             return;

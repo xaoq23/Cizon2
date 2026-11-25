@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML section headers that carry a trailing comment, including `[subproject]`. Unreleased on the development branch: `links` are private by default; `{ name = "lib", visible = "public" }` opts a dependency's interface into propagation. v0.11.0 added built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes and v0.10's local `[subproject]` composition, PUBLIC per-target compile definitions, `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML section headers that carry a trailing comment, including `[subproject]`. Unreleased on the development branch: `links` are private by default; `{ name = "lib", visible = "public" }` opts a dependency's interface into propagation. v0.11.0 added built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes and v0.10's local `[subproject]` composition, per-target compile definitions (propagated via public link edges), `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -19,7 +19,7 @@ Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML s
 - One `cizon.toml` describes the project; there is no build-script language
 - Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
-- Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
+- Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to consumers through public link edges
 - Multiple bins, static libraries, and shared libraries through `[[target]]`; `links` are private by default (interface hidden, archive still linked), with `{ name = "lib", visible = "public" }` opting into interface propagation and archive order resolved from the graph
 - v0.10: `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
@@ -452,8 +452,8 @@ A project may carry static and shared library targets plus one or more bin and t
 name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # required; file or directory (recursive)
-include = "lib/shape/include" # optional public header root; inherited by consumers
-defines = ["SHAPE_DIAGNOSTICS"] # optional public compile definitions; NAME or NAME=VALUE
+include = "lib/shape/include" # optional public header root; exported via public link edges
+defines = ["SHAPE_DIAGNOSTICS"] # optional compile definitions; exported via public link edges
 
 [[target]]
 name = "shape_dll"
@@ -704,7 +704,8 @@ cizon puts the compiler's bin directory first in the child PATH for `run` / `tes
 - Static library artifacts are `.a` (GNU archives); on Windows `shared_lib` produces a DLL plus an import library, and on Linux a `.so` without an import library
 - Shared libraries use the C ABI for Python/Rust; direct C++ ABI export is not guaranteed
 - Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
-- The project-root `include/` is the only automatic project public-header `-I`; a target's `include` is explicit and propagates through `links`, and dependency directories are also added automatically. Keep private headers out of all of them and do not expose them with a global `-Ilib`
+- Static dependencies are private by default; only `{ name = "lib", visible = "public" }` edges export their includes/definitions, while private archives still reach the final link
+- The project-root `include/` is the only automatic project public-header `-I`; a target's `include` is explicit and propagates only through public `links` edges, and dependency directories are also added automatically. Keep private headers out of all of them and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; a build with an older object layout does one full rebuild
 - `[project].version` feeds `CIZON_PROJECT_VERSION`; it still does not affect artifact names
 - A project-level lock (`build/.cizon-build.lock`) rejects a second concurrent build; delete a stale lock only when no build is running

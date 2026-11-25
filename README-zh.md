@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.11.1**。补丁版本：`cizon help toml` 现在会为带行尾注释的 TOML section 标题着色，包括 `[subproject]`。开发分支未发布：`links` 默认私有，`{ name = "lib", visible = "public" }` 才把依赖接口加入传播。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、PUBLIC per-target 编译定义、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.11.1**。补丁版本：`cizon help toml` 现在会为带行尾注释的 TOML section 标题着色，包括 `[subproject]`。开发分支未发布：`links` 默认私有，`{ name = "lib", visible = "public" }` 才把依赖接口加入传播。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、per-target 编译定义（只沿 public 链接边传播）、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -15,7 +15,7 @@
 - 一个 `cizon.toml` 描述项目，没有构建脚本语言
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
-- 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
+- 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 通过 public 链接边传播给消费者
 - 多个 bin、静态库、共享库 target；`links` 默认私有（接口不外传、归档仍参与链接），用 `{ name = "lib", visible = "public" }` 显式外传依赖接口，归档顺序由依赖图解析
 - v0.10：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
@@ -448,8 +448,8 @@ include = "include"
 name = "shape"
 kind = "static_lib"
 sources = ["lib/shape.cpp"]   # 必填；文件或目录（目录递归扫描）
-include = "lib/shape/include" # 可选公共头根目录；消费者自动继承
-defines = ["SHAPE_DIAGNOSTICS"] # 可选公共编译宏；NAME 或 NAME=VALUE
+include = "lib/shape/include" # 可选公共头根目录；通过 public 链接边导出
+defines = ["SHAPE_DIAGNOSTICS"] # 可选编译宏；通过 public 链接边导出
 
 [[target]]
 name = "shape_dll"
@@ -700,7 +700,7 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 - 静态库产物是 `.a`（GNU 归档）；Windows 下 `shared_lib` 产出 DLL 与 import lib，Linux 下产出 `.so` 且没有 import lib
 - 共享库通过 C ABI 给 Python/Rust 使用；不保证直接导出 C++ ABI
 - 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
-- 项目根 `include/` 是唯一自动加入的项目公开头 `-I`；target 的 `include` 显式声明并沿 `links` 传播，依赖目录也会自动加入。私有头不要放进这些目录，也不要用全局 `-Ilib` 暴露
+- 项目根 `include/` 是唯一自动加入的项目公开头 `-I`；target 的 `include` 显式声明并只沿 public `links` 边传播，依赖目录也会自动加入。私有头不要放进这些目录，也不要用全局 `-Ilib` 暴露
 - `sources` 必须是项目内相对路径；旧对象布局首次构建会全量重编一次
 - `[project].version` 用于定义 `CIZON_PROJECT_VERSION`，但不影响产物命名
 - 项目级锁（`build/.cizon-build.lock`）会拒绝第二个并发 build；确认没有 build 在运行时才删除陈旧锁文件
