@@ -39,7 +39,7 @@ jobs:
             v*) ;;
             *) tag="v$tag" ;;
           esac
-          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release tag: $tag" >&2
             exit 1
           fi

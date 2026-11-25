@@ -302,6 +302,7 @@ fn finalize_target_graph(
         automatic_includes,
         &lib_index,
         &shared_index,
+        true,
     )?;
 
     for i in 0..libs.len() {
@@ -648,6 +649,7 @@ fn validate_include_uniqueness(
     automatic_includes: &[(String, PathBuf)],
     lib_index: &HashMap<String, usize>,
     shared_index: &HashMap<String, usize>,
+    include_prefix: bool,
 ) -> Result<(), String> {
     // Every target's own compilation sees the same -I list as its consumers, so each
     // closure is checked: libraries first, then shared libraries, bins and tests.
@@ -665,7 +667,9 @@ fn validate_include_uniqueness(
             libs,
             lib_index,
         ));
-        extend_prefix_include(&mut pairs, &lib.name, lib.prefix.as_ref());
+        if include_prefix {
+            extend_prefix_include(&mut pairs, &lib.name, lib.prefix.as_ref());
+        }
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for sh in shared {
@@ -677,7 +681,9 @@ fn validate_include_uniqueness(
             libs,
             lib_index,
         ));
-        extend_prefix_include(&mut pairs, &sh.name, sh.prefix.as_ref());
+        if include_prefix {
+            extend_prefix_include(&mut pairs, &sh.name, sh.prefix.as_ref());
+        }
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     for target in bins.iter().chain(tests.iter()) {
@@ -685,7 +691,9 @@ fn validate_include_uniqueness(
         pairs.extend(exec_closure_includes(
             target, libs, shared, lib_index, shared_index,
         ));
-        extend_prefix_include(&mut pairs, &target.name, target.prefix.as_ref());
+        if include_prefix {
+            extend_prefix_include(&mut pairs, &target.name, target.prefix.as_ref());
+        }
         check_closure_includes(dir, &pairs, case_insensitive)?;
     }
     Ok(())
@@ -742,6 +750,9 @@ pub(crate) fn validate_includes_after_prepare(
         &automatic_includes,
         &lib_index,
         &shared_index,
+        // Prefix directories are already present at plan time; checking them again
+        // after dependency restore would only duplicate the warning.
+        false,
     )
 }
 
@@ -916,7 +927,9 @@ pub(crate) fn check_closure_includes(
 /// Extensions treated as publicly includable headers by the duplicate-header scan.
 /// Files such as README/LICENSE in an include tree must not be reported as collisions.
 fn is_header_file(path: &Path) -> bool {
-    const HEADER_EXTS: &[&str] = &["h", "hh", "hpp", "hxx", "h++", "inc", "inl", "ipp", "tpp"];
+    const HEADER_EXTS: &[&str] = &[
+        "h", "hh", "hpp", "hxx", "h++", "inc", "inl", "ipp", "tpp", "tcc", "icc",
+    ];
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| HEADER_EXTS.iter().any(|ext| ext.eq_ignore_ascii_case(e)))

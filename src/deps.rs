@@ -350,6 +350,15 @@ fn write_lock_entry(
         entry.insert("tag".into(), t.into());
     }
     entry.insert("commit".into(), commit.into());
+    // A dependency name may change case in cizon.toml; keep one lock key per name.
+    let stale_keys: Vec<String> = table
+        .keys()
+        .filter(|key| key.as_str().eq_ignore_ascii_case(name) && key.as_str() != name)
+        .cloned()
+        .collect();
+    for key in stale_keys {
+        table.remove(&key);
+    }
     table.insert(name.into(), entry.into());
     let text = toml::to_string(&table).map_err(|e| format!("failed to serialize the lock: {e}"))?;
     crate::atomic::write(&lock_path, text.as_bytes())
