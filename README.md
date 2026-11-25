@@ -120,7 +120,7 @@ It does not run `git init`: version control is your decision. The generated `.gi
 
 ## Commands
 
-Commands that operate on a project (`build` / `run` / `test` / `add` / `update` / `sync` / `clean`) run in the directory containing `cizon.toml`; `new` creates a directory, `init` initializes the current directory, and `help` / `version` need no project. Running `cizon` without a subcommand prints usage.
+Commands that operate on a project (`build` / `run` / `test` / `add` / `update` / `sync` / `clean`) run in the directory containing `cizon.toml`; `new` creates a directory, `init` initializes the current directory, and `help` / `version` need no project. Running `cizon` without a subcommand prints usage. Help output uses Cargo-style sections and colors on a TTY; redirected output is automatically plain text.
 
 | Command | Purpose |
 |---|---|

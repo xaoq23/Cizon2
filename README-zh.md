@@ -116,7 +116,7 @@ hello/
 
 ## 命令
 
-需要项目的命令（`build` / `run` / `test` / `add` / `update` / `sync` / `clean`）在 `cizon.toml` 所在目录执行；`new` 创建目录，`init` 初始化当前目录，`help` / `version` 不需要项目。不带子命令运行 `cizon` 会打印用法。
+需要项目的命令（`build` / `run` / `test` / `add` / `update` / `sync` / `clean`）在 `cizon.toml` 所在目录执行；`new` 创建目录，`init` 初始化当前目录，`help` / `version` 不需要项目。不带子命令运行 `cizon` 会打印用法。帮助输出采用 Cargo 风格分节，TTY 下着色，重定向时自动输出纯文本。
 
 | 命令 | 作用 |
 |---|---|

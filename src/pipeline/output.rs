@@ -80,6 +80,7 @@ pub(crate) const YELLOW: &str = "\x1b[33m";
 pub(crate) const CYAN: &str = "\x1b[36m";
 pub(crate) const RED: &str = "\x1b[31m";
 pub(crate) const DIM: &str = "\x1b[2m";
+pub(crate) const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
 fn paint(text: &str, code: &str, enabled: bool) -> String {
@@ -90,8 +91,12 @@ fn paint(text: &str, code: &str, enabled: bool) -> String {
     }
 }
 
+pub(crate) fn style_out_enabled(text: &str, code: &str, enabled: bool) -> String {
+    paint(text, code, enabled)
+}
+
 pub(crate) fn style_out(text: &str, code: &str) -> String {
-    paint(text, code, stdout_color())
+    style_out_enabled(text, code, stdout_color())
 }
 
 pub(crate) fn style_err(text: &str, code: &str) -> String {

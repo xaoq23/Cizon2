@@ -12,7 +12,9 @@ mod run;
 mod scaffold;
 mod test;
 
-use pipeline::output::{style_err, GREEN, RED};
+use pipeline::output::{
+    style_err, style_out_enabled, BOLD, CYAN, DIM, GREEN, RED, YELLOW,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const NAME: &str = env!("CARGO_PKG_NAME");
@@ -114,6 +116,99 @@ Rules:
   - Unknown sections and unknown keys inside known sections are hard errors.
 "#;
 
+fn paint_help(text: &str, code: &str, color: bool) -> String {
+    style_out_enabled(text, code, color)
+}
+
+fn style_help_name(text: &str, color: bool) -> String {
+    if let Some(pos) = text.find(|c: char| c.is_whitespace()) {
+        format!("{}{}", paint_help(&text[..pos], CYAN, color), &text[pos..])
+    } else {
+        paint_help(text, CYAN, color)
+    }
+}
+
+fn style_help_option(text: &str, color: bool) -> String {
+    if let Some(pos) = text.find("  ") {
+        format!("{}{}", paint_help(&text[..pos], CYAN, color), &text[pos..])
+    } else {
+        paint_help(text, CYAN, color)
+    }
+}
+
+fn style_help_usage(text: &str, color: bool) -> String {
+    if let Some(rest) = text.strip_prefix("cizon ") {
+        if let Some(pos) = rest.find(' ') {
+            return format!(
+                "{} {}{}",
+                paint_help("cizon", CYAN, color),
+                paint_help(&rest[..pos], CYAN, color),
+                &rest[pos..]
+            );
+        }
+    }
+    paint_help(text, YELLOW, color)
+}
+
+fn render_help(text: &str, color: bool) -> String {
+    let mut out = String::new();
+    let mut section = "";
+    for (index, line) in text.lines().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let trimmed = line.trim();
+        if index == 0 {
+            out.push_str(&paint_help(line, BOLD, color));
+            continue;
+        }
+        if matches!(
+            trimmed,
+            "Usage:" | "Options:" | "Commands:" | "Examples:" | "Kinds:" | "Rules:"
+        ) {
+            out.push_str(&paint_help(line, BOLD, color));
+            section = match trimmed {
+                "Options:" => "options",
+                "Commands:" => "commands",
+                "Examples:" => "examples",
+                "Kinds:" => "kinds",
+                "Usage:" => "usage",
+                _ => "",
+            };
+            continue;
+        }
+        if trimmed.is_empty() {
+            out.push_str(line);
+            section = "";
+            continue;
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            out.push_str(&paint_help(line, CYAN, color));
+            continue;
+        }
+        let indent_len = line.len() - line.trim_start().len();
+        let indent = &line[..indent_len];
+        let rest = &line[indent_len..];
+        let rendered = match section {
+            "commands" | "kinds" => style_help_name(rest, color),
+            "options" => style_help_option(rest, color),
+            "usage" | "examples" => style_help_usage(rest, color),
+            _ if trimmed.starts_with("Run `cizon help") => paint_help(line, DIM, color),
+            _ => line.to_string(),
+        };
+        out.push_str(indent);
+        out.push_str(&rendered);
+    }
+    out
+}
+
+fn print_help(text: &str) {
+    println!(
+        "{}",
+        render_help(text, pipeline::output::stdout_color())
+    );
+}
+
 fn main() {
     pipeline::output::init_color();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -122,7 +217,7 @@ fn main() {
 
 fn dispatch(args: &[String]) -> i32 {
     if args.is_empty() {
-        println!("{USAGE}");
+        print_help(USAGE);
         return 0;
     }
     let cmd = args[0].as_str();
@@ -130,18 +225,18 @@ fn dispatch(args: &[String]) -> i32 {
         "help" => {
             match args.get(1).map(|s| s.as_str()) {
                 Some(sub) => match command_usage(sub) {
-                    Some(text) => println!("{text}"),
+                    Some(text) => print_help(text),
                     None => {
                         eprint_top(&format!("Unknown command \"{sub}\".\n\n{USAGE}"));
                         return 2;
                     }
                 },
-                None => println!("{USAGE}"),
+                None => print_help(USAGE),
             }
             return 0;
         }
         "--help" | "-h" => {
-            println!("{USAGE}");
+            print_help(USAGE);
             return 0;
         }
         "version" | "--version" | "-V" | "-v" => {
@@ -153,7 +248,7 @@ fn dispatch(args: &[String]) -> i32 {
     // Per-command help: `cizon <command> --help` / `-h`.
     if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h")) {
         if let Some(text) = command_usage(cmd) {
-            println!("{text}");
+            print_help(text);
             return 0;
         }
     }
@@ -702,6 +797,18 @@ mod tests {
     fn clean_rejects_arguments() {
         let err = clean_cmd(&args(&["--force"])).unwrap_err();
         assert_eq!(err, "Usage: cizon clean");
+    }
+
+    #[test]
+    fn help_rendering_respects_color_mode() {
+        assert_eq!(render_help(USAGE, false), USAGE, "redirected help must stay plain text");
+        let colored = render_help(USAGE, true);
+        assert!(colored.contains("\x1b["), "TTY help should contain ANSI styling");
+        assert!(colored.contains("Usage:"), "got: {colored}");
+        assert!(colored.contains("Commands:"), "got: {colored}");
+        let build = command_usage("build").unwrap();
+        assert_eq!(render_help(build, false), build, "command help must stay plain when redirected");
+        assert!(render_help(build, true).contains("--verbose"));
     }
 
     #[test]

@@ -57,7 +57,7 @@
 
 ## 输出约定
 
-- `cizon help` 与逐命令帮助采用 Cargo 风格分节：Usage、Options、Commands；命令列表只列动词，具体参数放到对应命令帮助
+- `cizon help` 与逐命令帮助采用 Cargo 风格分节：Usage、Options、Commands；命令列表只列动词，具体参数放到对应命令帮助；stdout 为 TTY 时标题/分节加粗、命令名与选项着色，重定向时自动关闭颜色
 - 用户面路径用项目相对路径；编译器诊断保留行号与文本，只把项目绝对路径前缀替换为相对路径
 - 构建/运行状态写 stderr，程序 stdout 保持纯净；ANSI 颜色按流判断 TTY，重定向时自动关闭
 - `--verbose` 在 stderr 打印实际 compiler/archive/link/run/test 进程命令，允许显示原子替换用的临时输出名；与 `--quiet` 互斥
