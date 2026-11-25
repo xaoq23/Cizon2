@@ -21,13 +21,13 @@
 | 在边界内 | 边界外 |
 |---|---|
 | `build` / `run` / `test` / `sync` / `clean` / `new` / `init` / `add` / `update` | 独立包/workspace 生命周期、多包注册表 |
-| 中小型单项目（多个 bin/test + 静态库/共享库 `[[target]]`；无环静态库公共依赖与 include 传播） | 条件化/大型 target 图 / install-export / 共享库依赖共享库 |
+| 中小型单项目（多个 bin/test + 静态库/共享库 `[[target]]`；无环静态库依赖，public 边传播接口、private 边只链接归档） | 条件化/大型 target 图 / install-export / 共享库依赖共享库 |
 | `[subproject]` 受限本地组合：单一根 build/lock/compiler/edition，递归包含库/test，子项目无 bin | 子项目独立 compiler/edition/deps/lock、独立构建/发布、workspace 命令 |
 | Linux `shared_lib`：`.so`、`-fPIC`、`$ORIGIN` rpath | MSVC / 交叉编译 / 复杂工具链 |
 | CI 原语：`sync --check`（只校验）、`--quiet` | `init --ci`、企业级 CI |
 | `kind = "test"` + `cizon test`：构建/运行 test target，退出码 0 即通过 | 测试框架适配、自动发现、测试依赖下载/版本锁定 |
 | test target 的 `extern_links`（仅 `-l<name>`）+ per-target `prefix`（推导 `-I`/`-L`） | vcpkg / Conan / conda / CMake provision |
-| `[compiler] strict`/`werror` 警告开关；`help <command>\|toml` 详细帮助；target `include`/`defines` PUBLIC 传播 | 任意 per-target 编译 flags、PRIVATE/INTERFACE include 与宏定义作用域 |
+| `[compiler] strict`/`werror` 警告开关；`help <command>\|toml` 详细帮助；link 边 `visible = "public"` 控制 target `include`/`defines` 传播 | 任意 per-target 编译 flags、PRIVATE/INTERFACE 宏定义作用域 |
 | cizon.toml 认 `[project]`、`[dependencies]`、`[compiler]`、`[[target]]`、`[subproject]` | PCH、features、install/export |
 | g++ / clang++ 探测，`--compiler` 临时切换 | MSVC（等真实用户提出） |
 | mtime + `-MMD` 增量 + 编译/链接/库状态指纹 | 交叉编译 / 复杂工具链 |
@@ -42,13 +42,13 @@
 - 不要用 `[compiler].flags` 加 `-Ilib` 等方式把私有目录暴露给所有 target
 - 公共头必须自包含，不能依赖私有头；单 exe 项目可把头放 `src/`，header-only 库全部放 `include/`
 - `[[target]]` 的 sources 是项目内相对路径（文件或目录）；至少一个 target（声明 `[[target]]` 即退出隐式单 exe 模式，`src/` 不再自动构建，未被 target 覆盖的源码会告警）；纯库项目合法：`build` 产库，`run` 报没有 bin，`test` 报没有 test target，建议加 test target 验证，install/export 交给 CMake；多个 bin 必须各自命名；test 必须显式命名且提供 sources
-- target `include` 是项目内公共头根目录：库的 include 沿 `links` PUBLIC 传播（可传递），bin/test 只作用于自身；与根 `include/` 叠加；路径必须在 plan 阶段校验存在、是目录、在项目内且不是项目根。`prefix` 是消费已安装包的输入，只作用于当前 target，不传播
-- target `defines` 接受 `NAME` / `NAME=VALUE` 简单对象宏；库的 defines 沿 `links` PUBLIC 传播，bin/test 只作用于自身。target defines 位于全局 `flags` 之后并覆盖同名全局定义、不产生重定义警告，同一闭包同宏不同值报错、同值去重；git 依赖源码不继承，test 源码在传播后剥离 NDEBUG。CLI `-D` / `--define` 仅本次进程生效，最后追加覆盖 TOML 定义，不写 config/lock、不传 git 依赖，并进入编译指纹
+- target `include` 是项目内公共头根目录：库的 include 只沿 `visible = "public"` 的 link 边传播（可传递），private 边不导出；bin/test 只作用于自身；与根 `include/` 叠加；路径必须在 plan 阶段校验存在、是目录、在项目内且不是项目根。`prefix` 是消费已安装包的输入，只作用于当前 target，不传播
+- target `defines` 接受 `NAME` / `NAME=VALUE` 简单对象宏；库的 defines 只沿 `visible = "public"` 的 link 边传播，private 边不导出，bin/test 只作用于自身。target defines 位于全局 `flags` 之后并覆盖同名全局定义、不产生重定义警告，同一闭包同宏不同值报错、同值去重；git 依赖源码不继承，test 源码在传播后剥离 NDEBUG。CLI `-D` / `--define` 仅本次进程生效，最后追加覆盖 TOML 定义，不写 config/lock、不传 git 依赖，并进入编译指纹
 - 隐式单 bin（无 `[[target]]`）用 `[project].defines` 传入宏，语法与优先级同 target defines；声明 `[[target]]` 后 `[project].defines` 报错，宏改由各 target `defines` 声明
 - 公开头相对路径冲突在 plan 阶段检查：根 `include/`、target/库 include 与自动依赖 include 共同参与，Windows 不区分大小写；include 目录链接会被跟随，并做项目内约束与规范路径环保护。两个依赖 include 根之间的冲突仍按既有依赖搜索顺序允许
 - `[subproject]` 不是 workspace：根统一 compiler/edition/deps/lock；子项目只提供 static_lib/shared_lib/test，路径必须在根内，依赖 git URL 必须绝对、URL 或 SCP 风格 SSH，target 名全局唯一且不区分大小写；声明文件与子项目自身都必须有 `[[target]]`。依赖名不区分大小写，但 key 拼写必须一致；完全重复声明去重，git/tag 冲突或仅大小写不同的重复报错。嵌套允许、环报错、菱形去重
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
-- `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
+- `links` 条目可写裸名字（默认 private）或 `{ name = "lib", visible = "public" | "private" }`，两种写法可混用、重复名字报错；private 边仍把归档链入最终产物（否则符号无法解析），但不向消费者导出依赖的 include/defines，只有 public 边传播接口。`static_lib` 可链接 `static_lib`，`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
 - bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；对象路径镜像源相对路径，同目录同 stem 冲突
 - 内置宏是“我是谁”而非“我给谁”：`CIZON_PROJECT_NAME`（字符串，始终定义）与 `CIZON_PROJECT_VERSION`（字符串，仅在所属项目的 cizon.toml 声明 `version` 时定义）按每个 target 所属项目（根或子项目）单独计算，只拼进该 target 自己的 `compile_flags`，不进入 `defines` 闭包、不沿 `links` 传播、不注入 git 依赖；在用户 flags 之前注入，`CIZON_` 前缀保留给 cizon（用户在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义即报错）；改动只触发该 target 重编
 - release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `build/<mode>-<compiler>/test-obj/<name>/`，`build` / `run` 不构建 test target
@@ -120,5 +120,5 @@
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
 14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。v0.10.2 为审计修复补丁：CI tag 输入注入防护、依赖 URL 校验与 update 状态一致性、`<command> --help` 等价性、重复头检查覆盖与构建/clean 竞态加固；功能集不变。v0.11.0 新增 per-target 内置身份宏（`CIZON_PROJECT_NAME` / `CIZON_PROJECT_VERSION`），按声明该 target 的项目计算、不传播、`CIZON_` 前缀保留；不是 workspace，也不引入独立包生命周期。v0.11.1 为补丁版本，修复 `cizon help toml` 中带行尾注释的 section 标题（如 `[subproject]`）未着色的问题；功能集不变。
+15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。v0.10.1 为补丁版本，修复 Linux 发布测试的可移植性，功能集不变。v0.10.2 为审计修复补丁：CI tag 输入注入防护、依赖 URL 校验与 update 状态一致性、`<command> --help` 等价性、重复头检查覆盖与构建/clean 竞态加固；功能集不变。v0.11.0 新增 per-target 内置身份宏（`CIZON_PROJECT_NAME` / `CIZON_PROJECT_VERSION`），按声明该 target 的项目计算、不传播、`CIZON_` 前缀保留；不是 workspace，也不引入独立包生命周期。v0.11.1 为补丁版本，修复 `cizon help toml` 中带行尾注释的 section 标题（如 `[subproject]`）未着色的问题；功能集不变。开发中（未发布）：`links` 默认私有，仅 `{ name, visible = "public" }` 边传播 include/defines，归档仍进入最终链接。
 16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

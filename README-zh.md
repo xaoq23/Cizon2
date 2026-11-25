@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.11.1**。补丁版本：`cizon help toml` 现在会为带行尾注释的 TOML section 标题着色，包括 `[subproject]`。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、PUBLIC per-target 编译定义、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.11.1**。补丁版本：`cizon help toml` 现在会为带行尾注释的 TOML section 标题着色，包括 `[subproject]`。开发分支未发布：`links` 默认私有，`{ name = "lib", visible = "public" }` 才把依赖接口加入传播。v0.11.0 新增内置身份宏：`CIZON_PROJECT_NAME` 与（声明 `[project].version` 时的）`CIZON_PROJECT_VERSION` 是由声明该 target 的 cizon.toml（根或子项目）计算的字符串字面量。它们是 target 私有的“我是谁”，不沿 `links` 传播、不传给 git 依赖，因此根 bin 与子项目库可以各自报告自己的名字/版本而不冲突；`CIZON_` 前缀保留。此前 v0.10.2 完成审计修复，v0.10 提供本地 `[subproject]` 组合、PUBLIC per-target 编译定义、`[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -16,7 +16,7 @@
 - 自动探测 g++ / clang++；debug 与 release、不同编译器的产物物理隔离
 - 按翻译单元增量：mtime + `-MMD`；头文件或编译参数变化会正确触发重编/重链
 - 递归收集 `.cpp` / `.cc` / `.cxx`；`include/` 自动加入 `-I`，target 自己的 `include` 会传播给消费者
-- 多个 bin、静态库、共享库 target；静态库可公共依赖其他静态库，公共 include/defines 与归档顺序由依赖图解析
+- 多个 bin、静态库、共享库 target；`links` 默认私有（接口不外传、归档仍参与链接），用 `{ name = "lib", visible = "public" }` 显式外传依赖接口，归档顺序由依赖图解析
 - v0.10：`[subproject]` 在单一根构建下组合本地库/test；它不是 workspace，子项目没有独立的构建、锁或发布生命周期
 - `shared_lib` 在 Windows 产 DLL + import lib，在 Linux 产 `.so`（对象 `-fPIC`，按名链接并带 `$ORIGIN` rpath）；import lib 未变时不重链 bin
 - `cizon run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
@@ -492,9 +492,9 @@ kind = "bin"
 | `name` | 视情况 | 单个 bin 可省略，默认项目名；库、test 和多个 bin 必须显式命名 |
 | `kind` | 是 | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | 视情况 | bin 可省略并扫描 `src/`；库和 test 必填且不能为空 |
-| `include` | 否 | 项目内公共头根目录；库会沿 `links` 传播给消费者，bin/test 只作用于自身 |
-| `defines` | 否 | `NAME` 或 `NAME=VALUE` 形式的编译宏；库沿 `links` 传播，bin/test 只作用于自身 |
-| `links` | 否 | bin/test 链接的项目内库、共享库打包的静态库，或静态库的公共静态依赖 |
+| `include` | 否 | 项目内公共头根目录；库只沿 `visible = "public"` 的链接边传播给消费者，bin/test 只作用于自身 |
+| `defines` | 否 | `NAME` 或 `NAME=VALUE` 形式的编译宏；库只沿 `visible = "public"` 的链接边传播，bin/test 只作用于自身 |
+| `links` | 否 | bin/test 链接的项目内库、共享库打包的静态库，或静态库的静态依赖。裸名字为私有；`{ name = "lib", visible = "public" }` 才外传该依赖的接口 |
 | `prefix` | 否 | 已安装包根目录；cizon 为该 target 展开 `-I<prefix>/include`（编译）与 `-L<prefix>/lib`（链接） |
 | `extern_links` | 否 | 仅 test target：外部库名，链接时映射为 `-l<name>` |
 
@@ -516,14 +516,14 @@ kind = "bin"
 - `include` 在自动的项目根 `include/` 之上增加 target 自己的公共头根目录；路径必须存在、是目录、在项目内，且不能是项目根。缺失路径在 plan 阶段直接报错，不拖到编译
 - cizon 会检查根 `include/`、自动加入的依赖 include 根，以及 target/库的 `include` 根中的公开头相对路径冲突。根 `include/` 遮蔽已链接库/依赖的头，或多个已链接库的 include 根出现同名头，都会在 plan 阶段报错；Windows 上比较不区分大小写。两个依赖 include 根之间的冲突仍然允许，按依赖搜索顺序处理
 - include 目录的符号链接/junction 也会参与重复检查，解析后必须仍在项目内；环保护会避免重复扫描
-- 对 `static_lib` / `shared_lib`，`include` 是 PUBLIC：库自己的源码使用它，所有通过 `links` 直接/间接链接它的消费者也继承；对 bin/test 只作用于自身
-- `defines` 接受 `NAME` 或 `NAME=VALUE` 形式的简单对象宏，宏名必须是 ASCII 标识符，且不带 `-D` 前缀。库的 defines 是 PUBLIC，沿直接/间接 `links` 传播；bin/test 的 defines 只作用于自己的源码
+- 对 `static_lib` / `shared_lib`，`include` 是公共输出：库自己的源码使用它，消费者只通过 `visible = "public"` 的链接边（可传递）继承；私有边仍链接归档但不导出头文件；对 bin/test 只作用于自身
+- `defines` 接受 `NAME` 或 `NAME=VALUE` 形式的简单对象宏，宏名必须是 ASCII 标识符，且不带 `-D` 前缀。库的 defines 沿直接/间接 `visible = "public"` 的链接边传播；bin/test 的 defines 只作用于自己的源码
 - target defines 位于 `[compiler].flags` 之后，并会覆盖项目 target 的全局同名定义，且不产生重定义警告。git 依赖源码不继承它们。同一链接闭包内的相同定义去重；同一宏配不同值会在 plan 阶段报错。CLI `-D` / `--define` 在最后追加，仅对当前进程临时覆盖这些定义
 - test 源码会在 defines 传播后剥离 `NDEBUG`，即使库或 test target 自己声明了它；release 库与普通 bin 仍会收到该定义
-- `static_lib` 可以链接已存在的 `static_lib`（公共依赖）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
+- `static_lib` 可以链接已存在的 `static_lib`（默认私有，显式 `visible = "public"` 才外传接口）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib。私有依赖的归档仍会进入最终链接，否则其符号无法解析；隐藏的只是接口
 - 静态依赖图内的链接顺序按“依赖方在前”自动推导，消费者无需手排归档顺序；出现环直接报错（cizon 不加 `--start-group`）
 - `links` 必须引用配置中已存在的 target，重复条目会报错；共享库不能链接其他共享库，DLL 之间的传递依赖交给 CMake
-- `include` 与 `prefix` 方向相反：`prefix` 是消费已安装包的输入（只给该 target 加 `-I`/`-L`，不传播）；`include` 是 target 自己的公共输出，沿 `links` 传播
+- `include` 与 `prefix` 方向相反：`prefix` 是消费已安装包的输入（只给该 target 加 `-I`/`-L`，不传播）；`include` 是 target 自己的公共输出，沿 `visible = "public"` 的链接边传播
 - 公共头放项目根 `include/` 或 target 的 `include` 根；库的私有头可放在源文件旁边
 - 静态归档使用 `ar`（g++）或 `llvm-ar`（clang++）；产物为 `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - 共享库在 Windows 产 `build/<mode>-<compiler>/<name>.dll`，import lib 在 `build/<mode>-<compiler>/.shared/<name>/`；在 Linux 产 `build/<mode>-<compiler>/lib<name>.so`

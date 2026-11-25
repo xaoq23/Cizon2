@@ -87,9 +87,9 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   name = "app"                 # optional for a single bin; required for libs, tests, multiple bins
   kind = "bin"                 # bin | static_lib | shared_lib | test
   sources = ["src"]            # bin defaults to scanning src/; libraries and tests must provide it
-  include = "libs/net/include" # optional public include root; libraries propagate it through links
-  defines = ["FEATURE", "LEVEL=3"] # NAME or NAME=VALUE; library definitions propagate through links
-  links = ["storage"]          # project libraries; static_lib may publicly depend on static_lib
+  include = "libs/net/include" # optional public include root; propagated via public link edges
+  defines = ["FEATURE", "LEVEL=3"] # NAME or NAME=VALUE; propagated via public link edges
+  links = ["storage", { name = "net", visible = "public" }] # plain = private; public exports interface
   prefix = "deps/.install/pkg" # optional installed package root; target-local -I/-L, not propagated
   extern_links = ["gtest_main", "gtest"] # test only; mapped to -l in declaration order
 
@@ -99,10 +99,14 @@ Rules:
     syntax, follows [compiler].flags, and is overridden by temporary CLI -D/--define values.
   - At least one target is required. A library-only project is valid: build produces libraries,
     run reports no bin, and test reports no test targets.
-  - include is added to the target's own compile; library includes propagate transitively through
-    links. The project-root include/ remains automatic for every target.
+  - links accept a plain name (private by default) or { name, visible = "public" | "private" }.
+    A private edge still links the archive into the final binary so symbols resolve, but hides that
+    dependency's includes/definitions from consumers; only public edges propagate the interface.
+    Mixed forms are allowed; duplicate names are rejected regardless of spelling or visibility.
+  - include is added to the target's own compile; library includes propagate transitively only
+    through public link edges. The project-root include/ remains automatic for every target.
   - defines accepts simple NAME or NAME=VALUE object macros without a -D prefix. Library definitions
-    propagate transitively through links; bin/test definitions apply only to themselves. They follow
+    propagate transitively only through public link edges; bin/test definitions apply only to themselves. They follow
     [compiler].flags, so target definitions override global ones without redefinition warnings.
     Git dependency sources do not inherit them. Identical definitions deduplicate; conflicting values
     in one link closure are plan errors. Test sources strip NDEBUG after propagation.

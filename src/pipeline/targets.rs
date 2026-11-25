@@ -45,21 +45,31 @@ pub fn plan_with_defines(
                 return Err(format!("static library target {name} has no source file to compile."));
             }
             let owner = format!("static library target {name}");
+            let resolve_static = |link: &crate::config::LinkSpec| {
+                let raw = link.name();
+                static_names
+                    .get(&raw.to_lowercase())
+                    .cloned()
+                    .ok_or_else(|| format!("{owner} links a nonexistent static library {raw}."))
+            };
+            let links = target
+                .links
+                .iter()
+                .map(|link| resolve_static(link))
+                .collect::<Result<Vec<_>, _>>()?;
+            let public_links = target
+                .links
+                .iter()
+                .filter(|link| link.is_public())
+                .map(|link| resolve_static(link))
+                .collect::<Result<Vec<_>, _>>()?;
             libs.push(LibTarget {
                 name: name.to_string(),
                 sources: lib_sources,
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
                 defines: target.defines.clone(),
-                links: target
-                    .links
-                    .iter()
-                    .map(|link| {
-                        static_names
-                            .get(&link.to_lowercase())
-                            .cloned()
-                            .ok_or_else(|| format!("{owner} links a nonexistent static library {link}."))
-                    })
-                    .collect::<Result<_, _>>()?,
+                links,
+                public_links,
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
                 builtin_defines: Config::builtin_defines(
@@ -82,22 +92,31 @@ pub fn plan_with_defines(
                 ));
             }
             let owner = format!("shared library target {name}");
+            let resolve_static = |link: &crate::config::LinkSpec| {
+                let raw = link.name();
+                static_names
+                    .get(&raw.to_lowercase())
+                    .cloned()
+                    .ok_or_else(|| format!("{owner} links a nonexistent static library {raw}."))
+            };
             let shared_links = target
                 .links
                 .iter()
-                .map(|link| {
-                    static_names
-                        .get(&link.to_lowercase())
-                        .cloned()
-                        .ok_or_else(|| format!("{owner} links a nonexistent static library {link}."))
-                })
-                .collect::<Result<_, _>>()?;
+                .map(|link| resolve_static(link))
+                .collect::<Result<Vec<_>, _>>()?;
+            let public_links = target
+                .links
+                .iter()
+                .filter(|link| link.is_public())
+                .map(|link| resolve_static(link))
+                .collect::<Result<Vec<_>, _>>()?;
             shared.push(SharedTarget {
                 name: name.to_string(),
                 sources: shared_sources,
                 include: resolve_include(&target.base_dir, target.include.as_deref(), &owner)?,
                 defines: target.defines.clone(),
                 links: shared_links,
+                public_links,
                 prefix: resolve_prefix(&target.base_dir, target.prefix.as_deref(), &owner)?,
                 compile_flags: Vec::new(),
                 builtin_defines: Config::builtin_defines(
@@ -336,8 +355,8 @@ fn finalize_target_graph(
     )?;
 
     for i in 0..libs.len() {
-        let includes = lib_includes(&libs[i].name, libs, &lib_index);
-        let defines = lib_defines(&libs[i].name, libs, &lib_index)?;
+        let includes = lib_includes(&libs[i].name, libs, &lib_index, false);
+        let defines = lib_defines(&libs[i].name, libs, &lib_index, false)?;
         let prefix = libs[i].prefix.clone();
         libs[i].compile_flags =
             flags_with_requirements(flags, &defines, cli_defines, &includes, &prefix);
@@ -430,11 +449,12 @@ fn lib_includes(
     start: &str,
     libs: &[LibTarget],
     index: &HashMap<String, usize>,
+    public_only: bool,
 ) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut visited = HashSet::new();
-    collect_lib_includes(start, libs, index, &mut visited, &mut out, &mut seen);
+    collect_lib_includes(start, libs, index, &mut visited, &mut out, &mut seen, public_only);
     out
 }
 
@@ -445,6 +465,7 @@ fn collect_lib_includes(
     visited: &mut HashSet<String>,
     out: &mut Vec<PathBuf>,
     seen: &mut HashSet<PathBuf>,
+    public_only: bool,
 ) {
     let lower = name.to_lowercase();
     if !visited.insert(lower.clone()) {
@@ -454,8 +475,13 @@ fn collect_lib_includes(
         return;
     };
     push_include(&libs[i].include, out, seen);
-    for dep in &libs[i].links {
-        collect_lib_includes(dep, libs, index, visited, out, seen);
+    let links = if public_only {
+        &libs[i].public_links
+    } else {
+        &libs[i].links
+    };
+    for dep in links {
+        collect_lib_includes(dep, libs, index, visited, out, seen, public_only);
     }
 }
 
@@ -468,8 +494,9 @@ fn shared_includes(
     let mut seen = HashSet::new();
     let mut visited = HashSet::new();
     push_include(&shared.include, &mut out, &mut seen);
+    // The shared library's own compilation sees all of its static dependencies.
     for dep in &shared.links {
-        collect_lib_includes(dep, libs, index, &mut visited, &mut out, &mut seen);
+        collect_lib_includes(dep, libs, index, &mut visited, &mut out, &mut seen, false);
     }
     out
 }
@@ -494,7 +521,7 @@ fn exec_includes(
     for link in links {
         match link {
             LinkTarget::Static(name) => {
-                collect_lib_includes(name, libs, lib_index, &mut visited_libs, &mut out, &mut seen);
+                collect_lib_includes(name, libs, lib_index, &mut visited_libs, &mut out, &mut seen, true);
             }
             LinkTarget::Shared(name) => {
                 let lower = name.to_lowercase();
@@ -503,7 +530,7 @@ fn exec_includes(
                 }
                 if let Some(&i) = shared_index.get(&lower) {
                     push_include(&shared[i].include, &mut out, &mut seen);
-                    for dep in &shared[i].links {
+                    for dep in &shared[i].public_links {
                         collect_lib_includes(
                             dep,
                             libs,
@@ -511,6 +538,7 @@ fn exec_includes(
                             &mut visited_libs,
                             &mut out,
                             &mut seen,
+                            true,
                         );
                     }
                 }
@@ -524,9 +552,10 @@ fn lib_defines(
     start: &str,
     libs: &[LibTarget],
     index: &HashMap<String, usize>,
+    public_only: bool,
 ) -> Result<Vec<String>, String> {
     let mut defines = Vec::new();
-    collect_lib_defines(start, libs, index, &mut HashSet::new(), &mut defines);
+    collect_lib_defines(start, libs, index, &mut HashSet::new(), &mut defines, public_only);
     merge_defines(defines)
 }
 
@@ -536,6 +565,7 @@ fn collect_lib_defines(
     index: &HashMap<String, usize>,
     visited: &mut HashSet<String>,
     out: &mut Vec<(String, String)>,
+    public_only: bool,
 ) {
     let lower = name.to_lowercase();
     if !visited.insert(lower.clone()) {
@@ -547,8 +577,13 @@ fn collect_lib_defines(
     for define in &libs[i].defines {
         out.push((libs[i].name.clone(), define.clone()));
     }
-    for dep in &libs[i].links {
-        collect_lib_defines(dep, libs, index, visited, out);
+    let links = if public_only {
+        &libs[i].public_links
+    } else {
+        &libs[i].links
+    };
+    for dep in links {
+        collect_lib_defines(dep, libs, index, visited, out, public_only);
     }
 }
 
@@ -564,8 +599,9 @@ fn shared_defines(
         .map(|define| (shared.name.clone(), define))
         .collect();
     let mut visited = HashSet::new();
+    // Shared library's own compilation sees all of its static dependencies.
     for dep in &shared.links {
-        collect_lib_defines(dep, libs, index, &mut visited, &mut defines);
+        collect_lib_defines(dep, libs, index, &mut visited, &mut defines, false);
     }
     merge_defines(defines)
 }
@@ -588,7 +624,7 @@ fn exec_defines(
     for link in &target.links {
         match link {
             LinkTarget::Static(name) => {
-                collect_lib_defines(name, libs, lib_index, &mut visited_libs, &mut defines);
+                collect_lib_defines(name, libs, lib_index, &mut visited_libs, &mut defines, true);
             }
             LinkTarget::Shared(name) => {
                 let lower = name.to_lowercase();
@@ -599,8 +635,8 @@ fn exec_defines(
                     for define in &shared[i].defines {
                         defines.push((shared[i].name.clone(), define.clone()));
                     }
-                    for dep in &shared[i].links {
-                        collect_lib_defines(dep, libs, lib_index, &mut visited_libs, &mut defines);
+                    for dep in &shared[i].public_links {
+                        collect_lib_defines(dep, libs, lib_index, &mut visited_libs, &mut defines, true);
                     }
                 }
             }
@@ -705,6 +741,7 @@ fn validate_include_uniqueness(
             &lib.links,
             libs,
             lib_index,
+            false,
         ));
         if include_prefix {
             extend_prefix_include(&mut pairs, &lib.name, lib.prefix.as_ref());
@@ -719,6 +756,7 @@ fn validate_include_uniqueness(
             &sh.links,
             libs,
             lib_index,
+            false,
         ));
         if include_prefix {
             extend_prefix_include(&mut pairs, &sh.name, sh.prefix.as_ref());
@@ -816,6 +854,7 @@ fn lib_closure_includes(
     links: &[String],
     libs: &[LibTarget],
     index: &HashMap<String, usize>,
+    public_only: bool,
 ) -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
     if let Some(include) = own_include {
@@ -823,7 +862,7 @@ fn lib_closure_includes(
     }
     let mut visited = HashSet::new();
     for dep in links {
-        collect_closure_includes(dep, libs, index, &mut visited, &mut out);
+        collect_closure_includes(dep, libs, index, &mut visited, &mut out, public_only);
     }
     out
 }
@@ -847,7 +886,7 @@ fn exec_closure_includes(
     for link in &target.links {
         match link {
             LinkTarget::Static(name) => {
-                collect_closure_includes(name, libs, lib_index, &mut visited_libs, &mut out);
+                collect_closure_includes(name, libs, lib_index, &mut visited_libs, &mut out, true);
             }
             LinkTarget::Shared(name) => {
                 let lower = name.to_lowercase();
@@ -858,8 +897,8 @@ fn exec_closure_includes(
                     if let Some(include) = &shared[i].include {
                         out.push((shared[i].name.clone(), include.clone()));
                     }
-                    for dep in &shared[i].links {
-                        collect_closure_includes(dep, libs, lib_index, &mut visited_libs, &mut out);
+                    for dep in &shared[i].public_links {
+                        collect_closure_includes(dep, libs, lib_index, &mut visited_libs, &mut out, true);
                     }
                 }
             }
@@ -877,6 +916,7 @@ fn collect_closure_includes(
     index: &HashMap<String, usize>,
     visited: &mut HashSet<String>,
     out: &mut Vec<(String, PathBuf)>,
+    public_only: bool,
 ) {
     let lower = name.to_lowercase();
     if !visited.insert(lower.clone()) {
@@ -888,8 +928,13 @@ fn collect_closure_includes(
     if let Some(include) = &libs[i].include {
         out.push((libs[i].name.clone(), include.clone()));
     }
-    for dep in &libs[i].links {
-        collect_closure_includes(dep, libs, index, visited, out);
+    let links = if public_only {
+        &libs[i].public_links
+    } else {
+        &libs[i].links
+    };
+    for dep in links {
+        collect_closure_includes(dep, libs, index, visited, out, public_only);
     }
 }
 
@@ -1321,20 +1366,21 @@ pub(super) fn overlapping_exec_sources(
 /// Resolve bin/test `links` entries against the planned libraries (bin and test targets link the
 /// same artifact kinds: static archives and shared import libraries).
 fn resolve_exec_links(
-    links: &[String],
+    links: &[crate::config::LinkSpec],
     libs: &[LibTarget],
     shared: &[SharedTarget],
 ) -> Vec<LinkTarget> {
     links
         .iter()
         .map(|link| {
-            let lower = link.to_lowercase();
+            let raw = link.name();
+            let lower = raw.to_lowercase();
             if let Some(lib) = libs.iter().find(|lib| lib.name.to_lowercase() == lower) {
                 LinkTarget::Static(lib.name.clone())
             } else if let Some(sh) = shared.iter().find(|sh| sh.name.to_lowercase() == lower) {
                 LinkTarget::Shared(sh.name.clone())
             } else {
-                LinkTarget::Static(link.clone())
+                LinkTarget::Static(raw.to_string())
             }
         })
         .collect()

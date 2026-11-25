@@ -49,8 +49,11 @@ struct LibTarget {
     include: Option<PathBuf>,
     /// Own compile definitions; inherited by consumers through `links`.
     defines: Vec<String>,
-    /// Direct static-library dependencies.
+    /// Direct static-library dependencies (all edges, including private: archives must
+    /// still reach the consumer so symbols resolve).
     links: Vec<String>,
+    /// Subset of `links` whose interface is propagated to consumers.
+    public_links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include for this target.
     prefix: Option<PathBuf>,
     /// Base flags + own/propagated include paths + prefix include.
@@ -90,8 +93,10 @@ struct SharedTarget {
     include: Option<PathBuf>,
     /// Own compile definitions; inherited by consumers through `links`.
     defines: Vec<String>,
-    /// Static libraries built into this DLL, in dependency order.
+    /// Static libraries built into this DLL, in dependency order (all edges).
     links: Vec<String>,
+    /// Subset of `links` whose includes/definitions consumers inherit.
+    public_links: Vec<String>,
     /// Optional installed-package prefix; expands to -I<prefix>/include and -L<prefix>/lib.
     prefix: Option<PathBuf>,
     /// Base flags + own/propagated include paths + prefix include.

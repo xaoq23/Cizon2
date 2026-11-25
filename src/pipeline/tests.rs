@@ -2394,9 +2394,9 @@ sources = ["src"]
              [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"libs/core/src\"]\n\
              defines = [\"CORE=1\", \"CORE\", \"NDEBUG\"]\n\n\
              [[target]]\nname = \"wrapper\"\nkind = \"static_lib\"\nsources = [\"libs/wrapper/src\"]\n\
-             links = [\"core\"]\ndefines = [\"WRAPPER=1\", \"CORE=1\"]\n\n\
+             links = [{ name = \"core\", visible = \"public\" }]\ndefines = [\"WRAPPER=1\", \"CORE=1\"]\n\n\
              [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"libs/api/src\"]\n\
-             links = [\"wrapper\"]\ndefines = [\"API=1\"]\n\n\
+             links = [{ name = \"wrapper\", visible = \"public\" }]\ndefines = [\"API=1\"]\n\n\
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\n\
              links = [\"api\"]\ndefines = [\"APP=1\"]\n\n\
              [[target]]\nname = \"other\"\nkind = \"bin\"\nsources = [\"other/src\"]\n\
@@ -2722,7 +2722,7 @@ sources = ["src"]
             dir.join("cizon.toml"),
             "[project]\nname = \"downflux\"\ncompile_commands = true\n\n\
              [[target]]\nname = \"net\"\nkind = \"static_lib\"\nsources = [\"libs/net/src\"]\ninclude = \"libs/net/include\"\n\n\
-             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"libs/storage/src\"]\ninclude = \"libs/storage/include\"\nlinks = [\"net\"]\n\n\
+             [[target]]\nname = \"storage\"\nkind = \"static_lib\"\nsources = [\"libs/storage/src\"]\ninclude = \"libs/storage/include\"\nlinks = [{ name = \"net\", visible = \"public\" }]\n\n\
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"storage\"]\n\n\
              [[target]]\nname = \"storage_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"storage\"]\n",
         )
@@ -2748,6 +2748,79 @@ sources = ["src"]
             .replace("\\\\", "/");
         assert!(db.contains("libs/net/include"), "compile db must carry propagated includes");
         assert!(db.contains("libs/storage/include"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    fn link_visibility_project(dir: &Path, core_link: &str) {
+        write_sub(dir, "core/include/core/core.hpp", "int core_value();\n");
+        write_sub(dir, "core/src/core.cpp", "#include \"core/core.hpp\"\nint core_value(){return 7;}\n");
+        write_sub(dir, "api/include/api/api.hpp", "#pragma once\nint api_value();\n");
+        write_sub(
+            dir,
+            "api/src/api.cpp",
+            "#include \"api/api.hpp\"\n#include \"core/core.hpp\"\nint api_value(){return core_value()+1;}\n",
+        );
+        let main = if core_link.contains("public") {
+            "#include \"api/api.hpp\"\n#include \"core/core.hpp\"\nint main(){return api_value()+core_value()==15?0:1;}\n"
+        } else {
+            "#include \"api/api.hpp\"\nint main(){return api_value()==8?0:1;}\n"
+        };
+        write_sub(dir, "app/src/main.cpp", main);
+        write_sub(
+            dir,
+            "cizon.toml",
+            &format!(
+                "[project]\nname = \"t\"\n\n\
+                 [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core/src\"]\ninclude = \"core/include\"\n\n\
+                 [[target]]\nname = \"api\"\nkind = \"static_lib\"\nsources = [\"api/src\"]\ninclude = \"api/include\"\nlinks = [{core_link}]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"api\"]\n"
+            ),
+        );
+    }
+
+    #[test]
+    fn private_link_hides_interface_but_keeps_archive() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("private-link");
+        link_visibility_project(&dir, "\"core\"");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let app_flags = &p.bins[0].compile_flags;
+        let api_flags = &p.libs[1].compile_flags;
+        assert!(app_flags.iter().any(|f| f.contains("api/include")));
+        assert!(
+            !app_flags.iter().any(|f| f.contains("core/include")),
+            "private dependency interface must not reach the consumer: {app_flags:?}"
+        );
+        assert!(
+            api_flags.iter().any(|f| f.contains("core/include")),
+            "the library itself still sees its private dependency: {api_flags:?}"
+        );
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0, "core archive must still be linked");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn public_link_propagates_interface_to_consumer() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("public-link");
+        link_visibility_project(&dir, "{ name = \"core\", visible = \"public\" }");
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let app_flags = &p.bins[0].compile_flags;
+        assert!(
+            app_flags.iter().any(|f| f.contains("core/include")),
+            "public dependency interface must reach the consumer: {app_flags:?}"
+        );
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0);
         fs::remove_dir_all(dir).ok();
     }
 
@@ -3109,7 +3182,7 @@ sources = ["src"]
             dir.join("cizon.toml"),
             "[project]\nname = \"t\"\nedition = \"c++23\"\n\n\
              [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core/src\"]\ninclude = \"core/include\"\n\n\
-             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api/src\"]\ninclude = \"api/include\"\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"api\"\nkind = \"shared_lib\"\nsources = [\"api/src\"]\ninclude = \"api/include\"\nlinks = [{ name = \"core\", visible = \"public\" }]\n\n\
              [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"api\"]\n",
         )
         .unwrap();

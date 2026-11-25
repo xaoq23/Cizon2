@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML section headers that carry a trailing comment, including `[subproject]`. v0.11.0 added built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes and v0.10's local `[subproject]` composition, PUBLIC per-target compile definitions, `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML section headers that carry a trailing comment, including `[subproject]`. Unreleased on the development branch: `links` are private by default; `{ name = "lib", visible = "public" }` opts a dependency's interface into propagation. v0.11.0 added built-in identity macros: `CIZON_PROJECT_NAME` and, when `[project].version` is declared, `CIZON_PROJECT_VERSION` are string literals computed per target from the cizon.toml that declared it (root or subproject). They are target-local identity, not interface — never propagated through `links` and never given to git dependencies — so a root bin and a subproject library can safely report their own names/versions. The `CIZON_` prefix is reserved. This sits on top of v0.10.2's audit fixes and v0.10's local `[subproject]` composition, PUBLIC per-target compile definitions, `[project].defines`, temporary CLI `-D` overrides, `cizon clean`, `--verbose`, and Cargo-style colored help. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -20,7 +20,7 @@ Current version: **v0.11.1**. Patch release: `cizon help toml` now colors TOML s
 - Auto-detects g++ / clang++; debug vs release and different compilers are isolated on disk
 - Translation-unit-level incrementality: mtime + `-MMD`; header or compile-flag changes trigger the right rebuilds and relinks
 - Collects `.cpp` / `.cc` / `.cxx` recursively; `include/` is added to `-I` automatically, and a target's `include` root propagates to its consumers
-- Multiple bins, static libraries, and shared libraries through `[[target]]`; static libraries may publicly depend on other static libraries, with public includes/definitions and archive order resolved from the graph
+- Multiple bins, static libraries, and shared libraries through `[[target]]`; `links` are private by default (interface hidden, archive still linked), with `{ name = "lib", visible = "public" }` opting into interface propagation and archive order resolved from the graph
 - v0.10: `[subproject]` combines local libraries/tests under one root build; it is not a workspace and has no independent subproject build, lock, or release lifecycle
 - `shared_lib` builds DLLs + import libraries on Windows and `.so` files on Linux (objects compiled `-fPIC`, the `.so` linked by name with an `$ORIGIN` rpath); unchanged import libraries do not force a relink
 - `cizon run <bin>` selects a target to run; `build` builds every bin/library target
@@ -496,9 +496,9 @@ Each target accepts eight keys:
 | `name` | Depends | A single bin may omit it and use the project name; libraries, tests, and multiple bins must name it |
 | `kind` | Yes | `bin` / `static_lib` / `shared_lib` / `test` |
 | `sources` | Depends | A bin may omit it and scan `src/`; libraries and tests must provide it and it cannot be empty |
-| `include` | No | Project-relative public header root. Libraries propagate it through `links`; bins/tests use it only for themselves |
-| `defines` | No | Compile macros in `NAME` or `NAME=VALUE` form. Libraries propagate them through `links`; bins/tests use them only for themselves |
-| `links` | No | Project libraries linked by a bin/test, static libraries packed into a shared library, or public static dependencies of a static library |
+| `include` | No | Project-relative public header root. Libraries propagate it through `visible = "public"` link edges; bins/tests use it only for themselves |
+| `defines` | No | Compile macros in `NAME` or `NAME=VALUE` form. Libraries propagate them through `visible = "public"` link edges; bins/tests use them only for themselves |
+| `links` | No | Project libraries linked by a bin/test, static libraries packed into a shared library, or static dependencies of a static library. A plain name is private; `{ name = "lib", visible = "public" }` also exports the dependency's interface |
 | `prefix` | No | Installed-package root; cizon expands it to `-I<prefix>/include` (compile) and `-L<prefix>/lib` (link) for this target only |
 | `extern_links` | No | Test targets only: external library names mapped to `-l<name>` at link time |
 
@@ -520,14 +520,14 @@ Rules:
 - `include` adds a target-owned public header root on top of the automatic project-root `include/`; it must exist, be a directory, stay inside the project, and must not be the project root. Missing paths fail during planning, before compilation
 - Cizon checks root `include/`, automatic dependency include roots, and target/library `include` roots for duplicate public-header relative paths. Root `include/` shadowing a linked library/dependency header, or duplicates between linked library include roots, is a plan error; comparisons are case-insensitive on Windows. Collisions between two dependency include roots remain allowed and follow dependency search order
 - Include-directory symlinks/junctions are scanned for duplicates and must stay inside the project; cycle guards prevent repeated scanning
-- For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
-- `defines` accepts simple object macros as `NAME` or `NAME=VALUE`, with an ASCII identifier and no `-D` prefix. Library definitions are PUBLIC and propagate through direct/transitive `links`; bin/test definitions apply only to their own sources
+- For `static_lib` / `shared_lib`, `include` is public output: the library's own sources use it, and consumers inherit it only through `visible = "public"` link edges (transitively). Private edges still link the archive but do not export headers. For a bin/test it applies only to that target
+- `defines` accepts simple object macros as `NAME` or `NAME=VALUE`, with an ASCII identifier and no `-D` prefix. Library definitions propagate through direct/transitive `visible = "public"` link edges; bin/test definitions apply only to their own sources
 - Target definitions follow `[compiler].flags` and override global definitions for project targets without redefinition warnings. Git dependency sources do not inherit them. Identical definitions in one link closure deduplicate; the same macro with different values is a plan error. CLI `-D` / `--define` values are appended last for the current invocation and temporarily override any collision
 - Test sources strip `NDEBUG` after definition propagation, even when a library or the test target declares it; release libraries and normal bins still receive it
-- `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
+- `static_lib` may link existing `static_lib` targets (private by default, explicit `visible = "public"` to export their interface); `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries. The archive of a private dependency is still linked into the final binary so its symbols resolve; only the interface is hidden
 - Link order inside the static dependency graph is derived dependent-first (consumers before their dependencies), so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)
 - Every `links` entry must reference an existing target and duplicates are rejected; shared libraries cannot link other shared libraries, and transitive DLL graphs are a CMake job
-- `include` and `prefix` point in opposite directions: `prefix` is an input for consuming an installed package (target-local `-I`/`-L`, never propagated); `include` is the target's public output, propagated through `links`
+- `include` and `prefix` point in opposite directions: `prefix` is an input for consuming an installed package (target-local `-I`/`-L`, never propagated); `include` is the target's public output, propagated through `visible = "public"` link edges
 - Public headers go in the project-root `include/` or a target's `include` root; a library's private headers may sit next to its sources
 - Static archives use `ar` (g++) or `llvm-ar` (clang++); the artifact is `build/<mode>-<compiler>/lib/<name>/lib<name>.a`
 - A shared library produces `build/<mode>-<compiler>/<name>.dll` plus an import library under `build/<mode>-<compiler>/.shared/<name>/` on Windows, or `build/<mode>-<compiler>/lib<name>.so` on Linux

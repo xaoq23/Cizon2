@@ -59,6 +59,59 @@ pub enum TargetKind {
     Test,
 }
 
+/// Visibility of a `links` edge. Private is the default: the dependency is still linked
+/// (static archives must reach the final executable), but its interface is not exposed to
+/// targets that consume this one.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkVisibility {
+    Public,
+    Private,
+}
+
+impl Default for LinkVisibility {
+    fn default() -> Self {
+        Self::Private
+    }
+}
+
+/// Explicit form of a link edge. Unknown keys (including the common typo `visiable`)
+/// are hard errors rather than being silently ignored.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LinkDetail {
+    pub name: String,
+    #[serde(default)]
+    pub visible: LinkVisibility,
+}
+
+/// A target link: either a plain name (private) or an explicit `{ name, visible }` edge.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum LinkSpec {
+    Plain(String),
+    Detailed(LinkDetail),
+}
+
+impl LinkSpec {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Plain(name) => name,
+            Self::Detailed(detail) => &detail.name,
+        }
+    }
+
+    pub fn is_public(&self) -> bool {
+        matches!(
+            self,
+            Self::Detailed(LinkDetail {
+                visible: LinkVisibility::Public,
+                ..
+            })
+        )
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Target {
@@ -84,9 +137,11 @@ pub struct Target {
     pub sources: Option<Vec<String>>,
     /// Bin/test: static/shared library target names, linked in declaration order.
     /// Shared library: static library target names, built into the DLL.
-    /// Static library: public static dependencies; their includes, definitions, and archives propagate.
+    /// Static library: static dependencies; their archives always propagate, but
+    /// includes/definitions propagate only through `visible = "public"` edges.
+    /// A plain string is equivalent to `{ name = ..., visible = "private" }`.
     #[serde(default)]
-    pub links: Vec<String>,
+    pub links: Vec<LinkSpec>,
     /// Test targets only: names of system-installed libraries, mapped verbatim to `-l<name>` at
     /// link time. cizon neither downloads nor locates them; headers must already be on the
     /// compiler's default include path (non-default prefixes go through [compiler] flags).
@@ -498,6 +553,7 @@ fn validate_target_links(targets: &[Target], root: &Path) -> Result<(), String> 
         match target.kind {
             TargetKind::StaticLib => {
                 for link in &target.links {
+                    let link = link.name();
                     let lower = link.to_lowercase();
                     if !libs.contains(&lower) {
                         if shared.contains(&lower) {
@@ -518,6 +574,7 @@ fn validate_target_links(targets: &[Target], root: &Path) -> Result<(), String> 
             }
             TargetKind::SharedLib => {
                 for link in &target.links {
+                    let link = link.name();
                     let lower = link.to_lowercase();
                     if !libs.contains(&lower) {
                         if shared.contains(&lower) {
@@ -539,6 +596,7 @@ fn validate_target_links(targets: &[Target], root: &Path) -> Result<(), String> 
             TargetKind::Bin | TargetKind::Test => {
                 let kind = if target.kind == TargetKind::Bin { "bin" } else { "test" };
                 for link in &target.links {
+                    let link = link.name();
                     let lower = link.to_lowercase();
                     if !libs.contains(&lower) && !shared.contains(&lower) {
                         return Err(format!(
@@ -1184,6 +1242,10 @@ mod tests {
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+    fn link_names(target: &Target) -> Vec<&str> {
+        target.links.iter().map(|link| link.name()).collect()
+    }
+
     fn write_config(text: &str) -> (PathBuf, Config) {
         let dir = temp_dir("parse");
         std::fs::write(dir.join("cizon.toml"), text).unwrap();
@@ -1405,7 +1467,7 @@ mod tests {
         assert_eq!(targets[0].kind, TargetKind::StaticLib);
         assert_eq!(targets[0].sources.as_deref(), Some(&["lib/foo.cpp".to_string()][..]));
         assert_eq!(targets[1].kind, TargetKind::Bin);
-        assert_eq!(targets[1].links, ["foo"]);
+        assert_eq!(link_names(&targets[1]), ["foo"]);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1484,8 +1546,8 @@ mod tests {
         ));
         let targets = cfg.targets().expect("targets");
         assert_eq!(targets[1].kind, TargetKind::SharedLib);
-        assert_eq!(targets[1].links, ["core"]);
-        assert_eq!(targets[2].links, ["core_dll", "core"]);
+        assert_eq!(link_names(&targets[1]), ["core"]);
+        assert_eq!(link_names(&targets[2]), ["core_dll", "core"]);
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1498,8 +1560,63 @@ mod tests {
              [[target]]\nname = \"b\"\nkind = \"bin\"\nsources = [\"b\"]\nlinks = [\"bar\"]\n",
         ));
         let targets = cfg.targets().expect("targets");
-        assert_eq!(targets[2].links, ["foo"]);
-        assert_eq!(targets[3].links, ["bar"]);
+        assert_eq!(link_names(&targets[2]), ["foo"]);
+        assert_eq!(link_names(&targets[3]), ["bar"]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn links_default_to_private_and_accept_explicit_public() {
+        let (dir, cfg) = write_config(&target_config(
+            "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core\"]\n\n\
+             [[target]]\nname = \"core2\"\nkind = \"static_lib\"\nsources = [\"core2\"]\n\n\
+             [[target]]\nname = \"core3\"\nkind = \"static_lib\"\nsources = [\"core3\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app\"]\n\
+             links = [\"core\", { name = \"core2\", visible = \"public\" }, { name = \"core3\" }]\n",
+        ));
+        let app = &cfg.targets().unwrap()[3];
+        let links = &app.links;
+        assert_eq!(link_names(app), ["core", "core2", "core3"]);
+        assert!(!links[0].is_public(), "plain string link must default to private");
+        assert!(links[1].is_public());
+        assert!(!links[2].is_public(), "visible omitted must default to private");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn link_detail_rejects_misspelled_and_unknown_keys() {
+        for bad in [
+            "{ name = \"core\", visiable = \"public\" }",
+            "{ name = \"core\", visible = \"protected\" }",
+            "{ name = \"core\", public = true }",
+        ] {
+            let dir = temp_dir("bad-link-detail");
+            std::fs::write(
+                dir.join("cizon.toml"),
+                target_config(&format!(
+                    "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core\"]\n\n\
+                     [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app\"]\nlinks = [{bad}]\n"
+                )),
+            )
+            .unwrap();
+            assert!(load_resolved(&dir).is_err(), "bad={bad}");
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn duplicate_links_are_rejected_across_spelling_and_visibility() {
+        let dir = temp_dir("dup-link-visibility");
+        std::fs::write(
+            dir.join("cizon.toml"),
+            target_config(
+                "[[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"core\"]\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app\"]\n\
+                 links = [\"core\", { name = \"CORE\", visible = \"public\" }]\n",
+            ),
+        )
+        .unwrap();
+        assert!(load_resolved(&dir).unwrap_err().contains("duplicate"));
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1812,7 +1929,7 @@ mod tests {
         ));
         let targets = cfg.targets().unwrap();
         assert_eq!(targets[1].kind, TargetKind::Test);
-        assert_eq!(targets[1].links, ["core"]);
+        assert_eq!(link_names(&targets[1]), ["core"]);
         assert_eq!(targets[1].extern_links, ["gtest", "gtest_main"]);
         std::fs::remove_dir_all(dir).ok();
     }
