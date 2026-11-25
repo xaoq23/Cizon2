@@ -2,9 +2,10 @@
 
 > 生成时间：2026-11-25  
 > 仓库：`C:\Users\zzh\NUFE\Programming\Rust\Cizon2`  
-> 当前分支：`main`（`fix/audit-0.10.2` 已 ff 合入，tag `v0.10.2` 已推送）  
-> tag `v0.10.2` 指向：`0bf716e docs: finalize v0.10.2 handoff`（其后仅有交接文档更新提交）  
-> 当前版本：`0.10.2`  
+> 当前分支：`feat/builtin-macros`（未发布功能分支；`main` 仍为 v0.10.2）  
+> 最新功能提交：`4e2c51a feat: scope built-in macros to each declaring project`  
+> tag `v0.10.2` 指向：`0bf716e docs: finalize v0.10.2 handoff`  
+> 当前版本：`0.10.2`（内置宏功能尚未 bump 版本）  
 > 工作区：干净（本次交接更新提交后）  
 > 最新成功 Release：`v0.10.2`（工作流 run `45552996160` success）  
 > Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.10.2>
@@ -78,6 +79,16 @@ cizon build && cizon run
 - 头文件检查：`prefix/include` 同名头改为警告（prefix 搜索顺序最后，不遮蔽库头）、非头文件扩展名不再误报、`deps::prepare` 之后重新检查恢复的依赖头；无依赖项目跳过二次扫描、prefix 冲突只在 plan 阶段告警一次
 - 增量：共享 project-state 变化时同时清理 `obj/` 与 `test-obj/`，避免 `test → build` 复用旧 bin 对象；共享库临时目录含 sidecar 一并回收
 - clean：符号链接/junction 分支也检查活动构建锁；锁记录解析后的绝对路径，删链接后仍可清除目标中的锁；删除非幂等问题修复；VS Code 生成失败改用标准 Warning 样式
+
+### 开发中（未发布）：内置项目身份宏
+
+- `CIZON_PROJECT_NAME`（字符串，始终有值）与 `CIZON_PROJECT_VERSION`（字符串，仅所属项目声明 `version` 时定义）
+- 每个 target 取声明它的 cizon.toml（根或子项目）的有效 name/version；name 缺省按该目录名推导，version 缺省不定义宏
+- **身份而非接口**：只拼进该 target 自己的 `compile_flags`，不进 `defines`、不沿 `links` 传播、不注入 git 依赖；根 bin 与子项目库各看各的值，不会触发 `merge_defines` 同名冲突
+- 在用户 flags 之前注入；`CIZON_` 前缀保留：用户在 `defines` / CLI `-D` / `[compiler].flags`（含 `-U`、`-Wp,-U`、`-Xpreprocessor`）中提到该前缀即报错
+- 值做 C 字符串转义（`"`、`\`）；进入 per-target `compile_flags` 指纹，改 name/version 只重编该项目 target
+- 不做动态宏（git hash / 时间戳）；`@response` 等任意 flags 逃逸属既有边界
+- 相关提交：`12102be`（首版）、`4e2c51a`（改为 per-target、不传播）
 
 ---
 
@@ -193,7 +204,7 @@ CLI 支持形式：
 
 ## 5. 验证与常用命令
 
-当前测试总数：**292**（v0.10.2 新增 13 项审计回归测试）。
+当前测试总数：**302**（v0.10.2 审计回归 13 项 + 内置宏功能 10 项）。
 
 本机验证过的命令：
 
@@ -211,9 +222,9 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 
 最近结果：
 
-- Windows debug：292/292
-- Windows release：292/292
-- Arch WSL release：292/292
+- Windows debug：302/302
+- Windows release：302/302
+- Arch WSL release：302/302（feat/builtin-macros）
 - Release 工作流 Linux 测试：v0.10.1、v0.10.2 均成功
 
 注意：
@@ -230,6 +241,8 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 最近提交：
 
 ```text
+4e2c51a feat: scope built-in macros to each declaring project
+12102be feat: inject built-in project identity macros
 5a765c7 fix: polish v0.10.2 review nitpicks
 caa8d83 fix: address v0.10.2 re-review findings
 7cfb8ad fix: keep build lock clean and normalize release concurrency
@@ -324,7 +337,7 @@ P1/P2 产品能力仍 deferred：
 默认不要立刻扩功能。优先：
 
 1. 复跑 `cargo test` + Linux release 门禁，确认环境。
-2. 若用户没有明确新需求，保持 v0.10.2 已发布状态。
+2. 若用户没有明确新需求，保持 v0.10.2 已发布状态；`feat/builtin-macros` 是待发布功能分支，尚未 bump 版本/打 tag。
 3. 剩余 P2/P3（重复头扫描成本等）先确认真实痛点，再设计/测试后动。
 4. 发布新版本时不要移动 `v0.10.0` / `v0.10.1` / `v0.10.2`；用新 tag。
 5. 任何新功能先读 AGENTS 边界并征得用户同意。
