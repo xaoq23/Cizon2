@@ -62,7 +62,7 @@
 - 用户面路径用项目相对路径；编译器诊断保留行号与文本，只把项目绝对路径前缀替换为相对路径
 - 构建/运行状态写 stderr，程序 stdout 保持纯净；ANSI 颜色按流判断 TTY，重定向时自动关闭
 - `--verbose` 在 stderr 打印实际 compiler/archive/link/run/test 进程命令，允许显示原子替换用的临时输出名；与 `--quiet` 互斥
-- `cizon clean` 只删除项目 `build/`，不得顺带删除 config、lock、deps、compile_commands 或编辑器配置；`build` 为符号链接/junction 时只删链接不跟随目标，活动构建锁存在时拒绝清理
+- `cizon clean` 只删除项目 `build/`，不得顺带删除 config、lock、deps、compile_commands 或编辑器配置；`build` 为符号链接/junction 时只删链接不跟随目标；真实 build 目录存在活动构建锁时拒绝清理
 - 计时单位紧贴数字（`0.12s`），RESET 不能夹在数字与单位之间，避免剥离转义码后出现 `ms` 假象
 - 警告按源文件分组：黄色 `Warning` 头；警告段与构建状态之间空一行，不打印装饰分割线
 - `Finished` 严格区分 `fresh build` / `incremental rebuild` / `relinked` / `up to date`
@@ -116,6 +116,6 @@
 11. v0.6.1 编译器降级提示 + 缺失运行库诊断 —— 已发布 v0.6.1
 12. v0.7 `kind = "test"` + `cizon test` —— 已发布 v0.7.1：对齐 CTest 的框架无关上层，只构建/运行 test target，退出码 0 即通过；`build` / `run` 忽略 test；`cizon test [name...] -- <args>` 支持过滤与参数透传；显式 `extern_links` 接入 gtest / Catch2 v3，不内建框架适配、不下载依赖；test target 永不定义 `-DNDEBUG`。v0.7.1 追加：per-target `prefix`（透明推导 `-I`/`-L`）、`[compiler] strict`/`werror` 开关、`sync` 命令、`help <command>` 与 `--version/-v`、run/test 子进程 PATH 前置编译器 bin、`0xC0000139` 诊断、依赖布局警告分级去重、sources 重叠警告。已在真实项目完成 dogfood（gtest/doctest/Catch2/原生断言）。
 13. v0.8 Linux 共享库 + CI 原语 —— 已发布 v0.8.0：Linux `shared_lib` 产 `.so`（`-fPIC`、按名链接、`$ORIGIN` rpath），补上 Linux 唯一功能缺口；`sync --check`（只校验锁与 checkout，不联网、不写）与 `--quiet`（CI 静默进度）。MSVC / 交叉编译 / CMake File API 拆为本地实验分支（`experimental/*`），不在 0.8 边界内。
-14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为当前可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
-15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、`cizon clean` 与 `--verbose`；不是 workspace，不引入独立包生命周期。
+14. v0.8.1–v0.9.5 维护与体验 —— 已发布；v0.9.6 为可靠性批次：原子写与项目级构建锁、include/链接/target 删除加固测试。此前包含显式 target 诊断、输出体验、纯库与 release NDEBUG、target 公共 include 与静态公共依赖、库项目模板、Linux SONAME、改名 `cizon`、edition 校验、`help toml`。
+15. v0.10 target 组合与构建体验 —— 提供 `[subproject]` 受限本地组合、target `defines` PUBLIC 传播、隐式单 bin 的 `[project].defines`、临时 CLI `-D` 覆盖、`cizon clean`、`--verbose` 与 Cargo 风格彩色帮助；不是 workspace，不引入独立包生命周期。
 16. 之后：需要条件化/大型 target 图、install/export、MSVC 或外部包管理时交给 CMake；是否提供一次性导出命令，等真实需求与二级闸。

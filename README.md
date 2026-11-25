@@ -10,7 +10,7 @@ A declarative, progressive modern C++ build tool.
 
 Describe the build in `cizon.toml` and compile/run C++ from concise terminal commands, bringing a cargo-like experience to small and medium projects.
 
-Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, validation of subproject git sources and include roots, and PUBLIC per-target compile definitions. `cizon clean` removes only `build/`, while `--verbose` prints actual compiler, archiver and linker commands. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
+Current version: **v0.10.0**. Adds local `[subproject]` composition: library/test directories contribute targets to one root build without duplicate declarations, with plan-time duplicate-header checks, case-insensitive name handling, validation of subproject git sources and include roots, PUBLIC per-target compile definitions, `[project].defines` for implicit projects, and temporary CLI `-D` overrides. `cizon clean` removes only `build/`, `--verbose` prints actual tool commands, and help uses Cargo-style colored sections. This sits on top of v0.9.6's reliability release (atomic writes, project-level build lock, regression coverage), v0.9.4's `cizon help toml`, v0.9.3's rename, edition validation and output cleanup, and v0.9.1's library project templates. Targets Windows and Linux x86-64; supports g++ or clang++, not MSVC yet. macOS is not supported.
 
 > **Status:** personally maintained, pre-1.0 and still evolving. It is dogfooded on small real projects; expect breaking changes between minor versions.
 
@@ -264,7 +264,7 @@ cizon sync --check
 
 ### `cizon clean`
 
-Removes only the project's `build/` directory and all compiler/mode-scoped artifacts inside it. If `build` itself is a symlink or junction, cizon removes the link and preserves its target. It does not delete `cizon.toml`, `cizon.lock`, `deps/`, `compile_commands.json`, editor configuration, or source files. The command requires `cizon.toml` in the current directory but intentionally does not validate it, so a broken configuration can still be cleaned. If another build holds the project lock, clean reports the existing lock error rather than deleting artifacts underneath it.
+Removes only the project's `build/` directory and all compiler/mode-scoped artifacts inside it. If `build` itself is a symlink or junction, cizon removes only the link and preserves its target. It does not delete `cizon.toml`, `cizon.lock`, `deps/`, `compile_commands.json`, editor configuration, or source files. The command requires `cizon.toml` in the current directory but intentionally does not validate it, so a broken configuration can still be cleaned. For a real build directory, an active project lock is reported as an error rather than ignored.
 
 ```bash
 cizon clean
@@ -434,7 +434,7 @@ include = "include"
 ```
 
 - A subproject provides `static_lib`, `shared_lib`, and `test` targets only; a `bin` there is a plan error. Both the declaring file and each subproject must declare at least one `[[target]]`. Target names are globally unique and case-insensitive.
-- Paths must stay inside the root project, including after resolving symlinks/junctions. Each subproject's `sources`, `include`, and `prefix` resolve against its own directory. Public headers stay with their library and propagate through target `include` as usual.
+- Paths must stay inside the root project, including after resolving symlinks/junctions. A `[subproject]` path resolves against the `cizon.toml` that declares it; each subproject's `sources`, `include`, and `prefix` resolve against its own directory. Public headers stay with their library and propagate through target `include` as usual.
 - The root `[compiler]` and `[project].edition` win. A subproject's `[compiler]` is ignored with a warning, as is a differing edition; neither creates a separate toolchain configuration.
 - Subproject `[dependencies]` merge into the root dependency set. Names are case-insensitive, but every file must use the same key spelling: case-only duplicates are errors, the same exact key with a different git URL or tag is an error, and exact duplicate declarations deduplicate. Because checkouts are cloned from the root, subproject git sources must be absolute paths or URL/SSH forms, not relative paths.
 - `cizon update <name>` can update a dependency declared in any included file, but writes only the root `cizon.lock`. `cizon sync` restores all merged dependencies from that lock into the root `deps/`; `sync --check` verifies them without network access or writes.

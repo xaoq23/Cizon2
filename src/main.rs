@@ -71,7 +71,7 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   # headers plus src/*.cpp. Cizon compiles those sources directly, without dependency build/install.
 
 [subproject]                   # local composition, not a workspace
-  net = "libs/net"             # name → project-relative directory of a nested cizon project
+  net = "libs/net"             # directory relative to the declaring cizon.toml
   # One root build/lock/compiler/edition; no independent subproject build or release.
   # The declaring file and every subproject must declare [[target]]. A subproject provides
   # static_lib, shared_lib and test targets only — no bin. Paths must stay inside the root;
@@ -224,6 +224,12 @@ fn dispatch(args: &[String]) -> i32 {
         return 0;
     }
     let cmd = args[0].as_str();
+    if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h")) {
+        if let Some(text) = command_usage(cmd) {
+            print_help(text);
+            return 0;
+        }
+    }
     match cmd {
         "help" => {
             match args.get(1).map(|s| s.as_str()) {
@@ -247,13 +253,6 @@ fn dispatch(args: &[String]) -> i32 {
             return 0;
         }
         _ => {}
-    }
-    // Per-command help: `cizon <command> --help` / `-h`.
-    if matches!(args.get(1).map(|s| s.as_str()), Some("--help" | "-h")) {
-        if let Some(text) = command_usage(cmd) {
-            print_help(text);
-            return 0;
-        }
     }
     match cmd {
         "build" => top_err(build_cmd(&args[1..])),
@@ -457,7 +456,8 @@ Options:
 
 Removes only this project's build/ directory. It does not delete cizon.toml,
 cizon.lock, deps/, compile_commands.json, editor configuration or source files.
-The operation reports the existing project-lock error if another cizon build is running."#,
+For a real build directory, an active cizon build lock is reported as an error.
+If build is a symlink or junction, only the link is removed and its target kept."#,
         "toml" => TOML_HELP,
         "help" => r#"cizon help — show help
 
@@ -955,6 +955,8 @@ mod tests {
             assert!(toml.contains(needle), "toml help is missing {needle}");
         }
         assert_eq!(dispatch(&args(&["build", "--help"])), 0);
+        assert_eq!(dispatch(&args(&["version", "--help"])), 0);
+        assert_eq!(dispatch(&args(&["help", "--help"])), 0);
         assert_eq!(dispatch(&args(&["test", "-h"])), 0);
         assert_eq!(dispatch(&args(&["help", "nope"])), 2);
         assert_eq!(dispatch(&args(&["sync", "extra"])), 1);

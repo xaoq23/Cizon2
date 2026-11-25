@@ -6,7 +6,7 @@
 
 用 `cizon.toml` 声明构建配置，在终端用简洁命令完成 C++ 编译与运行，以接近 cargo 的体验服务**中小型项目**。
 
-当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验，以及 PUBLIC per-target 编译定义。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际的编译器、归档器与链接器命令。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
+当前版本：**v0.10.0**。新增本地 `[subproject]` 组合：库/test 目录把 target 并入同一个根构建，无需重复声明，附带 plan 期重复头文件检查、大小写不敏感的名字处理、子项目 git 源与 include 根校验、PUBLIC per-target 编译定义、隐式项目的 `[project].defines`，以及临时 CLI `-D` 覆盖。`cizon clean` 只清理 `build/`，`--verbose` 会打印实际工具命令，帮助采用 Cargo 风格彩色分节。在此前 v0.9.6 的可靠性版本（原子写、项目级构建锁、回归覆盖）、v0.9.4 的 `cizon help toml`、v0.9.3 的改名/edition 校验/输出简化、v0.9.1 的库项目模板之上。面向 Windows 与 Linux x86-64，支持 g++ 或 clang++，暂不支持 MSVC。macOS 未支持。
 
 > **状态说明：** 个人维护的 pre-1.0 项目，持续演进。
 
@@ -80,7 +80,7 @@ $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 Linux：
 
 ```bash
-install -Dm755 cizon-vX.X.X-linux-x86_64 ~/.local/bin/cizon
+install -Dm755 cizon-v0.10.0-linux-x86_64 ~/.local/bin/cizon
 # 若 ~/.local/bin 不在 PATH 中，加入它：
 export PATH="$HOME/.local/bin:$PATH"
 ```
@@ -164,7 +164,7 @@ hello/
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
 - 显式指定的编译器不可用时会直接报错，不会静默回退；未指定时按 g++ → clang++ 探测，g++ 缺失会打印回退提示
-- CLI 宏只作用于当前进程：覆盖 `[compiler].flags` 与 target `defines`，不写入 `cizon.toml` 或 `cizon.lock`，不影响 git 依赖源码，并进入编译参数指纹触发下次重编
+- CLI 宏只作用于当前进程：覆盖 `[compiler].flags` 与 target `defines`，不写入 `cizon.toml` 或 `cizon.lock`，不影响 git 依赖源码，并进入编译参数指纹触发下次重编与重链
 - 产物位于 `build/<mode>-<compiler>/`；不同模式或编译器之间不会混链
 - `build` 只接受上面的选项，不接受程序参数；要传参请用 `run`
 
@@ -260,7 +260,7 @@ cizon sync --check
 
 ### `cizon clean`
 
-只删除项目根目录下的 `build/`，包括其中不同 mode 与 compiler 的全部产物。若 `build` 本身是符号链接或 junction，只移除链接本身并保留目标。它不会删除 `cizon.toml`、`cizon.lock`、`deps/`、`compile_commands.json`、编辑器配置或源码。命令要求当前目录存在 `cizon.toml`，但不会校验配置内容，因此配置写错时仍能清理产物。若其他构建正持有项目锁，clean 会沿用同一锁错误提示，不会从构建过程中删除产物。
+只删除项目根目录下的 `build/`，包括其中不同 mode 与 compiler 的全部产物。若 `build` 本身是符号链接或 junction，只移除链接本身并保留目标。它不会删除 `cizon.toml`、`cizon.lock`、`deps/`、`compile_commands.json`、编辑器配置或源码。命令要求当前目录存在 `cizon.toml`，但不会校验配置内容，因此配置写错时仍能清理产物。对于真实的 build 目录，活动构建锁会直接报错而不是被忽略。
 
 ```bash
 cizon clean
@@ -430,7 +430,7 @@ include = "include"
 ```
 
 - 子项目只提供 `static_lib`、`shared_lib` 和 `test` target；里面写 `bin` 会在 plan 阶段报错。声明 `[subproject]` 的文件和每个子项目自身都必须至少声明一个 `[[target]]`。target 名全局唯一且不区分大小写。
-- 路径必须位于根项目内，解析符号链接/junction 后也不能越界。每个子项目的 `sources`、`include`、`prefix` 都相对它自己的目录解析。公开头留在所属库内，并沿 target `include` 照常传播。
+- 路径必须位于根项目内，解析符号链接/junction 后也不能越界。`[subproject]` 路径相对声明它的那个 `cizon.toml` 解析；每个子项目的 `sources`、`include`、`prefix` 都相对它自己的目录解析。公开头留在所属库内，并沿 target `include` 照常传播。
 - 根项目的 `[compiler]` 和 `[project].edition` 优先。子项目的 `[compiler]` 会被忽略并给出警告，不同的 edition 也会被忽略；两者都不会形成独立的工具链配置。
 - 子项目的 `[dependencies]` 合并进根依赖集。依赖名不区分大小写，但所有文件必须使用相同的 key 拼写：仅大小写不同的重复项会报错，完全相同的 key 配不同的 git URL 或 tag 会报错，完全相同的声明去重。由于 checkout 从根目录克隆，子项目的 git 来源必须是绝对路径或 URL/SSH 形式，不能是相对路径。
 - `cizon update <名字>` 可以更新任一被包含文件声明的依赖，但只写根目录的 `cizon.lock`。`cizon sync` 按该锁把合并后的全部依赖恢复到根目录 `deps/`；`sync --check` 不联网、不写文件，只做校验。
