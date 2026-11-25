@@ -2,13 +2,12 @@
 
 > 生成时间：2026-11-25  
 > 仓库：`C:\Users\zzh\NUFE\Programming\Rust\Cizon2`  
-> 当前分支：`feat/builtin-macros`（未发布功能分支；`main` 仍为 v0.10.2）  
-> 最新功能提交：`4e2c51a feat: scope built-in macros to each declaring project`  
-> tag `v0.10.2` 指向：`0bf716e docs: finalize v0.10.2 handoff`  
-> 当前版本：`0.10.2`（内置宏功能尚未 bump 版本）  
+> 当前分支：`main`（`feat/builtin-macros` 已 ff 合入）  
+> tag `v0.11.0` 指向：`d6c1d9e chore: bump to 0.11.0`（其后仅有交接文档更新提交）  
+> 当前版本：`0.11.0`  
 > 工作区：干净（本次交接更新提交后）  
-> 最新成功 Release：`v0.10.2`（工作流 run `45552996160` success）  
-> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.10.2>
+> 最新成功 Release：`v0.11.0`（工作流 run `45562894794` success）  
+> Release URL：<https://github.com/xaoq23/Cizon2/releases/tag/v0.11.0>
 
 接手顺序建议：
 
@@ -48,16 +47,16 @@ cizon build && cizon run
 
 ### 已完成
 
-- **当前发布：`v0.10.2`** 已打 annotated tag 并 push，Release 工作流成功：run `45552996160`。
+- **当前发布：`v0.11.0`** 已打 annotated tag 并 push，Release 工作流成功：run `45562894794`。
 - 资产已上传并通过 SHA-256 校验：
-  - `cizon-v0.10.2-windows-x86_64.exe`
-  - `cizon-v0.10.2-linux-x86_64`
+  - `cizon-v0.11.0-windows-x86_64.exe`
+  - `cizon-v0.11.0-linux-x86_64`
   - 两者各自 `.sha256`
-- Windows SHA-256：`6d7980ef9a33e7acbe71276cdb47088ab9df8b524a9010e2f2a741a07c598980`
-- Linux SHA-256：`425d811265f0d70a859fcae93d113fb3e7c83984d401a0a3cb993f2fe2da07e4`
-- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.10.2`
-- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，版本 `0.10.2`
-- 历史：`v0.10.1` 已发布（run `45544757118`，Windows SHA `aab59dc0…`、Linux SHA `88f28a7d…`）。
+- Windows SHA-256：`683ca42a098d7fdf8f776478f5b9ec131d01ad0e27014c01d37759dc25b1bcee`
+- Linux SHA-256：`73cd2ce4ab749be85eaafd9c81a8c2e2ec7f1e3e5e80a717a9dd2090b17fdd49`
+- Windows 本机安装：`C:\Users\zzh\.cargo\bin\cizon.exe`，版本 `0.11.0`
+- Arch WSL 安装：`/home/zzh/.local/bin/cizon`，版本 `0.11.0`（网络受限时改在 Windows 侧下载，经 `/mnt/c` 复制后安装）
+- 历史：`v0.10.2` 已发布（run `45552996160`，Windows SHA `6d7980ef…`、Linux SHA `425d8112…`）。
 
 ### 特殊历史：`v0.10.0` tag 已公开但 Release 失败
 
@@ -80,7 +79,7 @@ cizon build && cizon run
 - 增量：共享 project-state 变化时同时清理 `obj/` 与 `test-obj/`，避免 `test → build` 复用旧 bin 对象；共享库临时目录含 sidecar 一并回收
 - clean：符号链接/junction 分支也检查活动构建锁；锁记录解析后的绝对路径，删链接后仍可清除目标中的锁；删除非幂等问题修复；VS Code 生成失败改用标准 Warning 样式
 
-### 开发中（未发布）：内置项目身份宏
+### v0.11.0（已发布）：内置项目身份宏
 
 - `CIZON_PROJECT_NAME`（字符串，始终有值）与 `CIZON_PROJECT_VERSION`（字符串，仅所属项目声明 `version` 时定义）
 - 每个 target 取声明它的 cizon.toml（根或子项目）的有效 name/version；name 缺省按该目录名推导，version 缺省不定义宏
@@ -243,6 +242,10 @@ wsl.exe -d Archlinux bash -lc 'cd /mnt/c/Users/zzh/NUFE/Programming/Rust/Cizon2 
 ```text
 4e2c51a feat: scope built-in macros to each declaring project
 12102be feat: inject built-in project identity macros
+d6c1d9e chore: bump to 0.11.0
+b9db9ce docs: handoff for built-in identity macros
+4e2c51a feat: scope built-in macros to each declaring project
+12102be feat: inject built-in project identity macros
 5a765c7 fix: polish v0.10.2 review nitpicks
 caa8d83 fix: address v0.10.2 re-review findings
 7cfb8ad fix: keep build lock clean and normalize release concurrency
@@ -262,7 +265,8 @@ Tags：
 
 - `v0.10.0`：已公开，但对应 Release 工作流失败；**不要移动**。
 - `v0.10.1`：当前成功发布版本。
-- `v0.10.2`：当前成功发布版本；不要移动已发布 tag。
+- `v0.10.2`：已发布；不要移动已发布 tag。
+- `v0.11.0`：当前成功发布版本；不要移动已发布 tag。
 - 更早：`v0.9.6` 等，均已发布。
 
 ---
@@ -337,7 +341,7 @@ P1/P2 产品能力仍 deferred：
 默认不要立刻扩功能。优先：
 
 1. 复跑 `cargo test` + Linux release 门禁，确认环境。
-2. 若用户没有明确新需求，保持 v0.10.2 已发布状态；`feat/builtin-macros` 是待发布功能分支，尚未 bump 版本/打 tag。
+2. 若用户没有明确新需求，保持 v0.11.0 已发布状态。
 3. 剩余 P2/P3（重复头扫描成本等）先确认真实痛点，再设计/测试后动。
 4. 发布新版本时不要移动 `v0.10.0` / `v0.10.1` / `v0.10.2`；用新 tag。
 5. 任何新功能先读 AGENTS 边界并征得用户同意。
