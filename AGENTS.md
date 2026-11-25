@@ -49,7 +49,8 @@
 - `[subproject]` 不是 workspace：根统一 compiler/edition/deps/lock；子项目只提供 static_lib/shared_lib/test，路径必须在根内，依赖 git URL 必须绝对、URL 或 SCP 风格 SSH，target 名全局唯一且不区分大小写；声明文件与子项目自身都必须有 `[[target]]`。依赖名不区分大小写，但 key 拼写必须一致；完全重复声明去重，git/tag 冲突或仅大小写不同的重复报错。嵌套允许、环报错、菱形去重
 - `new` / `init` 默认生成隐式单 bin；`--kind static_lib|shared_lib` 生成 target 库项目，公共头放 `include/<name>/`，不复制到根 `include/`
 - `static_lib` 可链接 `static_lib`（公共依赖），`shared_lib` 只能链接 `static_lib`，bin/test 可混合链接；静态依赖图按依赖方在前自动排序，环直接报错（不加 `--start-group`）
-- bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；`[project].version` 仅元数据；对象路径镜像源相对路径，同目录同 stem 冲突
+- bin 的 name 在只有一个 bin 时可省略并默认项目名；多个 bin 必须显式命名；对象路径镜像源相对路径，同目录同 stem 冲突
+- 内置宏：`CIZON_PROJECT_NAME`（字符串，始终定义）与 `CIZON_PROJECT_VERSION`（字符串，仅在声明 `[project].version` 时定义）注入所有项目 target，不注入 git 依赖；内置宏最先注入、无覆盖机制，`CIZON_` 前缀保留给 cizon（用户在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义即报错）；改动触发全项目重编
 - release 构建为项目与依赖源码定义 `-DNDEBUG`（`-O2 -DNDEBUG`）；test target 不继承 `-DNDEBUG`，避免 assert 测试静默空转；test 对象独立存放在 `build/<mode>-<compiler>/test-obj/<name>/`，`build` / `run` 不构建 test target
 - `extern_links` 仅 test target 可写，按声明顺序映射为链接期 `-l<name>`；不探测、不下载、不锁版本；头文件在默认搜索路径或由 `prefix` 提供
 - git 依赖约定为 `deps/<name>/include/` 头文件与平铺的 `src/*.cpp`；cizon 直接 checkout 并编译这些源码，不执行依赖自带的构建/安装步骤；其他布局交给 CMake

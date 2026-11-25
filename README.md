@@ -26,6 +26,7 @@ Current version: **v0.10.2**. Adds local `[subproject]` composition: library/tes
 - `cizon run <bin>` selects a target to run; `build` builds every bin/library target
 - v0.7: `kind = "test"` + `cizon test`, framework-agnostic with the exit code as the contract; `extern_links` maps external library names to `-l`
 - Git dependencies with a lock file: `cizon add` / `cizon update` / `cizon sync`; `sync --check` verifies a locked checkout in CI without writing
+- Built-in string macros `CIZON_PROJECT_NAME` and (when declared) `CIZON_PROJECT_VERSION` let code report its own identity; the `CIZON_` prefix is reserved
 - `--quiet` silences build/run/test progress lines (errors, warnings and program output still print)
 - `--verbose` prints compiler, archiver, linker and selected program/test commands on stderr; `cizon clean` removes only `build/`
 - Optional `compile_commands.json` for clangd / clang-tidy, plus a VS Code IntelliSense config when missing
@@ -168,7 +169,7 @@ Builds every bin, static library, and shared library in the plan, compiling only
 
 - `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
 - An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon probes g++ → clang++ and prints a notice when g++ is missing
-- CLI definitions apply only to the current process: they override `[compiler].flags` and target `defines`, are not written to `cizon.toml` or `cizon.lock`, do not affect git dependency sources, and invalidate object/link state on the next build
+- CLI definitions apply only to the current process: they override `[compiler].flags` and target `defines`, are not written to `cizon.toml` or `cizon.lock`, do not affect git dependency sources, and invalidate object/link state on the next build. The `CIZON_` prefix is reserved for built-in macros and cannot be used here
 - Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers never happens
 - `build` accepts only the options above and no program arguments; use `run` to pass arguments
 
@@ -340,7 +341,7 @@ Full example:
 ```toml
 [project]
 name = "hello"
-version = "0.1.0"           # optional; metadata only
+version = "0.1.0"           # optional; defines CIZON_PROJECT_VERSION
 edition = "c++23"           # optional; defaults to -std=c++23
 sources = ["src/main.cpp"]  # optional; file or directory; defaults to scanning src/
 defines = ["FEATURE_X"]     # optional; implicit single-bin only
@@ -360,14 +361,15 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | Key | Required | Default | Meaning |
 |---|---|---|---|
 | `name` | No | Directory name | Project name; determines the default bin name and exe name |
-| `version` | No | None | Metadata only; not used for compilation or artifact names |
+| `version` | No | None | Defines the string macro `CIZON_PROJECT_VERSION`; no artifact-name effect |
 | `edition` | No | `c++23` | Produces `-std=...` |
 | `sources` | No | Scan `src/` | Sources of the only bin; only valid without `[[target]]` |
 | `defines` | No | Empty | Compile macros for the implicit single-bin project; rejected with `[[target]]` |
 | `compile_commands` | No | `false` | Generates `compile_commands.json` and the VS Code config |
 
 - `name` becomes a file name: no path separators or Windows-reserved characters, not `.` / `..`, no leading dot, and no device names such as `con` / `nul` or internal directories such as `obj` / `lib` / `deps-obj`.
-- `version` must be non-empty and free of control characters; no generated header or compile macro exists yet, and that waits for a real consumer.
+- `version` must be non-empty and free of control characters. When present, it becomes the string macro `CIZON_PROJECT_VERSION`; when absent, the macro is not defined (`#ifdef` can detect this). Changing it rebuilds every project target.
+- Built-in macros: `CIZON_PROJECT_NAME` (the effective project name, always defined) and `CIZON_PROJECT_VERSION` (only with `version`) are string literals available to all project targets, including tests, and never to git dependency sources. They are added before user flags; the `CIZON_` prefix is reserved, so defining a `CIZON_*` macro in `defines`, `-D`, or `[compiler].flags` is an error.
 - `edition` is validated while loading `cizon.toml`: accepted versions are 98 / 03 / 11 / 14 / 17 / 20 / 23 / 26, optionally prefixed with `c++` or `gnu++`, plus the aliases 0x / 1y / 1z / 2a / 2b / 2c. A bare value such as `"17"` becomes `c++17`. Invalid values fail before the compiler runs
 - `sources` holds project-relative paths and may mix files and directories; directories are scanned recursively for `.cpp` / `.cc` / `.cxx`. Every path must exist, cannot be absolute or contain `..`, and a directory reached through a symlink/junction outside the project is rejected.
 - `sources` and `[[target]]` are mutually exclusive: with targets, sources belong to each target. Omitting `sources` scans `src/`.
@@ -704,7 +706,7 @@ cizon puts the compiler's bin directory first in the child PATH for `run` / `tes
 - Multiple DLLs sit next to the exe; the Windows loader finds them without PATH changes
 - The project-root `include/` is the only automatic project public-header `-I`; a target's `include` is explicit and propagates through `links`, and dependency directories are also added automatically. Keep private headers out of all of them and do not expose them with a global `-Ilib`
 - `sources` must be project-relative paths; a build with an older object layout does one full rebuild
-- `[project].version` is metadata only; it does not affect compilation or artifact names
+- `[project].version` feeds `CIZON_PROJECT_VERSION`; it still does not affect artifact names
 - A project-level lock (`build/.cizon-build.lock`) rejects a second concurrent build; delete a stale lock only when no build is running
 - Turning `compile_commands` off does not delete an existing `compile_commands.json` or `.vscode/c_cpp_properties.json`; delete them manually when no longer needed
 - Unknown sections or unknown keys in known sections are hard errors, never silently ignored
@@ -746,7 +748,6 @@ The goal is first-class breakpoint debugging, but **cizon does not implement a d
 - Arbitrary per-target compile flags, PRIVATE/INTERFACE definitions, and conditional target selection
 - install/export, a one-shot CMake export command
 - MSVC, cross-compilation, external package managers
-- Consumers of a generated header/compile macro for `[project].version`
 - Compiler discovery in common install locations and version selection
 
 ## When to use CMake

@@ -48,7 +48,7 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
 
 [project]
   name = "app"                 # optional; defaults to the directory name
-  version = "0.1.0"            # optional metadata only
+  version = "0.1.0"            # optional; defines CIZON_PROJECT_VERSION when present
   edition = "c++23"            # optional; default c++23; validated before compilation
   sources = ["src"]            # optional; only without [[target]]; files/dirs recursive
   defines = ["FEATURE"]        # optional; implicit single-bin only, rejected with [[target]]
@@ -106,6 +106,10 @@ Rules:
     [compiler].flags, so target definitions override global ones without redefinition warnings.
     Git dependency sources do not inherit them. Identical definitions deduplicate; conflicting values
     in one link closure are plan errors. Test sources strip NDEBUG after propagation.
+  - Built-in macros CIZON_PROJECT_NAME (always) and CIZON_PROJECT_VERSION (only when version is
+    declared) are string literals available to every project target, never to git dependencies.
+    They are added before all user flags. The CIZON_ prefix is reserved: defining a CIZON_* macro
+    in defines, -D, or [compiler].flags is an error. Changing a built-in value rebuilds the project.
   - Duplicate public-header paths across root include/, dependency include roots, and target/library
     include roots are plan errors; Windows compares case-insensitively. Dependency-vs-dependency
     collisions remain allowed. Include directory links must stay inside the project, are scanned,
@@ -873,6 +877,11 @@ mod tests {
 
         let input = args(&["--define=TEST=1"]);
         assert!(parse_test_args(&input).is_err(), "unsupported syntax must be rejected");
+
+        for bad in [args(&["-DCIZON_FOO=1"]), args(&["--define", "CIZON_FOO=1"])] {
+            let err = parse_flags(&bad).unwrap_err();
+            assert!(err.contains("reserved") || err.contains("CIZON_"), "got: {err}");
+        }
         for input in [
             args(&["-D"]),
             args(&["-D1BAD"]),

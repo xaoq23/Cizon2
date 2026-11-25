@@ -22,6 +22,7 @@
 - `cizon run <bin>` 选择运行目标，`build` 构建全部 bin/库 target
 - v0.7：`kind = "test"` + `cizon test`，框架无关、退出码即契约；`extern_links` 只把外部库名映射为 `-l`
 - git 依赖 + 锁文件：`cizon add` / `cizon update` / `cizon sync`；`sync --check` 在 CI 中只校验锁、不写文件
+- 内置字符串宏 `CIZON_PROJECT_NAME` 与（声明后）`CIZON_PROJECT_VERSION`，代码可报告自身身份；`CIZON_` 前缀保留
 - `--quiet` 关闭 build/run/test 的进度行（错误、警告与程序输出仍照常）
 - `--verbose` 在 stderr 打印编译器、归档器、链接器及选中的程序/test 命令；`cizon clean` 只删除 `build/`
 - 可选生成 `compile_commands.json` 供 clangd / clang-tidy 使用；缺失时补 VS Code IntelliSense 配置
@@ -164,7 +165,7 @@ hello/
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
 - 显式指定的编译器不可用时会直接报错，不会静默回退；未指定时按 g++ → clang++ 探测，g++ 缺失会打印回退提示
-- CLI 宏只作用于当前进程：覆盖 `[compiler].flags` 与 target `defines`，不写入 `cizon.toml` 或 `cizon.lock`，不影响 git 依赖源码，并进入编译参数指纹触发下次重编与重链
+- CLI 宏只作用于当前进程：覆盖 `[compiler].flags` 与 target `defines`，不写入 `cizon.toml` 或 `cizon.lock`，不影响 git 依赖源码，并进入编译参数指纹触发下次重编与重链。`CIZON_` 前缀保留给内置宏，不能在此使用
 - 产物位于 `build/<mode>-<compiler>/`；不同模式或编译器之间不会混链
 - `build` 只接受上面的选项，不接受程序参数；要传参请用 `run`
 
@@ -336,7 +337,7 @@ name = "hello"
 ```toml
 [project]
 name = "hello"
-version = "0.1.0"           # 可选；仅元数据
+version = "0.1.0"           # 可选；定义 CIZON_PROJECT_VERSION
 edition = "c++23"           # 可选；缺省 -std=c++23
 sources = ["src/main.cpp"]  # 可选；文件或目录；缺省扫描 src/
 defines = ["FEATURE_X"]     # 可选；仅隐式单 bin 模式
@@ -356,14 +357,15 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | 键 | 必填 | 缺省 | 说明 |
 |---|---|---|---|
 | `name` | 否 | 目录名 | 项目名；决定默认 bin 名与 exe 名 |
-| `version` | 否 | 无 | 仅元数据，不参与编译或产物命名 |
+| `version` | 否 | 无 | 定义字符串宏 `CIZON_PROJECT_VERSION`；不影响产物命名 |
 | `edition` | 否 | `c++23` | 生成 `-std=...` |
 | `sources` | 否 | 扫描 `src/` | 唯一 bin 的源码；仅在无 `[[target]]` 时可用 |
 | `defines` | 否 | 空 | 隐式单 bin 的编译宏；与 `[[target]]` 同时使用会报错 |
 | `compile_commands` | 否 | `false` | 生成 `compile_commands.json` 与 VS Code 配置 |
 
 - `name` 会成为文件名：不能包含路径分隔符或 Windows 保留字符，不能是 `.` / `..`、不能以 `.` 开头，也不能使用 `con`、`nul` 等设备名或 `obj` / `lib` / `deps-obj` 这些内部目录名。
-- `version` 不能为空，也不能包含控制字符；当前没有生成头或编译宏，等真实消费者出现再扩展。
+- `version` 不能为空，也不能包含控制字符。声明后成为字符串宏 `CIZON_PROJECT_VERSION`；未声明则该宏不存在（可用 `#ifdef` 判断）。改动会触发所有 project target 重编。
+- 内置宏：`CIZON_PROJECT_NAME`（有效项目名，始终定义）与 `CIZON_PROJECT_VERSION`（仅在声明 `version` 时定义）是字符串字面量，作用于所有 project target（含 test），不传给 git 依赖源码。它们最先注入，`CIZON_` 前缀保留给 cizon：在 `defines`、CLI `-D` 或 `[compiler].flags` 中定义 `CIZON_*` 宏会报错。
 - `edition` 在加载 `cizon.toml` 时校验：接受 98 / 03 / 11 / 14 / 17 / 20 / 23 / 26，可带 `c++` 或 `gnu++` 前缀，另接受别名 0x / 1y / 1z / 2a / 2b / 2c；裸值（如 `"17"`）会补成 `c++17`。非法值在编译器启动前直接报错
 - `sources` 是项目内相对路径，可同时列文件和目录；目录会递归扫描 `.cpp` / `.cc` / `.cxx`。路径必须存在，不能是绝对路径或包含 `..`，目录也不能通过符号链接/junction 指向项目外。
 - `sources` 与 `[[target]]` 互斥：一旦声明 target，源码必须写进各自的 target。省略 `sources` 时扫描 `src/`。
@@ -700,7 +702,7 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 - 多个 DLL 与 exe 放在同一目录，Windows loader 不需要额外 PATH
 - 项目根 `include/` 是唯一自动加入的项目公开头 `-I`；target 的 `include` 显式声明并沿 `links` 传播，依赖目录也会自动加入。私有头不要放进这些目录，也不要用全局 `-Ilib` 暴露
 - `sources` 必须是项目内相对路径；旧对象布局首次构建会全量重编一次
-- `[project].version` 当前仅作元数据，不参与编译或产物命名
+- `[project].version` 用于定义 `CIZON_PROJECT_VERSION`，但不影响产物命名
 - 项目级锁（`build/.cizon-build.lock`）会拒绝第二个并发 build；确认没有 build 在运行时才删除陈旧锁文件
 - 关闭 `compile_commands` 不会删除已有的 `compile_commands.json` 或 `.vscode/c_cpp_properties.json`，不再需要时手动删除
 - 配置段或已知段内的未知键会直接报错，不会静默忽略
@@ -742,7 +744,6 @@ cizon 在 `run` / `test` 启动子进程时会把编译器 bin 目录置于 PATH
 - 任意 per-target 编译 flags、PRIVATE/INTERFACE 宏定义、条件化 target 选择
 - install/export、一次性 CMake 导出命令
 - MSVC、交叉编译、外部包管理
-- `[project].version` 的生成头/编译宏消费者
 - 编译器常见安装目录发现与版本选择
 
 ## 什么时候该用 CMake

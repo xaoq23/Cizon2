@@ -1414,6 +1414,123 @@
     }
 
     #[test]
+    fn builtin_macros_are_available_to_project_targets() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("builtin-macros");
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "#include <cstring>\n\
+             #ifndef CIZON_PROJECT_NAME\n#error name missing\n#endif\n\
+             #ifndef CIZON_PROJECT_VERSION\n#error version missing\n#endif\n\
+             int main(){ return (std::strcmp(CIZON_PROJECT_NAME, \"t\") == 0 && \
+             std::strcmp(CIZON_PROJECT_VERSION, \"1.2.3\") == 0) ? 0 : 1; }\n",
+        );
+        write_sub(&dir, "tests/t.cpp", "int main(){return 0;}\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\nversion = \"1.2.3\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        assert!(p.flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
+        assert!(p.bins[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_VERSION")));
+        assert!(p.tests[0].compile_flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_version_macro_absent_without_project_version() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("builtin-no-version");
+        write_sub(
+            &dir,
+            "src/main.cpp",
+            "#ifndef CIZON_PROJECT_NAME\n#error name missing\n#endif\n\
+             #ifdef CIZON_PROJECT_VERSION\n#error version should be absent\n#endif\n\
+             int main(){ return 0; }\n",
+        );
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        let exe = build_bins(&dir, &cfg, &p).unwrap().execs[0].1.clone();
+        assert_eq!(run_code(&exe), 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_macros_do_not_reach_git_dependency_sources() {
+        let dir = temp_dir("builtin-deps");
+        fs::write(
+            dir.join("cizon.toml"),
+            "[project]\nname = \"t\"\nversion = \"1.2.3\"\n\n\
+             [dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        assert!(p.flags.iter().any(|f| f.contains("CIZON_PROJECT_NAME")));
+        assert!(
+            !p.dep_base.iter().any(|f| f.contains("CIZON_")),
+            "git dependency sources must not inherit project metadata: {:?}",
+            p.dep_base
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn changing_project_version_rebuilds_objects() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("builtin-version-rebuild");
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.cpp"), "int main(){return 0;}").unwrap();
+        let toml = |version: &str| {
+            format!(
+                "[project]\nname = \"t\"\nversion = \"{version}\"\n\n\
+                 [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\n"
+            )
+        };
+        fs::write(dir.join("cizon.toml"), toml("1.0.0")).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        build_bins(&dir, &cfg, &p).unwrap();
+        let obj = obj_path(&dir, "main");
+        let before = mtime(&obj);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        fs::write(dir.join("cizon.toml"), toml("2.0.0")).unwrap();
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan(&dir, &cfg, cxx, false).unwrap();
+        build_bins(&dir, &cfg, &p).unwrap();
+        assert_ne!(mtime(&obj), before, "changing version must rebuild project objects");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn test_then_build_uses_current_flags_for_bin_objects() {
         // `cizon test` and `cizon build` share the project-state fingerprint. When flags
         // change, running tests first must not leave stale bin objects behind.

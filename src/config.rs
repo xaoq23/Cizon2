@@ -291,6 +291,11 @@ pub(crate) fn validate_define(define: &str) -> Result<(), String> {
             "define {define:?} has an invalid macro name; use NAME or NAME=VALUE with an ASCII identifier and no -D prefix."
         ));
     }
+    if macro_name.starts_with("CIZON_") {
+        return Err(format!(
+            "define {define:?} uses the reserved CIZON_ prefix; it is owned by cizon's built-in macros (CIZON_PROJECT_NAME, CIZON_PROJECT_VERSION) and cannot be defined by a project."
+        ));
+    }
     Ok(())
 }
 
@@ -312,6 +317,43 @@ fn validate_defines(defines: &[String], owner: &str) -> Result<(), String> {
         seen.insert(macro_name.to_string(), value.to_string());
     }
     Ok(())
+}
+
+/// `CIZON_` is reserved for built-in macros. Also catch raw `-D` flags in
+/// `[compiler].flags`, which bypass the structured `defines` validation.
+fn validate_compiler_flags(flags: &[String]) -> Result<(), String> {
+    for (i, flag) in flags.iter().enumerate() {
+        let name = flag.strip_prefix("-D").or_else(|| {
+            if i > 0 && flags[i - 1] == "-D" {
+                Some(flag.as_str())
+            } else {
+                None
+            }
+        });
+        if let Some(name) = name {
+            let name = name.split('=').next().unwrap_or(name);
+            if name.starts_with("CIZON_") {
+                return Err(format!(
+                    "compiler flag {flag:?} uses the reserved CIZON_ prefix; built-in macros cannot be redefined by a project."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Escape a value for use as a C/C++ string literal in a `-D` argument.
+fn c_string_literal(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn validate_target_defines(target: &Target) -> Result<(), String> {
@@ -650,6 +692,9 @@ fn parse(dir: &Path) -> Result<Config, String> {
     }
     if let Some(edition) = cfg.edition() {
         validate_edition(edition)?;
+    }
+    if let Some(compiler) = &cfg.compiler {
+        validate_compiler_flags(&compiler.flags)?;
     }
     if let Some(deps) = &cfg.dependencies {
         let mut seen = HashMap::new();
@@ -1041,6 +1086,30 @@ impl Config {
             .unwrap_or_else(|| "app".into())
     }
 
+    /// Optional project version; absent means no `CIZON_PROJECT_VERSION` macro is defined.
+    pub fn version(&self) -> Option<&str> {
+        self.project
+            .as_ref()
+            .and_then(|p| p.version.as_deref())
+    }
+
+    /// Built-in macros describing the project itself. These are prepended to project
+    /// compile flags (never to dependency flags), so they are the lowest-priority
+    /// definitions and cannot be shadowed because the `CIZON_` prefix is reserved.
+    pub fn builtin_defines(&self, dir: &Path) -> Vec<String> {
+        let mut out = vec![format!(
+            "CIZON_PROJECT_NAME={}",
+            c_string_literal(&self.name(dir))
+        )];
+        if let Some(version) = self.version() {
+            out.push(format!(
+                "CIZON_PROJECT_VERSION={}",
+                c_string_literal(version)
+            ));
+        }
+        out
+    }
+
     pub fn edition(&self) -> Option<&str> {
         self.project.as_ref().and_then(|p| p.edition.as_deref())
     }
@@ -1141,13 +1210,45 @@ mod tests {
     }
 
     #[test]
-    fn project_version_is_metadata_only() {
+    fn project_version_feeds_builtin_macro() {
         let (dir, cfg) = write_config("[project]\nname = \"a\"\nversion = \"1.2.3\"\n");
-        assert_eq!(
-            cfg.project.as_ref().and_then(|p| p.version.as_deref()),
-            Some("1.2.3")
+        assert_eq!(cfg.version(), Some("1.2.3"));
+        let builtins = cfg.builtin_defines(&dir);
+        assert!(builtins.iter().any(|d| d == "CIZON_PROJECT_NAME=\"a\""), "got: {builtins:?}");
+        assert!(
+            builtins.iter().any(|d| d == "CIZON_PROJECT_VERSION=\"1.2.3\""),
+            "got: {builtins:?}"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_version_macro_absent_without_version() {
+        let (dir, cfg) = write_config("[project]\nname = \"a\"\n");
+        let builtins = cfg.builtin_defines(&dir);
+        assert_eq!(builtins.len(), 1, "got: {builtins:?}");
+        assert!(builtins[0].starts_with("CIZON_PROJECT_NAME="));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn builtin_values_escape_c_string_literals() {
+        assert_eq!(c_string_literal("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn cizon_prefix_is_reserved_everywhere() {
+        for bad in [
+            "[project]\nname = \"a\"\ndefines = [\"CIZON_FOO=1\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-DCIZON_FOO=1\"]\n",
+            "[project]\nname = \"a\"\n\n[compiler]\nflags = [\"-D\", \"CIZON_FOO=1\"]\n",
+        ] {
+            let dir = temp_dir("cizon-prefix");
+            std::fs::write(dir.join("cizon.toml"), bad).unwrap();
+            let err = load_resolved(&dir).unwrap_err();
+            assert!(err.contains("reserved") || err.contains("CIZON_"), "got: {err}");
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     #[test]

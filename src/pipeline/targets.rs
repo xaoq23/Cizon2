@@ -189,6 +189,12 @@ pub fn plan_with_defines(
         base.push("-DNDEBUG".into());
     }
     let mut flags = base.clone();
+    // Tool-provided project identity macros come first: they are the lowest-priority
+    // definitions, and the reserved CIZON_ prefix means users cannot redefine them.
+    // They are deliberately not part of `base`, so git dependency sources never see them.
+    for define in cfg.builtin_defines(dir) {
+        flags.push(format!("-D{define}"));
+    }
     // Convenience warning switches expand to fixed flag bundles; user flags come after so they
     // can still override (e.g. -Wno-... or -UNDEBUG). These apply to project sources only, never deps.
     if cfg.strict() {
