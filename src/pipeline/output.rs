@@ -37,11 +37,20 @@ pub(crate) fn command_text(cmd: &Command) -> String {
     let mut parts = vec![quote_arg(&cmd.get_program().to_string_lossy())];
     parts.extend(cmd.get_args().map(|arg| quote_arg(&arg.to_string_lossy())));
     let mut text = parts.join(" ");
-    if cmd
+    if let Some((_, Some(value))) = cmd
         .get_envs()
-        .any(|(key, _)| key == std::ffi::OsStr::new("PATH"))
+        .find(|(key, _)| *key == std::ffi::OsStr::new("PATH"))
     {
-        text.push_str("  [PATH: compiler bin first]");
+        // run/test rebuild PATH as [compiler bin, original PATH...], so the first
+        // entry is exactly the directory cizon injected. Show it instead of a generic marker.
+        let first = std::env::split_paths(value).next();
+        match first {
+            Some(dir) => text.push_str(&format!(
+                "  [PATH + {} first]",
+                quote_arg(&dir.to_string_lossy())
+            )),
+            None => text.push_str("  [PATH overridden]"),
+        }
     }
     text
 }
@@ -202,10 +211,15 @@ mod tests {
     fn command_text_omits_overridden_environment_values() {
         let mut cmd = Command::new("app");
         cmd.arg("a b").arg("-DVALUE=\"x\"");
-        cmd.env("PATH", "SECRET_HUGE_PATH_VALUE");
+        let (first, tail, sep) = if cfg!(windows) {
+            ("C:/toolchain/bin", "C:/huge/other/path", ";")
+        } else {
+            ("/opt/toolchain/bin", "/huge/other/path", ":")
+        };
+        cmd.env("PATH", format!("{first}{sep}{tail}"));
         let text = command_text(&cmd);
-        assert!(!text.contains("SECRET_HUGE_PATH_VALUE"), "got: {text}");
-        assert!(text.contains("[PATH: compiler bin first]"), "got: {text}");
+        assert!(!text.contains(tail), "got: {text}");
+        assert!(text.contains(&format!("[PATH + {first} first]")), "got: {text}");
         assert!(text.contains("\"a b\""), "got: {text}");
         assert!(text.contains("-DVALUE=\\\"x\\\""), "got: {text}");
     }
