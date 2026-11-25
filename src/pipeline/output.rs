@@ -31,8 +31,30 @@ pub(crate) fn verbose() -> bool {
     VERBOSE.load(Ordering::Relaxed)
 }
 
+/// Render only the program and arguments. `Command`'s Debug output also prints every
+/// overridden environment variable, which for `run`/`test` means the entire rebuilt PATH.
 pub(crate) fn command_text(cmd: &Command) -> String {
-    format!("{cmd:?}")
+    let mut parts = vec![quote_arg(&cmd.get_program().to_string_lossy())];
+    parts.extend(cmd.get_args().map(|arg| quote_arg(&arg.to_string_lossy())));
+    let mut text = parts.join(" ");
+    if cmd
+        .get_envs()
+        .any(|(key, _)| key == std::ffi::OsStr::new("PATH"))
+    {
+        text.push_str("  [PATH: compiler bin first]");
+    }
+    text
+}
+
+fn quote_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && !arg
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | '\'' | '$'))
+    {
+        return arg.to_string();
+    }
+    format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 pub(crate) fn command_line(show: bool, quiet: bool, cmd: &Command) -> Option<String> {
@@ -174,6 +196,18 @@ mod tests {
         assert!(text.contains("g++"), "got: {text}");
         assert!(text.contains("file name"), "got: {text}");
         assert!(text.contains("-DVALUE=1"), "got: {text}");
+    }
+
+    #[test]
+    fn command_text_omits_overridden_environment_values() {
+        let mut cmd = Command::new("app");
+        cmd.arg("a b").arg("-DVALUE=\"x\"");
+        cmd.env("PATH", "SECRET_HUGE_PATH_VALUE");
+        let text = command_text(&cmd);
+        assert!(!text.contains("SECRET_HUGE_PATH_VALUE"), "got: {text}");
+        assert!(text.contains("[PATH: compiler bin first]"), "got: {text}");
+        assert!(text.contains("\"a b\""), "got: {text}");
+        assert!(text.contains("-DVALUE=\\\"x\\\""), "got: {text}");
     }
 
     #[test]
