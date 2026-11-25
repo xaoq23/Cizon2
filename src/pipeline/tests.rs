@@ -2249,6 +2249,67 @@
     }
 
     #[test]
+    fn implicit_project_defines_apply_and_cli_wins() {
+        let dir = temp_dir("project-defines");
+        write_sub(&dir, "src/main.cpp", "int main(){return VALUE;}\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\ndefines = [\"VALUE=1\"]\n\n[compiler]\nflags = [\"-DVALUE=0\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let p = plan_with_defines(&dir, &cfg, cxx, false, &["VALUE=2".to_string()]).unwrap();
+        let flags = &p.bins[0].compile_flags;
+        let global = flags.iter().position(|f| f == "-DVALUE=0").unwrap();
+        let project = flags.iter().position(|f| f == "-DVALUE=1").unwrap();
+        let cli = flags.iter().position(|f| f == "-DVALUE=2").unwrap();
+        assert!(global < project && project < cli, "got: {flags:?}");
+        assert!(!p.flags.iter().any(|f| f == "-DVALUE=1" || f == "-DVALUE=2"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn cli_defines_override_targets_without_touching_dependencies() {
+        let dir = temp_dir("cli-defines");
+        write_sub(&dir, "libs/core/src/unit.cpp", "// unit\n");
+        write_sub(&dir, "app/src/main.cpp", "int main(){return 0;}\n");
+        write_sub(&dir, "tests/main.cpp", "int main(){return 0;}\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\n\n\
+             [dependencies]\nfmt = { git = \"https://example.com/fmt\" }\n\n\
+             [[target]]\nname = \"core\"\nkind = \"static_lib\"\nsources = [\"libs/core/src\"]\n\
+             defines = [\"VALUE=1\", \"CORE=1\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"app/src\"]\nlinks = [\"core\"]\n\n\
+             [[target]]\nname = \"t_test\"\nkind = \"test\"\nsources = [\"tests\"]\nlinks = [\"core\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = Cxx { name: "g++".into(), version: "test".into() };
+        let cli = ["VALUE=2".to_string(), "CLI=1".to_string(), "NDEBUG".to_string()];
+        let p = plan_with_defines(&dir, &cfg, cxx, false, &cli).unwrap();
+        let has = |flags: &[String], define: &str| flags.iter().any(|f| *f == format!("-D{define}"));
+        for target in p
+            .libs
+            .iter()
+            .map(|l| &l.compile_flags)
+            .chain(std::iter::once(&p.bins[0].compile_flags))
+            .chain(std::iter::once(&p.tests[0].compile_flags))
+        {
+            assert!(has(target, "CLI=1"), "got: {target:?}");
+            assert!(has(target, "VALUE=2"), "got: {target:?}");
+            let target_value = target.iter().position(|f| f == "-DVALUE=1").unwrap();
+            let cli_value = target.iter().position(|f| f == "-DVALUE=2").unwrap();
+            assert!(target_value < cli_value, "CLI must override target defines: {target:?}");
+        }
+        assert!(!p.tests[0].compile_flags.iter().any(|f| f.contains("NDEBUG")));
+        assert!(!p.dep_base.iter().any(|f| f.contains("CLI") || f.contains("VALUE")));
+        assert!(!p.flags.iter().any(|f| f.contains("CLI") || f.contains("VALUE")));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn public_defines_keep_abi_and_rebuild_when_changed() {
         if !have_compiler() {
             return;
@@ -2304,6 +2365,57 @@
         assert_eq!(mtime(&core_obj), core_t, "a no-op build must keep library objects");
         assert_eq!(mtime(&main_obj), main_t, "a no-op build must keep consumer objects");
         assert_eq!(mtime(&exe), exe_t, "a no-op build must keep the executable");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn cli_defines_are_temporary_and_trigger_rebuild() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("cli-defines-temp");
+        write_sub(&dir, "src/main.cpp", "int main(){return VALUE;}\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\n\n[compiler]\nflags = [\"-DVALUE=1\"]\n\n\
+             [[target]]\nname = \"app\"\nkind = \"bin\"\nsources = [\"src\"]\ndefines = [\"VALUE=2\"]\n",
+        );
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let defined = plan_with_defines(&dir, &cfg, cxx, false, &["VALUE=3".to_string()]).unwrap();
+        let exe = build(&dir, &cfg, &defined).unwrap();
+        assert_eq!(run_code(&exe), 3, "the CLI definition must win for this invocation");
+
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(
+            run_code(&exe),
+            2,
+            "without the CLI override, the TOML target definition must apply again"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn implicit_project_defines_build_and_cli_override() {
+        if !have_compiler() {
+            return;
+        }
+        let dir = temp_dir("project-defines-build");
+        write_sub(&dir, "src/main.cpp", "int main(){return VALUE;}\n");
+        write_sub(
+            &dir,
+            "cizon.toml",
+            "[project]\nname = \"t\"\ndefines = [\"VALUE=1\"]\n",
+        );
+        let exe = build_project(&dir).unwrap();
+        assert_eq!(run_code(&exe), 1, "project defines must reach the implicit bin");
+
+        let cfg = crate::config::load_resolved(&dir).unwrap();
+        let cxx = crate::compiler::pick(None).unwrap();
+        let p = plan_with_defines(&dir, &cfg, cxx, false, &["VALUE=3".to_string()]).unwrap();
+        let exe = build(&dir, &cfg, &p).unwrap();
+        assert_eq!(run_code(&exe), 3, "the CLI must override project defines");
         fs::remove_dir_all(dir).ok();
     }
 

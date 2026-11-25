@@ -23,7 +23,9 @@ pub(crate) mod output;
 mod state;
 mod targets;
 
+#[cfg(test)]
 pub use targets::plan;
+pub use targets::plan_with_defines;
 pub(crate) use output::rel_display;
 
 use compile::*;

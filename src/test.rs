@@ -14,11 +14,24 @@ use crate::pipeline::output::{style_err, verbose_command, CYAN, DIM, GREEN, RED}
 use crate::run;
 
 /// Execute `test [name...] [-- <args>]`; returns the exit code for main.
+#[cfg(test)]
 pub fn test(
     dir: &Path,
     cfg: &Config,
     release: bool,
     cc: Option<&str>,
+    names: &[String],
+    app_args: &[String],
+) -> Result<i32, String> {
+    test_with_defines(dir, cfg, release, cc, &[], names, app_args)
+}
+
+pub fn test_with_defines(
+    dir: &Path,
+    cfg: &Config,
+    release: bool,
+    cc: Option<&str>,
+    defines: &[String],
     names: &[String],
     app_args: &[String],
 ) -> Result<i32, String> {
@@ -46,7 +59,7 @@ pub fn test(
         }
     }
     let compiler_name = cxx.name.clone();
-    let plan = pipeline::plan(dir, cfg, cxx, release)?;
+    let plan = pipeline::plan_with_defines(dir, cfg, cxx, release, defines)?;
     let test_names = plan.test_names();
     for name in names {
         if !test_names.iter().any(|t| t.eq_ignore_ascii_case(name)) {

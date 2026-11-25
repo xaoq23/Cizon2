@@ -135,7 +135,7 @@ Commands that operate on a project (`build` / `run` / `test` / `add` / `update` 
 | `cizon clean` | Remove the project's `build/` directory only |
 | `cizon help [<command>\|toml]` / `cizon version` | General, per-command, or cizon.toml reference / version |
 
-`--quiet` on `build` / `run` / `test` suppresses cizon's own progress lines; errors, compiler warnings and the program/test output still print. `--verbose` prints the actual compiler, archiver and linker commands (and the selected program/test command); `--quiet` and `--verbose` cannot be combined.
+`--quiet` on `build` / `run` / `test` suppresses cizon's own progress lines; errors, compiler warnings and the program/test output still print. `--verbose` prints the actual compiler, archiver and linker commands (and the selected program/test command); `--quiet` and `--verbose` cannot be combined. Repeatable `-D<NAME>[=<VALUE>]` / `--define <NAME[=VALUE]>` adds temporary project-wide macro overrides for that invocation only; later occurrences win.
 
 ### `cizon new <path> [--kind bin|static_lib|shared_lib]`
 
@@ -162,11 +162,13 @@ Builds every bin, static library, and shared library in the plan, compiling only
 |---|---|
 | `--release` | Uses `-O2 -DNDEBUG` (asserts off for project/dependency sources); the default debug build uses `-g`. Test sources always strip NDEBUG |
 | `--compiler <spec>` | Temporarily selects the compiler for this build |
+| `-D<NAME>[=<VALUE>]` / `--define <NAME[=VALUE]>` | Temporarily defines or overrides a project macro; repeatable, later values win |
 | `--quiet` / `-q` | Suppress progress lines; errors, warnings and program output still print |
 | `--verbose` | Print each actual compiler, archiver and linker command line |
 
 - `--compiler` accepts `g++`, `clang++`, or a full path; bare `gcc` / `clang` are normalized to `g++` / `clang++`, and an `@version` suffix is ignored (no version selection)
 - An explicitly selected compiler that cannot be probed is a hard error with no silent fallback; without `--compiler`, cizon probes g++ → clang++ and prints a notice when g++ is missing
+- CLI definitions apply only to the current process: they override `[compiler].flags` and target `defines`, are not written to `cizon.toml` or `cizon.lock`, do not affect git dependency sources, and invalidate object/link state on the next build
 - Artifacts live under `build/<mode>-<compiler>/`; linking across modes or compilers never happens
 - `build` accepts only the options above and no program arguments; use `run` to pass arguments
 
@@ -174,6 +176,8 @@ Builds every bin, static library, and shared library in the plan, compiling only
 cizon build
 cizon build --release
 cizon build --compiler clang++
+cizon build -DLOG_LEVEL=2 -DFEATURE_X
+cizon build --define LOG_LEVEL=3
 ```
 
 ### `cizon run`
@@ -190,6 +194,7 @@ cizon run worker -- --port 8080  # everything after -- goes to the program
 - With multiple bins and no name, cizon reports an error and lists the available bins
 - At most one bin name is accepted; two names are rejected
 - Program arguments must follow `--`; an unknown `-` option before `--` is treated as a cizon option and rejected
+- `-D<NAME>[=<VALUE>]` / `--define` applies temporary macro overrides to the build phase of this run only
 - `run` forwards the program exit code and adds a plain-language explanation for crashes such as `ACCESS_VIOLATION` or `DLL_NOT_FOUND`
 - `run --all` is not supported: multi-process/IPC orchestration belongs in an external harness
 
@@ -206,7 +211,7 @@ cizon test calc_test --verbose          # show build commands and each test comm
 cizon test calc_test -- --gtest_filter=Add*  # everything after -- goes to each test process
 ```
 
-- Accepts `--release`, `--compiler <spec>`, `--quiet`, and `--verbose` like `build` / `run`; the build phase builds the selected test targets and all planned library targets (bins are not built), and `build` / `run` never build or execute test targets
+- Accepts `--release`, `--compiler <spec>`, `--quiet`, `--verbose`, and temporary `-D` / `--define` overrides like `build` / `run`; the build phase builds the selected test targets and all planned library targets (bins are not built), and `build` / `run` never build or execute test targets
 - Any non-zero exit or crash fails the whole run; cizon keeps running the remaining tests and prints a `passed/failed/total` summary
 - Child stdout/stderr are replayed untouched on stderr (cizon's stdout stays empty); `Running`, `Passed` / `Failed`, and the summary also go to stderr
 - With no test targets, `cizon test` prints `no test targets` and exits 0; explicitly naming a missing test is an error
@@ -338,6 +343,7 @@ name = "hello"
 version = "0.1.0"           # optional; metadata only
 edition = "c++23"           # optional; defaults to -std=c++23
 sources = ["src/main.cpp"]  # optional; file or directory; defaults to scanning src/
+defines = ["FEATURE_X"]     # optional; implicit single-bin only
 compile_commands = true     # optional; generates the compilation database and VS Code config
 
 [compiler]
@@ -357,6 +363,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | `version` | No | None | Metadata only; not used for compilation or artifact names |
 | `edition` | No | `c++23` | Produces `-std=...` |
 | `sources` | No | Scan `src/` | Sources of the only bin; only valid without `[[target]]` |
+| `defines` | No | Empty | Compile macros for the implicit single-bin project; rejected with `[[target]]` |
 | `compile_commands` | No | `false` | Generates `compile_commands.json` and the VS Code config |
 
 - `name` becomes a file name: no path separators or Windows-reserved characters, not `.` / `..`, no leading dot, and no device names such as `con` / `nul` or internal directories such as `obj` / `lib` / `deps-obj`.
@@ -364,6 +371,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - `edition` is validated while loading `cizon.toml`: accepted versions are 98 / 03 / 11 / 14 / 17 / 20 / 23 / 26, optionally prefixed with `c++` or `gnu++`, plus the aliases 0x / 1y / 1z / 2a / 2b / 2c. A bare value such as `"17"` becomes `c++17`. Invalid values fail before the compiler runs
 - `sources` holds project-relative paths and may mix files and directories; directories are scanned recursively for `.cpp` / `.cc` / `.cxx`. Every path must exist, cannot be absolute or contain `..`, and a directory reached through a symlink/junction outside the project is rejected.
 - `sources` and `[[target]]` are mutually exclusive: with targets, sources belong to each target. Omitting `sources` scans `src/`.
+- `defines` uses the same `NAME` / `NAME=VALUE` syntax as target defines and is valid only without `[[target]]`. It follows `[compiler].flags`, is overridden by temporary CLI `-D` / `--define`, and never reaches git dependency sources. With targets, declare defines on each target instead.
 - With `compile_commands = true`, every build writes `compile_commands.json`; a missing `.vscode/c_cpp_properties.json` is also created (existing files are never overwritten). Turning it off stops updates but does not delete generated files.
 
 ### `[compiler]`
@@ -512,7 +520,7 @@ Rules:
 - Include-directory symlinks/junctions are scanned for duplicates and must stay inside the project; cycle guards prevent repeated scanning
 - For `static_lib` / `shared_lib`, `include` is PUBLIC: the library's own sources use it, and every direct or transitive consumer through `links` inherits it. For a bin/test it applies only to that target
 - `defines` accepts simple object macros as `NAME` or `NAME=VALUE`, with an ASCII identifier and no `-D` prefix. Library definitions are PUBLIC and propagate through direct/transitive `links`; bin/test definitions apply only to their own sources
-- Target definitions follow `[compiler].flags` and override global definitions for project targets without redefinition warnings. Git dependency sources do not inherit them. Identical definitions in one link closure deduplicate; the same macro with different values is a plan error
+- Target definitions follow `[compiler].flags` and override global definitions for project targets without redefinition warnings. Git dependency sources do not inherit them. Identical definitions in one link closure deduplicate; the same macro with different values is a plan error. CLI `-D` / `--define` values are appended last for the current invocation and temporarily override any collision
 - Test sources strip `NDEBUG` after definition propagation, even when a library or the test target declares it; release libraries and normal bins still receive it
 - `static_lib` may link existing `static_lib` targets as public dependencies; `shared_lib` may link existing `static_lib` targets only; each `bin` / `test` may link both, with static archives first, then import libraries
 - Link order inside the static dependency graph is derived dependent-first (consumers before their dependencies), so consumers do not hand-order archives; cycles are an error (cizon does not add `--start-group`)

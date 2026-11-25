@@ -51,6 +51,7 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
   version = "0.1.0"            # optional metadata only
   edition = "c++23"            # optional; default c++23; validated before compilation
   sources = ["src"]            # optional; only without [[target]]; files/dirs recursive
+  defines = ["FEATURE"]        # optional; implicit single-bin only, rejected with [[target]]
   compile_commands = false     # optional; write compile_commands.json + missing VS Code config
 
   edition values: 98/03/11/14/17/20/23/26, optionally c++ or gnu++ prefixed;
@@ -94,6 +95,8 @@ const TOML_HELP: &str = r#"cizon.toml — configuration reference
 
 Rules:
   - The first [[target]] disables the implicit src/ bin; [project].sources is then rejected.
+  - [project].defines is valid only in implicit single-bin mode. It uses the same NAME/NAME=VALUE
+    syntax, follows [compiler].flags, and is overridden by temporary CLI -D/--define values.
   - At least one target is required. A library-only project is valid: build produces libraries,
     run reports no bin, and test reports no test targets.
   - include is added to the target's own compile; library includes propagate transitively through
@@ -193,8 +196,8 @@ fn render_help(text: &str, color: bool) -> String {
             "commands" | "kinds" => style_help_name(rest, color),
             "options" => style_help_option(rest, color),
             "usage" | "examples" => style_help_usage(rest, color),
-            _ if trimmed.starts_with("Run `cizon help") => paint_help(line, DIM, color),
-            _ => line.to_string(),
+            _ if trimmed.starts_with("Run `cizon help") => paint_help(rest, DIM, color),
+            _ => rest.to_string(),
         };
         out.push_str(indent);
         out.push_str(&rendered);
@@ -361,9 +364,12 @@ Options:
   -h, --help             Print help
   --release              Optimize with -O2 -DNDEBUG; default debug uses -g
   --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -D<NAME>[=<VALUE>]     Temporarily define or override a project macro (repeatable)
   -q, --quiet            Suppress progress lines
   --verbose              Print compiler, archiver and linker commands
 
+-D and --define apply only to this invocation: they override TOML definitions,
+do not modify cizon.toml or cizon.lock, and do not affect git dependencies.
 Compiles only stale objects. Artifacts live under build/<mode>-<compiler>/, and test
 targets are ignored — use `cizon test` for those."#,
         "run" => r#"cizon run — build, then run a bin target
@@ -375,9 +381,11 @@ Options:
   -h, --help             Print help
   --release              Optimize with -O2 -DNDEBUG; default debug uses -g
   --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -D<NAME>[=<VALUE>]     Temporarily define or override a project macro (repeatable)
   -q, --quiet            Suppress progress lines
   --verbose              Print build and selected program commands
 
+-D and --define are temporary overrides for this build and run only.
 The bin name is optional only when exactly one bin exists. Arguments after -- are
 forwarded to the program, and its exit code is preserved.
 
@@ -393,9 +401,11 @@ Options:
   -h, --help             Print help
   --release              Optimize with -O2 -DNDEBUG; default debug uses -g
   --compiler <SPEC>      Select g++, clang++ or a full compiler path
+  -D<NAME>[=<VALUE>]     Temporarily define or override a project macro (repeatable)
   -q, --quiet            Suppress progress lines
   --verbose              Print build and test commands
 
+-D and --define are temporary overrides for this build and test run only.
 Runs selected test targets in declaration order, or all targets when none are named.
 A test passes iff its process exits 0; any failure exits 1.
 
@@ -482,6 +492,8 @@ struct Flags {
     quiet: bool,
     /// Print each compiler, archiver and linker command line.
     verbose: bool,
+    /// Temporary project-wide macro overrides (`-DNAME[=VALUE]`).
+    defines: Vec<String>,
 }
 
 fn validate_flags(flags: &Flags) -> Result<(), String> {
@@ -491,9 +503,21 @@ fn validate_flags(flags: &Flags) -> Result<(), String> {
     Ok(())
 }
 
+fn push_cli_define(flags: &mut Flags, define: &str) -> Result<(), String> {
+    config::validate_define(define).map_err(|e| format!("invalid -D value: {e}"))?;
+    flags.defines.push(define.to_string());
+    Ok(())
+}
+
 /// Parse flags up to `--`; everything after it is passed through.
 fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
+    let mut flags = Flags {
+        release: false,
+        cc: None,
+        quiet: false,
+        verbose: false,
+        defines: Vec::new(),
+    };
     while let Some(first) = args.first() {
         match first.as_str() {
             "--release" => flags.release = true,
@@ -507,6 +531,25 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
+            "--define" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--define requires NAME or NAME=VALUE".into()),
+            },
+            "-D" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("-D requires NAME or NAME=VALUE".into()),
+            },
+            other if other.starts_with("-D") => {
+                push_cli_define(&mut flags, &other[2..])?;
+            }
             "--" => {
                 args = &args[1..];
                 break;
@@ -523,7 +566,13 @@ fn parse_flags<'a>(mut args: &'a [String]) -> Result<(Flags, &'a [String]), Stri
 fn parse_run_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Option<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
+    let mut flags = Flags {
+        release: false,
+        cc: None,
+        quiet: false,
+        verbose: false,
+        defines: Vec::new(),
+    };
     let mut bin = None;
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -538,6 +587,25 @@ fn parse_run_args<'a>(
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
+            "--define" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--define requires NAME or NAME=VALUE".into()),
+            },
+            "-D" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("-D requires NAME or NAME=VALUE".into()),
+            },
+            other if other.starts_with("-D") => {
+                push_cli_define(&mut flags, &other[2..])?;
+            }
             "--" => {
                 validate_flags(&flags)?;
                 return Ok((flags, bin, &args[1..]));
@@ -585,7 +653,7 @@ fn build_cmd(args: &[String]) -> Result<i32, String> {
             eprintln!("{note}");
         }
     }
-    let plan = pipeline::plan(&dir, &cfg, cxx, flags.release)?;
+    let plan = pipeline::plan_with_defines(&dir, &cfg, cxx, flags.release, &flags.defines)?;
     // A test-only project has no bin to return; building its libraries is still useful and must
     // not be reported as an error.
     pipeline::build_bins(&dir, &cfg, &plan).map(|_| 0)
@@ -596,11 +664,12 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
     pipeline::output::set_quiet(flags.quiet);
     pipeline::output::set_verbose(flags.verbose);
     let (dir, cfg) = load_config()?;
-    run::run(
+    run::run_with_defines(
         &dir,
         &cfg,
         flags.release,
         flags.cc.as_deref(),
+        &flags.defines,
         bin.as_deref(),
         app_args,
     )
@@ -610,7 +679,13 @@ fn execute_run(args: &[String]) -> Result<i32, String> {
 fn parse_test_args<'a>(
     mut args: &'a [String],
 ) -> Result<(Flags, Vec<String>, &'a [String]), String> {
-    let mut flags = Flags { release: false, cc: None, quiet: false, verbose: false };
+    let mut flags = Flags {
+        release: false,
+        cc: None,
+        quiet: false,
+        verbose: false,
+        defines: Vec::new(),
+    };
     let mut names = Vec::new();
     while let Some(first) = args.first() {
         match first.as_str() {
@@ -625,6 +700,25 @@ fn parse_test_args<'a>(
                 }
                 _ => return Err("--compiler requires an argument, e.g. --compiler g++".into()),
             },
+            "--define" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("--define requires NAME or NAME=VALUE".into()),
+            },
+            "-D" => match args.get(1) {
+                Some(define) if !define.is_empty() && !define.starts_with('-') => {
+                    push_cli_define(&mut flags, define)?;
+                    args = &args[2..];
+                    continue;
+                }
+                _ => return Err("-D requires NAME or NAME=VALUE".into()),
+            },
+            other if other.starts_with("-D") => {
+                push_cli_define(&mut flags, &other[2..])?;
+            }
             "--" => {
                 validate_flags(&flags)?;
                 return Ok((flags, names, &args[1..]));
@@ -647,11 +741,12 @@ fn test_cmd(args: &[String]) -> Result<i32, String> {
     pipeline::output::set_quiet(flags.quiet);
     pipeline::output::set_verbose(flags.verbose);
     let (dir, cfg) = load_config()?;
-    test::test(
+    test::test_with_defines(
         &dir,
         &cfg,
         flags.release,
         flags.cc.as_deref(),
+        &flags.defines,
         &names,
         app_args,
     )
@@ -740,6 +835,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_flags_accepts_temporary_defines() {
+        let input = args(&[
+            "-DFOO",
+            "-D",
+            "LEVEL=3",
+            "--define",
+            "TEXT=hello world",
+        ]);
+        let (flags, rest) = parse_flags(&input).unwrap();
+        assert_eq!(flags.defines, ["FOO", "LEVEL=3", "TEXT=hello world"]);
+        assert!(rest.is_empty());
+
+        let input = args(&["-DRUN=1", "server"]);
+        let (flags, bin, rest) = parse_run_args(&input).unwrap();
+        assert_eq!(flags.defines, ["RUN=1"]);
+        assert_eq!(bin.as_deref(), Some("server"));
+        assert!(rest.is_empty());
+
+        let input = args(&["--define=TEST=1"]);
+        assert!(parse_test_args(&input).is_err(), "unsupported syntax must be rejected");
+        for input in [
+            args(&["-D"]),
+            args(&["-D1BAD"]),
+            args(&["--define"]),
+            args(&["--define", "-1"]),
+        ] {
+            let err = parse_flags(&input).unwrap_err();
+            assert!(err.contains("-D") || err.contains("--define"), "got: {err}");
+        }
+    }
+
+    #[test]
     fn run_unknown_flag_mentions_powershell_wrapper() {
         let err = parse_run_args(&args(&["--hello"])).unwrap_err();
         assert!(err.contains("Unknown flag"), "got: {err}");
@@ -809,6 +936,11 @@ mod tests {
         let build = command_usage("build").unwrap();
         assert_eq!(render_help(build, false), build, "command help must stay plain when redirected");
         assert!(render_help(build, true).contains("--verbose"));
+        assert_eq!(
+            render_help(TOML_HELP, false),
+            TOML_HELP.trim_end(),
+            "TOML help indentation must be preserved without color"
+        );
     }
 
     #[test]
@@ -834,8 +966,11 @@ mod tests {
         let clean = command_usage("clean").expect("clean help");
         assert!(clean.contains("Removes only this project's build/ directory"), "got: {clean}");
         assert!(command_usage("build").unwrap().contains("--verbose"));
+        assert!(command_usage("build").unwrap().contains("-D<NAME>"));
         assert!(command_usage("run").unwrap().contains("--verbose"));
+        assert!(command_usage("run").unwrap().contains("-D<NAME>"));
         assert!(command_usage("test").unwrap().contains("--verbose"));
+        assert!(command_usage("test").unwrap().contains("-D<NAME>"));
         assert!(command_usage("nope").is_none());
     }
 }

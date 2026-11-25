@@ -11,11 +11,24 @@ use crate::pipeline;
 use crate::pipeline::output::{style_err, verbose_command, CYAN, DIM, RED};
 
 /// Execute `run`; returns the child process exit code (build/run failure returns Some(error code) or None, with the semantics handled by main).
+#[cfg(test)]
 pub fn run(
     dir: &std::path::Path,
     cfg: &Config,
     release: bool,
     cc: Option<&str>,
+    bin: Option<&str>,
+    app_args: &[String],
+) -> Result<i32, String> {
+    run_with_defines(dir, cfg, release, cc, &[], bin, app_args)
+}
+
+pub fn run_with_defines(
+    dir: &std::path::Path,
+    cfg: &Config,
+    release: bool,
+    cc: Option<&str>,
+    defines: &[String],
     bin: Option<&str>,
     app_args: &[String],
 ) -> Result<i32, String> {
@@ -27,7 +40,7 @@ pub fn run(
         }
     }
     let compiler_name = cxx.name.clone();
-    let plan = pipeline::plan(dir, cfg, cxx, release)?;
+    let plan = pipeline::plan_with_defines(dir, cfg, cxx, release, defines)?;
     let result = pipeline::build_bins(dir, cfg, &plan)?;
     let exe = match bin {
         Some(name) => result

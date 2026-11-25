@@ -131,7 +131,7 @@ hello/
 | `cizon clean` | 只删除项目的 `build/` 目录 |
 | `cizon help [<命令>\|toml]` / `cizon version` | 总览、单命令帮助或 cizon.toml 参考 / 版本 |
 
-`--quiet` 用于 `build` / `run` / `test`：关闭 cizon 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。`--verbose` 打印实际的编译器、归档器与链接器命令（以及选中的程序或测试命令）；`--quiet` 与 `--verbose` 不能同时使用。
+`--quiet` 用于 `build` / `run` / `test`：关闭 cizon 自己的进度行；错误、编译器警告与程序/测试输出仍照常打印。`--verbose` 打印实际的编译器、归档器与链接器命令（以及选中的程序或测试命令）；`--quiet` 与 `--verbose` 不能同时使用。可重复的 `-D<NAME>[=<VALUE>]` / `--define <NAME[=VALUE]>` 只对本次调用添加临时项目宏覆盖，后出现的值生效。
 
 ### `cizon new <路径> [--kind bin|static_lib|shared_lib]`
 
@@ -158,11 +158,13 @@ hello/
 |---|---|
 | `--release` | 使用 `-O2 -DNDEBUG`（项目与依赖源码关闭 assert）；默认 debug 使用 `-g`。test 源码始终剥离 NDEBUG |
 | `--compiler <spec>` | 本次构建临时指定编译器 |
+| `-D<NAME>[=<VALUE>]` / `--define <NAME[=VALUE]>` | 临时定义或覆盖项目宏；可重复，后出现的值生效 |
 | `--quiet` / `-q` | 关闭进度行；错误、警告与程序输出仍照常打印 |
 | `--verbose` | 打印每条实际的编译器、归档器与链接器命令 |
 
 - `--compiler` 可写 `g++`、`clang++` 或完整路径；裸名 `gcc` / `clang` 会归一化为 `g++` / `clang++`，`@版本` 后缀会被忽略（不做版本选择）
 - 显式指定的编译器不可用时会直接报错，不会静默回退；未指定时按 g++ → clang++ 探测，g++ 缺失会打印回退提示
+- CLI 宏只作用于当前进程：覆盖 `[compiler].flags` 与 target `defines`，不写入 `cizon.toml` 或 `cizon.lock`，不影响 git 依赖源码，并进入编译参数指纹触发下次重编
 - 产物位于 `build/<mode>-<compiler>/`；不同模式或编译器之间不会混链
 - `build` 只接受上面的选项，不接受程序参数；要传参请用 `run`
 
@@ -170,6 +172,8 @@ hello/
 cizon build
 cizon build --release
 cizon build --compiler clang++
+cizon build -DLOG_LEVEL=2 -DFEATURE_X
+cizon build --define LOG_LEVEL=3
 ```
 
 ### `cizon run`
@@ -186,6 +190,7 @@ cizon run worker -- --port 8080  # -- 之后的参数原样传给程序
 - 项目有多个 bin 且未给名字时，报错并列出可选的 bin
 - 只能给一个 bin 名；给两个会被拒绝
 - 程序参数必须放在 `--` 之后；`--` 之前的未知 `-` 选项会被当作 cizon 的参数并报错
+- `-D<NAME>[=<VALUE>]` / `--define` 只对本次 run 的构建阶段应用临时宏覆盖
 - `run` 透传程序退出码；进程崩溃时额外打印退出码解释（例如 `ACCESS_VIOLATION`、`DLL_NOT_FOUND`）
 - 不支持 `run --all`：多进程/IPC 编排交给外部 harness
 
@@ -202,7 +207,7 @@ cizon test calc_test --verbose          # 显示构建命令与每个测试进�
 cizon test calc_test -- --gtest_filter=Add*  # -- 后参数透传给每个选中的测试进程
 ```
 
-- 与 `build` / `run` 一样接受 `--release`、`--compiler <spec>`、`--quiet` 和 `--verbose`；构建阶段构建选中的 test target 与计划内全部库 target（不构建 bin），`build` / `run` 不会构建或运行 test target
+- 与 `build` / `run` 一样接受 `--release`、`--compiler <spec>`、`--quiet`、`--verbose` 以及临时 `-D` / `--define` 覆盖；构建阶段构建选中的 test target 与计划内全部库 target（不构建 bin），`build` / `run` 不会构建或运行 test target
 - 任一 test 非 0 或崩溃即整体失败；cizon 继续跑完其余 test，最后汇总 `passed/failed/total`
 - 子进程 stdout/stderr 都原样转发到 stderr（cizon 的 stdout 保持为空）；`Running`、`Passed` / `Failed` 与汇总也写 stderr
 - 没有 test target 时打印 `no test targets` 并返回 0；显式指定不存在的 test 名则报错
@@ -334,6 +339,7 @@ name = "hello"
 version = "0.1.0"           # 可选；仅元数据
 edition = "c++23"           # 可选；缺省 -std=c++23
 sources = ["src/main.cpp"]  # 可选；文件或目录；缺省扫描 src/
+defines = ["FEATURE_X"]     # 可选；仅隐式单 bin 模式
 compile_commands = true     # 可选；生成编译数据库与 VS Code 配置
 
 [compiler]
@@ -353,6 +359,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 | `version` | 否 | 无 | 仅元数据，不参与编译或产物命名 |
 | `edition` | 否 | `c++23` | 生成 `-std=...` |
 | `sources` | 否 | 扫描 `src/` | 唯一 bin 的源码；仅在无 `[[target]]` 时可用 |
+| `defines` | 否 | 空 | 隐式单 bin 的编译宏；与 `[[target]]` 同时使用会报错 |
 | `compile_commands` | 否 | `false` | 生成 `compile_commands.json` 与 VS Code 配置 |
 
 - `name` 会成为文件名：不能包含路径分隔符或 Windows 保留字符，不能是 `.` / `..`、不能以 `.` 开头，也不能使用 `con`、`nul` 等设备名或 `obj` / `lib` / `deps-obj` 这些内部目录名。
@@ -360,6 +367,7 @@ fmt = { git = "https://github.com/fmtlib/fmt", tag = "11.0.2" }
 - `edition` 在加载 `cizon.toml` 时校验：接受 98 / 03 / 11 / 14 / 17 / 20 / 23 / 26，可带 `c++` 或 `gnu++` 前缀，另接受别名 0x / 1y / 1z / 2a / 2b / 2c；裸值（如 `"17"`）会补成 `c++17`。非法值在编译器启动前直接报错
 - `sources` 是项目内相对路径，可同时列文件和目录；目录会递归扫描 `.cpp` / `.cc` / `.cxx`。路径必须存在，不能是绝对路径或包含 `..`，目录也不能通过符号链接/junction 指向项目外。
 - `sources` 与 `[[target]]` 互斥：一旦声明 target，源码必须写进各自的 target。省略 `sources` 时扫描 `src/`。
+- `defines` 使用与 target defines 相同的 `NAME` / `NAME=VALUE` 语法，仅在无 `[[target]]` 时可用。它位于 `[compiler].flags` 之后，会被临时 CLI `-D` / `--define` 覆盖，且不会传给 git 依赖源码；有 target 时请分别写在各自的 `defines` 中。
 - `compile_commands = true` 时，每次 build 生成 `compile_commands.json`；若 `.vscode/c_cpp_properties.json` 缺失还会补一份（已有文件不覆盖）。关闭后不再更新，但不会删除已生成文件。
 
 ### `[compiler]`
@@ -508,7 +516,7 @@ kind = "bin"
 - include 目录的符号链接/junction 也会参与重复检查，解析后必须仍在项目内；环保护会避免重复扫描
 - 对 `static_lib` / `shared_lib`，`include` 是 PUBLIC：库自己的源码使用它，所有通过 `links` 直接/间接链接它的消费者也继承；对 bin/test 只作用于自身
 - `defines` 接受 `NAME` 或 `NAME=VALUE` 形式的简单对象宏，宏名必须是 ASCII 标识符，且不带 `-D` 前缀。库的 defines 是 PUBLIC，沿直接/间接 `links` 传播；bin/test 的 defines 只作用于自己的源码
-- target defines 位于 `[compiler].flags` 之后，并会覆盖项目 target 的全局同名定义，且不产生重定义警告。git 依赖源码不继承它们。同一链接闭包内的相同定义去重；同一宏配不同值会在 plan 阶段报错
+- target defines 位于 `[compiler].flags` 之后，并会覆盖项目 target 的全局同名定义，且不产生重定义警告。git 依赖源码不继承它们。同一链接闭包内的相同定义去重；同一宏配不同值会在 plan 阶段报错。CLI `-D` / `--define` 在最后追加，仅对当前进程临时覆盖这些定义
 - test 源码会在 defines 传播后剥离 `NDEBUG`，即使库或 test target 自己声明了它；release 库与普通 bin 仍会收到该定义
 - `static_lib` 可以链接已存在的 `static_lib`（公共依赖）；`shared_lib` 只能链接已存在的 `static_lib`；每个 `bin` / `test` 可以混合链接静态库与共享库，链接时先静态归档，再 import lib
 - 静态依赖图内的链接顺序按“依赖方在前”自动推导，消费者无需手排归档顺序；出现环直接报错（cizon 不加 `--start-group`）

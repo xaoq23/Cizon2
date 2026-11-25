@@ -38,6 +38,9 @@ pub struct Project {
     /// recursively for .cpp/.cc/.cxx.
     #[serde(default)]
     pub sources: Option<Vec<String>>,
+    /// Compile definitions for the implicit single-bin project; rejected with [[target]].
+    #[serde(default)]
+    pub defines: Vec<String>,
     /// Whether to generate compile_commands.json in the project root (and fill in a missing
     /// VS Code IntelliSense configuration).
     #[serde(default)]
@@ -240,28 +243,35 @@ fn is_macro_name(name: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn validate_target_defines(target: &Target) -> Result<(), String> {
-    let name = target.name.as_deref().expect("target name resolved");
+pub(crate) fn validate_define(define: &str) -> Result<(), String> {
+    if define.is_empty()
+        || define.trim() != define
+        || define.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "define {define:?} must be a non-empty NAME or NAME=VALUE string without surrounding whitespace or control characters."
+        ));
+    }
+    let (macro_name, _) = define_parts(define);
+    if !is_macro_name(macro_name) {
+        return Err(format!(
+            "define {define:?} has an invalid macro name; use NAME or NAME=VALUE with an ASCII identifier and no -D prefix."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_defines(defines: &[String], owner: &str) -> Result<(), String> {
     let mut seen: HashMap<String, String> = HashMap::new();
-    for define in &target.defines {
-        if define.is_empty()
-            || define.trim() != define
-            || define.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "target {name} define {define:?} must be a non-empty NAME or NAME=VALUE string without surrounding whitespace or control characters."
-            ));
+    for define in defines {
+        if let Err(e) = validate_define(define) {
+            return Err(format!("{owner}: {e}"));
         }
         let (macro_name, value) = define_parts(define);
-        if !is_macro_name(macro_name) {
-            return Err(format!(
-                "target {name} define {define:?} has an invalid macro name; use NAME or NAME=VALUE with an ASCII identifier and no -D prefix."
-            ));
-        }
         if let Some(first) = seen.get(macro_name) {
             if first != value {
                 return Err(format!(
-                    "target {name} has conflicting define {macro_name:?}: {first:?} and {value:?}."
+                    "{owner} has conflicting define {macro_name:?}: {first:?} and {value:?}."
                 ));
             }
             continue;
@@ -269,6 +279,11 @@ fn validate_target_defines(target: &Target) -> Result<(), String> {
         seen.insert(macro_name.to_string(), value.to_string());
     }
     Ok(())
+}
+
+fn validate_target_defines(target: &Target) -> Result<(), String> {
+    let name = target.name.as_deref().expect("target name resolved");
+    validate_defines(&target.defines, &format!("target {name}"))
 }
 
 /// Validate and resolve `[[target]]`: a single bin without a name uses the project name; with
@@ -581,6 +596,15 @@ fn parse(dir: &Path) -> Result<Config, String> {
         }
         if version.chars().any(|c| c.is_control()) {
             return Err("[project].version must not contain control characters.".into());
+        }
+    }
+    if let Some(project) = &cfg.project {
+        validate_defines(&project.defines, "[project]")?;
+        if !project.defines.is_empty() && cfg.targets().is_some() {
+            return Err(
+                "[project].defines is only valid without [[target]]; declare defines on each target instead."
+                    .into(),
+            );
         }
     }
     if let Some(edition) = cfg.edition() {
@@ -977,6 +1001,13 @@ impl Config {
         self.project.as_ref().and_then(|p| p.sources.as_deref())
     }
 
+    pub fn project_defines(&self) -> &[String] {
+        self.project
+            .as_ref()
+            .map(|p| p.defines.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// The `[[target]]` list; None means the traditional implicit single-executable project.
     pub fn targets(&self) -> Option<&[Target]> {
         self.targets.as_deref()
@@ -1216,6 +1247,36 @@ mod tests {
         assert_eq!(targets[1].kind, TargetKind::Bin);
         assert_eq!(targets[1].links, ["foo"]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn project_defines_are_implicit_mode_only() {
+        let (dir, cfg) = write_config(
+            "[project]\nname = \"t\"\ndefines = [\"FEATURE\", \"LEVEL=3\"]\n",
+        );
+        assert_eq!(
+            cfg.project_defines(),
+            ["FEATURE".to_string(), "LEVEL=3".to_string()]
+        );
+        std::fs::remove_dir_all(dir).ok();
+
+        for (text, needle) in [
+            (
+                "[project]\nname = \"t\"\ndefines = [\"FEATURE\"]\n\n\
+                 [[target]]\nname = \"lib\"\nkind = \"static_lib\"\nsources = [\"src\"]\n",
+                "only valid without [[target]]",
+            ),
+            (
+                "[project]\nname = \"t\"\ndefines = [\"1BAD\"]\n",
+                "invalid macro name",
+            ),
+        ] {
+            let dir = temp_dir("bad-project-define");
+            std::fs::write(dir.join("cizon.toml"), text).unwrap();
+            let err = parse(&dir).unwrap_err();
+            assert!(err.contains(needle), "got: {err}");
+            std::fs::remove_dir_all(dir).ok();
+        }
     }
 
     #[test]

@@ -2,14 +2,28 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::compiler::{self, Cxx};
-use crate::config::{define_parts, Config, Target, TargetKind};
+use crate::config::{define_parts, validate_define, Config, Target, TargetKind};
 
 use super::output::rel_display;
 use super::{BinTarget, LibTarget, LinkTarget, Plan, SharedTarget};
 
 const SOURCE_EXTS: &[&str] = &["cpp", "cc", "cxx"];
 
+#[cfg(test)]
 pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, String> {
+    plan_with_defines(dir, cfg, cxx, release, &[])
+}
+
+pub fn plan_with_defines(
+    dir: &Path,
+    cfg: &Config,
+    cxx: Cxx,
+    release: bool,
+    cli_defines: &[String],
+) -> Result<Plan, String> {
+    for define in cli_defines {
+        validate_define(define).map_err(|e| format!("invalid -D value: {e}"))?;
+    }
     let (mut bins, mut tests, mut libs, mut shared) = if let Some(targets) = cfg.targets() {
         let static_names: HashMap<String, String> = targets
             .iter()
@@ -159,7 +173,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
             links: Vec::new(),
             extern_links: Vec::new(),
             include: None,
-            defines: Vec::new(),
+            defines: cfg.project_defines().to_vec(),
             prefix: None,
             compile_flags: Vec::new(),
         }];
@@ -229,6 +243,7 @@ pub fn plan(dir: &Path, cfg: &Config, cxx: Cxx, release: bool) -> Result<Plan, S
         &mut libs,
         &mut shared,
         &automatic_includes,
+        cli_defines,
         &flags,
         &test_flags,
     )?;
@@ -263,6 +278,7 @@ fn finalize_target_graph(
     libs: &mut [LibTarget],
     shared: &mut [SharedTarget],
     automatic_includes: &[(String, PathBuf)],
+    cli_defines: &[String],
     flags: &[String],
     test_flags: &[String],
 ) -> Result<(), String> {
@@ -292,13 +308,15 @@ fn finalize_target_graph(
         let includes = lib_includes(&libs[i].name, libs, &lib_index);
         let defines = lib_defines(&libs[i].name, libs, &lib_index)?;
         let prefix = libs[i].prefix.clone();
-        libs[i].compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
+        libs[i].compile_flags =
+            flags_with_requirements(flags, &defines, cli_defines, &includes, &prefix);
     }
     for i in 0..shared.len() {
         let includes = shared_includes(&shared[i], libs, &lib_index);
         let defines = shared_defines(&shared[i], libs, &lib_index)?;
         let prefix = shared[i].prefix.clone();
-        shared[i].compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
+        shared[i].compile_flags =
+            flags_with_requirements(flags, &defines, cli_defines, &includes, &prefix);
         let ordered = ordered_static_roots(&shared[i].links, libs, &lib_index)?;
         shared[i].links = ordered;
     }
@@ -313,7 +331,8 @@ fn finalize_target_graph(
         );
         let defines = exec_defines(bin, libs, shared, &lib_index, &shared_index)?;
         let prefix = bin.prefix.clone();
-        bin.compile_flags = flags_with_requirements(flags, &defines, &includes, &prefix);
+        bin.compile_flags =
+            flags_with_requirements(flags, &defines, cli_defines, &includes, &prefix);
         let ordered = ordered_exec_links(&bin.links, libs, &lib_index)?;
         bin.links = ordered;
     }
@@ -328,7 +347,8 @@ fn finalize_target_graph(
         );
         let defines = exec_defines(test, libs, shared, &lib_index, &shared_index)?;
         let prefix = test.prefix.clone();
-        let flags = flags_with_requirements(test_flags, &defines, &includes, &prefix);
+        let flags =
+            flags_with_requirements(test_flags, &defines, cli_defines, &includes, &prefix);
         test.compile_flags = without_ndebug(&flags);
         let ordered = ordered_exec_links(&test.links, libs, &lib_index)?;
         test.links = ordered;
@@ -339,11 +359,12 @@ fn finalize_target_graph(
 fn flags_with_requirements(
     base: &[String],
     defines: &[String],
+    cli_defines: &[String],
     includes: &[PathBuf],
     prefix: &Option<PathBuf>,
 ) -> Vec<String> {
     let mut flags = base.to_vec();
-    for define in defines {
+    for define in defines.iter().chain(cli_defines) {
         let (name, _) = define_parts(define);
         flags.push(format!("-U{name}"));
         flags.push(format!("-D{define}"));
